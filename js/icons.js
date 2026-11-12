@@ -51,5 +51,16 @@ export const I = {
   fwd: s('<path d="M9 5l7 7-7 7"/>'),
   newline: s('<path d="M20 5v8a2 2 0 01-2 2H6"/><path d="M10 11l-4 4 4 4"/>'),
   grip: s('<path d="M12 3v18M3 12h18M9 6l3-3 3 3M9 18l3 3 3-3M6 9l-3 3 3 3M18 9l3 3-3 3"/>'),
+  tag: s('<path d="M3 12V4.5A1.5 1.5 0 014.5 3H12l9 9-9 9z"/><circle cx="7.5" cy="7.5" r="1.4" fill="currentColor"/>'),
+  send: s('<path d="M21 3L10 14"/><path d="M21 3l-7 18-4-7-7-4z"/>'),
+  link: s('<path d="M10 14a4.5 4.5 0 006.4 0l3-3a4.5 4.5 0 00-6.400-6.400l-1.200 1.200"/><path d="M14 10a4.5 4.5 0 00-6.400 0l-3 3a4.500 4.500 0 006.400 6.400l1.200-1.200"/>'),
+  history: s('<path d="M4 12a8 8 0 102.300-5.600"/><path d="M4 4v4h4"/><path d="M12 8v4l3 2"/>'),
+  note: s('<path d="M4 4h16v11l-5 5H4z"/><path d="M15 20v-5h5"/><path d="M8 9h8M8 13h5"/>'),
+  table: s('<rect x="3" y="4" width="18" height="16" rx="1.5"/><path d="M3 10h18M3 15h18M9 4v16M15 4v16"/>'),
+  scan: s('<path d="M4 8V5a1 1 0 011-1h3M16 4h3a1 1 0 011 1v3M20 16v3a1 1 0 01-1 1h-3M8 20H5a1 1 0 01-1-1v-3"/><path d="M4 12h16"/>'),
+  element: s('<rect x="3" y="3" width="8" height="8" rx="1.5"/><circle cx="17" cy="7" r="4"/><path d="M7 14l4 7H3z"/><rect x="13" y="13" width="8" height="8" rx="1.5"/>'),
+  print: s('<path d="M7 9V3h10v6"/><rect x="3" y="9" width="18" height="8" rx="1.5"/><path d="M7 14h10v7H7z"/>'),
+  split: s('<rect x="3" y="4" width="18" height="16" rx="1.5"/><path d="M12 4v16"/>'),
+  insert: s('<rect x="3" y="3" width="18" height="18" rx="3"/><path d="M12 8v8M8 12h8"/>'),
   template: s('<rect x="4" y="3" width="16" height="18" rx="2"/><path d="M8 8h8M8 12h8M8 16h8"/>')
 };

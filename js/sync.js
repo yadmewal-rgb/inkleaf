@@ -9,7 +9,7 @@
 //   A page edited on two devices is merged stroke by stroke, so nobody's writing is lost.
 // - There is no server. The browser talks to Drive with a token that lasts about an hour, after which
 //   Drive needs one tap to sign in again.
-import { db } from './db.js';
+import { db, assetIdsOf } from './db.js';
 import { h, bus, loadScript, downloadBlob, bufToB64, b64ToBuf } from './util.js';
 import { modal, toast, confirmBox, busy } from './ui.js';
 
@@ -33,7 +33,7 @@ let clientId = '';
 let token = null, tokenExp = 0;
 let st = {};          // name -> {fid, lm: local "modified" when last in step, rm: remote modifiedTime}
 let cursor = null;    // Drive "changes" page token
-let openDoc = null;   // notebook currently open in the editor
+const openDocs = new Set(); // notebooks open in the editor (two when side by side)
 let pushT = 0, loopT = 0, stateT = 0;
 let chain = Promise.resolve();
 let status = { state: 'off', text: 'Google Drive sync is not set up' };
@@ -171,6 +171,9 @@ const sameItems = (items, other) => {
   return true;
 };
 
+// The page's background and size (own templates and scans change these).
+const looks = X => JSON.stringify([X.bg || null, X.pdf || null, X.tpl || null, X.w, X.h]);
+
 export function mergePage(L, R) {
   if (L.deleted || R.deleted) return R.modified >= L.modified ? R : L;
   const base = R.modified >= L.modified ? R : L;
@@ -186,7 +189,8 @@ export function mergePage(L, R) {
     .sort((x, y) => (x.z - y.z) || (x.id < y.id ? -1 : 1));
   const fits = X => sameItems(items, X.items || []) && sameDels(dels, X.dels || {})
     && X.template === base.template && X.paper === base.paper
-    && !X.bm === !base.bm && (X.title || '') === (base.title || '');
+    && !X.bm === !base.bm && (X.title || '') === (base.title || '') && (X.trashed || 0) === (base.trashed || 0)
+    && looks(X) === looks(base);
   if (fits(R)) return R;
   if (fits(L)) return L;
   return { ...base, items, dels, modified: Date.now() };
@@ -208,7 +212,7 @@ async function merge(kind, L, R) {
     const gone = new Set();
     for (const id of new Set([...(L.pages || []), ...(R.pages || [])])) {
       const p = await db.get('pages', id);
-      if (p && p.deleted) gone.add(id);
+      if (p && (p.deleted || p.trashed)) gone.add(id);
     }
     return mergeDoc(L, R, gone);
   }
@@ -328,6 +332,7 @@ async function fullPass() {
       for (const p of locals.values()) {
         if (p.deleted) continue;
         if (p.pdf) referenced.add(p.pdf.a);
+        if (p.bg) referenced.add(p.bg.a);
         for (const it of p.items || []) if (it.t === 'im') referenced.add(it.a);
       }
     }
@@ -397,6 +402,7 @@ async function pushDoc(docId) {
   for (const p of pages) {
     if (p.deleted) continue;
     if (p.pdf && !st['a_' + p.pdf.a]) queueAsset(p.pdf.a, 'up');
+    if (p.bg && !st['a_' + p.bg.a]) queueAsset(p.bg.a, 'up');
     for (const it of p.items || []) if (it.t === 'im' && !st['a_' + it.a]) queueAsset(it.a, 'up');
   }
   for (const p of pages) {
@@ -443,7 +449,7 @@ function run(fn, interactive) {
 
 function schedule() {
   clearTimeout(loopT);
-  loopT = setTimeout(tick, openDoc ? LIVE_MS : IDLE_MS);
+  loopT = setTimeout(tick, openDocs.size ? LIVE_MS : IDLE_MS);
 }
 
 async function tick() {
@@ -470,8 +476,12 @@ async function tick() {
 let writeSeq = 0, pushedSeq = 0;
 
 function pushNow() {
-  const docId = openDoc, seq = writeSeq;
-  return run(() => (docId ? pushDoc(docId).then(() => false) : fullPass()), false)
+  const ids = [...openDocs], seq = writeSeq;
+  return run(async () => {
+    if (!ids.length) return fullPass();
+    for (const id of ids) await pushDoc(id);
+    return false;
+  }, false)
     .then(ok => { if (ok) pushedSeq = Math.max(pushedSeq, seq); });
 }
 
@@ -502,8 +512,8 @@ export async function initSync() {
   if (!wired) {
     wired = true;
     bus.on('db-write', () => { writeSeq++; if (clientId) pushSoon(); });          // something was saved locally
-    bus.on('editor-open', id => { openDoc = id; if (ready()) { run(pullChanges, false); } schedule(); });
-    bus.on('editor-close', () => { openDoc = null; schedule(); });
+    bus.on('editor-open', id => { openDocs.add(id); if (ready()) { run(pullChanges, false); } schedule(); });
+    bus.on('editor-close', id => { openDocs.delete(id); schedule(); });
     window.addEventListener('online', () => { if (ready()) run(fullPass, false); });
     document.addEventListener('visibilitychange', () => {
       if (document.visibilityState === 'hidden') pushSoon(0);                       // leaving: upload right away
@@ -537,28 +547,68 @@ export async function exportBackup() {
   }
 }
 
-// Merges a backup into the library: nothing local is removed.
+// One notebook as a file, to send to someone (they open it with "Open a notebook file").
+export async function notebookFile(docId) {
+  const doc = await db.get('docs', docId);
+  const pages = (await db.byDoc(docId)).filter(p => !p.deleted && !p.trashed);
+  const ids = assetIdsOf(pages);
+  const assets = [];
+  for (const id of ids) {
+    const a = await db.get('assets', id);
+    if (a && a.data) assets.push({ ...a, data: bufToB64(a.data) });
+  }
+  const { thumb, fav, tags, trashed, ...rest } = doc; // personal marks stay with the sender
+  const data = { app: 'inkleaf', version: 1, kind: 'notebook', exported: Date.now(), folders: [], docs: [{ ...rest, folderId: null }], pages, assets };
+  const name = (doc.title || 'notebook').replace(/[\\/:*?"<>|]+/g, ' ').trim().slice(0, 80) || 'notebook';
+  return new File([JSON.stringify(data)], name + '.inkleaf', { type: 'application/octet-stream' });
+}
+
+export async function shareNotebook(docId) {
+  const b = busy('Preparing the notebook file...');
+  let file;
+  try { file = await notebookFile(docId); } catch (e) { b.done(); toast('Could not make the file: ' + e.message); return; }
+  b.done();
+  const mb = (file.size / 1048576).toFixed(1);
+  const canShare = !!(navigator.canShare && navigator.canShare({ files: [file] }));
+  const actions = [{ label: 'Download', primary: !canShare, onClick: () => downloadBlob(file, file.name) }];
+  if (canShare) actions.push({ label: 'Share', primary: true, onClick: async () => { try { await navigator.share({ files: [file] }); } catch { /* cancelled */ } } });
+  modal({
+    title: 'Send a copy',
+    body: h('div', null,
+      h('p', { class: 'modal-text' }, `${file.name} (${mb} MB)`),
+      h('p', { class: 'modal-text small' }, 'Send this file by WhatsApp, email or Drive. The other person opens Inkleaf, taps New, then "Open a notebook file". '
+        + 'If they send it back after writing in it, opening it here merges their writing into yours.')),
+    actions
+  });
+}
+
+// Merges a backup (or a shared notebook) into the library: nothing local is removed. Returns the notebook ids in it.
 export async function importBackup(file) {
-  const b = busy('Restoring backup...');
+  const b = busy('Opening file...');
   try {
     const data = JSON.parse(await file.text());
-    if (data.app !== 'inkleaf') throw new Error('This is not an Inkleaf backup file.');
+    if (data.app !== 'inkleaf') throw new Error('This is not an Inkleaf file.');
     for (const a of data.assets || []) {
       const cur = await db.get('assets', a.id);
       if (!cur || (!cur.data && !cur.deleted && a.data)) await db.put('assets', a.data ? { ...a, data: b64ToBuf(a.data) } : a);
     }
+    const folderIds = new Set((data.folders || []).map(f => f.id));
     for (const [store, kind] of [['pages', 'p'], ['folders', 'f'], ['docs', 'd']]) {
-      for (const rec of data[store] || []) {
+      for (let rec of data[store] || []) {
+        // A notebook from someone else's folder lands at the top of the library.
+        if (kind === 'd' && rec.folderId && !folderIds.has(rec.folderId) && !(await db.get('folders', rec.folderId))) rec = { ...rec, folderId: null };
         const cur = await db.get(store, rec.id);
         const m = cur ? await merge(kind, cur, rec) : rec;
         if (m !== cur) await db.put(store, m);
       }
     }
     bus.emit('synced');
-    toast('Backup restored');
+    toast(data.kind === 'notebook' ? 'Notebook added' : 'Backup restored');
+    return (data.docs || []).filter(d => !d.deleted && !d.sys).map(d => d.id);
   } catch (e) {
     console.error(e);
-    toast('Restore failed: ' + e.message, 5000);
+    toast('Could not open that file: ' + e.message, 5000);
+    return [];
   } finally {
     b.done();
   }

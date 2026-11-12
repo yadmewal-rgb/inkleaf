@@ -17,6 +17,13 @@ function append(el, kids) {
   }
 }
 
+// Replace an element's children; like h(), nested arrays are flattened and null / false are skipped.
+export function fill(el, ...kids) {
+  el.replaceChildren();
+  append(el, kids);
+  return el;
+}
+
 // Tiny element builder: h('div', {class:'x', onclick: fn}, child, ...)
 export function h(tag, attrs, ...kids) {
   const el = document.createElement(tag);

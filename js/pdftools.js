@@ -1,6 +1,7 @@
 // PDF extras: links, the table of contents and text search.
 // Every position returned here is in page units with the origin at the top left, like the rest of the app.
 import { pdfDoc } from './pdfrender.js';
+import { db } from './db.js';
 
 const linkCache = new Map(), textCache = new Map();
 const mctx = document.createElement('canvas').getContext('2d');
@@ -88,6 +89,24 @@ export function pageText(assetId, index) {
     textCache.set(key, p);
   }
   return textCache.get(key);
+}
+
+// The text of every page of a PDF, in lower case, kept on this device after the first time (for library search).
+const allText = new Map();
+export function pdfPagesText(assetId) {
+  if (!allText.has(assetId)) {
+    const p = (async () => {
+      const key = 'pdftext:' + assetId, saved = await db.getMeta(key);
+      if (saved) return saved;
+      const doc = await pdfDoc(assetId), out = [];
+      for (let i = 0; i < doc.numPages; i++) out.push((await pageText(assetId, i)).s);
+      await db.setMeta(key, out).catch(() => {});
+      return out;
+    })();
+    p.catch(() => allText.delete(assetId));
+    allText.set(assetId, p);
+  }
+  return allText.get(assetId);
 }
 
 // Every place q (lower case) occurs in a page's text. Each match is a list of boxes to highlight.

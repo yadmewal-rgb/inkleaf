@@ -79,6 +79,11 @@ export function drawPaper(ctx, pg, bold = 1) {
   const pap = paperOf(pg);
   ctx.fillStyle = pap.bg;
   ctx.fillRect(0, 0, pg.w, pg.h);
+  if (pg.bg) { // a picture used as the page (own template, camera scan)
+    const img = getImage(pg.bg.a);
+    if (img) { ctx.imageSmoothingQuality = 'high'; ctx.drawImage(img, 0, 0, pg.w, pg.h); }
+    return;
+  }
   if (pg.pdf) return;
   const g = templateGeometry(pg);
   if (g.lines.length) {
@@ -125,12 +130,33 @@ function tracePath(ctx, P) {
   ctx.lineTo(P[(n - 1) * 3], P[(n - 1) * 3 + 1]);
 }
 
+// Pencil: the colour is laid down as fine grain, one grain per screen pixel at any zoom.
+const grains = new Map();
+export function inkPaint(ctx, color, style) {
+  if (style !== 'pencil') return color;
+  let cv = grains.get(color);
+  if (!cv) {
+    const m = /^#?([0-9a-f]{6})$/i.exec(color || ''), n = m ? parseInt(m[1], 16) : 0;
+    cv = document.createElement('canvas');
+    cv.width = cv.height = 64;
+    const g = cv.getContext('2d'), d = g.createImageData(64, 64);
+    for (let i = 0; i < 4096; i++) {
+      d.data[i * 4] = n >> 16 & 255; d.data[i * 4 + 1] = n >> 8 & 255; d.data[i * 4 + 2] = n & 255;
+      d.data[i * 4 + 3] = Math.round(255 * (Math.random() < 0.18 ? 0.12 : 0.45 + Math.random() * 0.55));
+    }
+    g.putImageData(d, 0, 0);
+    grains.set(color, cv);
+  }
+  const p = ctx.createPattern(cv, 'repeat'), t = ctx.getTransform();
+  if (p.setTransform && t.a) p.setTransform(new DOMMatrix([1 / t.a, 0, 0, 1 / t.d, 0, 0]));
+  return p;
+}
+
 function drawStroke(ctx, s) {
   const P = s.p, n = P.length / 3;
   ctx.lineCap = 'round';
   ctx.lineJoin = 'round';
-  ctx.strokeStyle = s.c;
-  ctx.fillStyle = s.c;
+  ctx.strokeStyle = ctx.fillStyle = inkPaint(ctx, s.c, s.st);
   if (s.tool === 'hl') {
     ctx.globalAlpha = HL_ALPHA;
     ctx.lineWidth = s.w;
@@ -253,6 +279,7 @@ function drawShape(ctx, sh) {
       ctx.moveTo(ax, ay); ctx.lineTo(sh.x2, sh.y2); ctx.lineTo(bx, by);
     }
   }
+  if (sh.f && (sh.k === 'rect' || sh.k === 'ellipse')) { ctx.fillStyle = sh.f; ctx.fill(); }
   ctx.stroke();
 }
 
@@ -356,6 +383,80 @@ function drawText(ctx, it, ox = it.x, oy = it.y) {
   ctx.textAlign = 'left';
 }
 
+// ---------- sticky notes ----------
+// {t: 'nt', x, y, w, s (typed text), fs, c (note colour), fo: 1 when folded away}
+export const NOTE_PAD = 9, NOTE_FOLD = 22;
+const noteTx = new WeakMap();
+export function noteText(it) {
+  let o = noteTx.get(it);
+  if (!o) { o = { s: it.s || '', fs: it.fs || 13, w: Math.max(10, it.w - 2 * NOTE_PAD), c: '#26282c' }; noteTx.set(it, o); }
+  return o;
+}
+export const noteH = it => Math.max(it.w * 0.7, textHeight(noteText(it)) + 2 * NOTE_PAD);
+
+function drawNote(ctx, it) {
+  const k = Math.abs(ctx.getTransform().a) || 1;
+  ctx.save();
+  ctx.fillStyle = it.c || '#ffe066';
+  if (it.fo) {
+    const s = NOTE_FOLD, f = s * 0.34;
+    ctx.shadowColor = 'rgba(0,0,0,.25)'; ctx.shadowBlur = 3 * k; ctx.shadowOffsetY = 1 * k;
+    ctx.beginPath();
+    ctx.moveTo(it.x, it.y); ctx.lineTo(it.x + s - f, it.y); ctx.lineTo(it.x + s, it.y + f); ctx.lineTo(it.x + s, it.y + s); ctx.lineTo(it.x, it.y + s);
+    ctx.closePath();
+    ctx.fill();
+    ctx.shadowColor = 'transparent';
+    ctx.fillStyle = 'rgba(0,0,0,.16)';
+    ctx.beginPath(); ctx.moveTo(it.x + s - f, it.y); ctx.lineTo(it.x + s - f, it.y + f); ctx.lineTo(it.x + s, it.y + f); ctx.fill();
+    ctx.fillStyle = 'rgba(0,0,0,.4)';
+    for (let i = 0; i < 3; i++) ctx.fillRect(it.x + 4, it.y + 8 + i * 4, s - 9 - (i === 2 ? 5 : 0), 1.2);
+  } else {
+    const hh = noteH(it);
+    ctx.shadowColor = 'rgba(0,0,0,.22)'; ctx.shadowBlur = 6 * k; ctx.shadowOffsetY = 2 * k;
+    ctx.fillRect(it.x, it.y, it.w, hh);
+    ctx.shadowColor = 'transparent';
+    drawText(ctx, noteText(it), it.x + NOTE_PAD, it.y + NOTE_PAD);
+  }
+  ctx.restore();
+}
+
+// ---------- tables ----------
+// {t: 'tb', x, y, w, h, r (rows), cl (columns), cells: [[text]], fs, c (line colour), hd: 1 = shaded first row}
+const cellTx = new WeakMap();
+export function cellText(it, r, c) {
+  let g = cellTx.get(it);
+  if (!g) { g = []; cellTx.set(it, g); }
+  const key = r * it.cl + c;
+  if (!g[key]) g[key] = { s: (it.cells && it.cells[r] && it.cells[r][c]) || '', fs: it.fs || 12, w: Math.max(6, it.w / it.cl - 8), c: '#1c1d21', b: it.hd && !r ? 1 : 0 };
+  return g[key];
+}
+
+function drawTable(ctx, it) {
+  const cw = it.w / it.cl, rh = it.h / it.r;
+  ctx.save();
+  if (it.hd) { ctx.fillStyle = 'rgba(120,120,120,.16)'; ctx.fillRect(it.x, it.y, it.w, rh); }
+  ctx.strokeStyle = it.c || '#5c606a';
+  ctx.lineWidth = 0.8;
+  ctx.beginPath();
+  ctx.rect(it.x, it.y, it.w, it.h);
+  for (let i = 1; i < it.cl; i++) { ctx.moveTo(it.x + i * cw, it.y); ctx.lineTo(it.x + i * cw, it.y + it.h); }
+  for (let i = 1; i < it.r; i++) { ctx.moveTo(it.x, it.y + i * rh); ctx.lineTo(it.x + it.w, it.y + i * rh); }
+  ctx.stroke();
+  for (let r = 0; r < it.r; r++) {
+    for (let c = 0; c < it.cl; c++) {
+      const t = cellText(it, r, c);
+      if (!t.s) continue;
+      ctx.save();
+      ctx.beginPath();
+      ctx.rect(it.x + c * cw, it.y + r * rh, cw, rh);
+      ctx.clip();
+      drawText(ctx, t, it.x + c * cw + 4, it.y + r * rh + 3);
+      ctx.restore();
+    }
+  }
+  ctx.restore();
+}
+
 // ---------- tape ----------
 
 // A strip that hides what is under it; it.o = 1 once it has been tapped open (then it is drawn faintly).
@@ -379,9 +480,11 @@ function drawTape(ctx, tp) {
   ctx.restore();
 }
 
-// Tape sits above everything else and is never blended with the paper, so callers draw it as a last, separate step.
+// Tape and sticky notes sit above everything else and are never blended with the paper, so callers draw them
+// as a last, separate step.
+const onTop = it => it.t === 'tp' || it.t === 'nt';
 export function drawTapes(ctx, items, skip, clip) {
-  for (const it of items) if (it.t === 'tp' && !(skip && skip.has(it.id)) && !outside(it, clip)) drawTape(ctx, it);
+  for (const it of items) if (onTop(it) && !(skip && skip.has(it.id)) && !outside(it, clip)) drawItem(ctx, it);
 }
 
 // Text rendered to a transparent bitmap (PDF export uses this so any script, e.g. Devanagari, survives).
@@ -396,11 +499,24 @@ export function textBitmap(it, k = 3) {
   return { canvas: c, h: th };
 }
 
+// Any item drawn on its own transparent bitmap, for PDF export of things PDF has no direct form for.
+export function itemBitmap(it, k = 3) {
+  const b = bounds(it), pad = 6;
+  const c = document.createElement('canvas');
+  c.width = Math.max(1, Math.ceil((b.w + 2 * pad) * k));
+  c.height = Math.max(1, Math.ceil((b.h + 2 * pad) * k));
+  const ctx = c.getContext('2d');
+  ctx.setTransform(k, 0, 0, k, (pad - b.x) * k, (pad - b.y) * k);
+  drawItem(ctx, it);
+  return { canvas: c, x: b.x - pad, y: b.y - pad, w: b.w + 2 * pad, h: b.h + 2 * pad };
+}
+
 // ---------- images ----------
 
 const imgs = new Map(); // assetId -> {img, p}
-let imageListener = null;
-export const onImageLoaded = fn => { imageListener = fn; };
+const imageListeners = new Set();
+// Returns a function that stops listening (two notebooks can be open side by side).
+export const onImageLoaded = fn => { imageListeners.add(fn); return () => imageListeners.delete(fn); };
 
 async function loadAsset(id) {
   const a = await db.get('assets', id);
@@ -419,7 +535,7 @@ export function loadImage(id) {
     imgs.set(id, e);
     e.p = loadAsset(id).then(img => {
       e.img = img;
-      if (imageListener) imageListener(id);
+      for (const fn of imageListeners) { try { fn(id); } catch (err) { console.error(err); } }
       return img;
     }).catch(() => { imgs.delete(id); return null; });
   }
@@ -441,6 +557,8 @@ export function drawItem(ctx, it) {
     case 'sh': drawShape(ctx, it); break;
     case 'tx': drawText(ctx, it); break;
     case 'tp': drawTape(ctx, it); break;
+    case 'nt': drawNote(ctx, it); break;
+    case 'tb': drawTable(ctx, it); break;
     case 'im': {
       const img = getImage(it.a);
       if (img) {
@@ -479,7 +597,7 @@ export function drawItems(ctx, items, skip, images = true, clip = null) {
   if (images) drawImages(ctx, items, skip, clip);
   const vis = clip ? items.filter(it => !outside(it, clip)) : items;
   for (const it of vis) if (isHl(it) && !(skip && skip.has(it.id))) drawItem(ctx, it);
-  for (const it of vis) if (!isHl(it) && it.t !== 'im' && it.t !== 'tp' && !(skip && skip.has(it.id))) drawItem(ctx, it);
+  for (const it of vis) if (!isHl(it) && it.t !== 'im' && !onTop(it) && !(skip && skip.has(it.id))) drawItem(ctx, it);
 }
 
 const bcache = new WeakMap();
@@ -509,6 +627,8 @@ export function bounds(it) {
     };
   } else if (it.t === 'tx') {
     b = { x: it.x, y: it.y, w: it.w, h: textHeight(it) };
+  } else if (it.t === 'nt') {
+    b = it.fo ? { x: it.x, y: it.y, w: NOTE_FOLD, h: NOTE_FOLD } : { x: it.x, y: it.y, w: it.w, h: noteH(it) };
   } else {
     b = { x: it.x, y: it.y, w: it.w, h: it.h };
   }
@@ -588,10 +708,11 @@ export function transformItem(it, k, ox, oy, dx, dy) {
     o.w = it.w * k;
   } else if (it.t === 'sh' || it.t === 'tp') {
     o.x1 = X(it.x1); o.y1 = Y(it.y1); o.x2 = X(it.x2); o.y2 = Y(it.y2); o.w = it.w * k;
-  } else if (it.t === 'tx') {
-    o.x = X(it.x); o.y = Y(it.y); o.w = it.w * k; o.fs = it.fs * k;
+  } else if (it.t === 'tx' || it.t === 'nt') {
+    o.x = X(it.x); o.y = Y(it.y); o.w = it.w * k; o.fs = (it.fs || 13) * k;
   } else {
     o.x = X(it.x); o.y = Y(it.y); o.w = it.w * k; o.h = it.h * k;
+    if (it.t === 'tb') o.fs = (it.fs || 12) * k;
   }
   return o;
 }
@@ -621,6 +742,7 @@ export async function renderPageTo(page, canvas, pxW) {
   canvas.height = Math.max(1, Math.round(page.h * rs));
   const ctx = canvas.getContext('2d');
   ctx.setTransform(rs, 0, 0, rs, 0, 0);
+  if (page.bg) await loadImage(page.bg.a);
   drawPaper(ctx, page);
   if (page.pdf) {
     try {

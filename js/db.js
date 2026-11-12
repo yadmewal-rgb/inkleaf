@@ -1,8 +1,10 @@
 // Local storage (IndexedDB) and the data model.
 //
 // folders: {id, name, parentId, modified, deleted}
-// docs:    {id, title, folderId, cover, pages:[pageId], template, paper, w, h, thumb, created, modified, deleted}
-// pages:   {id, docId, w, h, template, paper, pdf:{a:assetId,i:pageIndex}|null, items:[], dels:{itemId:ts}, modified, deleted}
+// docs:    {id, title, folderId, cover, pages:[pageId], template, paper, w, h, thumb, created, modified, deleted,
+//           fav, tags:[string], trashed, sys ('elements' | 'templates' for hidden library-wide notebooks)}
+// pages:   {id, docId, w, h, template, paper, pdf:{a:assetId,i:pageIndex}|null, bg:{a:assetId}|null, tpl (own template id),
+//           items:[], dels:{itemId:ts}, modified, deleted, trashed, ti (index before it was trashed)}
 // assets:  {id, mime, name, data:ArrayBuffer, modified, deleted}
 // meta:    {k, v}
 //
@@ -77,7 +79,7 @@ export function newPage(docId, o) {
   return {
     id: uid(), docId, w: o.w, h: o.h,
     template: o.template || 'blank', paper: o.paper || 'white',
-    pdf: o.pdf || null, items: [], dels: {}, modified: Date.now()
+    pdf: o.pdf || null, bg: o.bg || null, ...(o.tpl ? { tpl: o.tpl } : {}), items: [], dels: {}, modified: Date.now()
   };
 }
 
@@ -98,13 +100,102 @@ export async function createFolder(name, parentId = null) {
   return f;
 }
 
-function assetIdsOf(pages) {
+export function assetIdsOf(pages) {
   const ids = new Set();
   for (const p of pages) {
     if (p.pdf) ids.add(p.pdf.a);
+    if (p.bg) ids.add(p.bg.a);
     for (const it of p.items || []) if (it.t === 'im') ids.add(it.a);
   }
   return ids;
+}
+
+// ---------- recycle bin ----------
+// Deleting moves a notebook, folder or page to the bin ("trashed" = when). After TRASH_DAYS it is removed for good.
+export const TRASH_DAYS = 30;
+
+export async function trashDoc(doc) {
+  const t = Date.now();
+  await db.put('docs', { ...doc, trashed: t, modified: t });
+}
+
+export async function trashFolder(f) {
+  const t = Date.now();
+  await db.put('folders', { ...f, trashed: t, modified: t });
+}
+
+export async function restoreItem(store, rec) {
+  const r = { ...rec, modified: Date.now() };
+  delete r.trashed;
+  await db.put(store, r);
+}
+
+// A page taken out of a notebook. "ti" remembers where it was, for putting it back.
+export async function trashPage(page, doc, index) {
+  const t = Date.now();
+  const rec = { ...page, trashed: t, ti: index, modified: t };
+  await db.put('pages', rec);
+  return rec;
+}
+
+export async function restorePage(page) {
+  const doc = await db.get('docs', page.docId);
+  if (!doc || doc.deleted) throw new Error('Its notebook no longer exists.');
+  const p = { ...page, modified: Date.now() };
+  delete p.trashed;
+  delete p.ti;
+  const pages = (doc.pages || []).filter(id => id !== p.id);
+  pages.splice(Math.min(page.ti || 0, pages.length), 0, p.id);
+  await db.put('pages', p);
+  await db.put('docs', { ...doc, pages, modified: Date.now() });
+  return doc;
+}
+
+export async function erasePage(page) {
+  await db.put('pages', { id: page.id, docId: page.docId, w: page.w, h: page.h, items: [], dels: {}, deleted: true, modified: Date.now() });
+}
+
+// Remove for good whatever has been in the bin too long (or everything, for "Empty bin").
+export async function purgeTrash(all) {
+  const cut = all ? Infinity : Date.now() - TRASH_DAYS * 864e5;
+  const old = r => r.trashed && !r.deleted && (all || r.trashed < cut);
+  const [folders, docs, pages] = await Promise.all([db.all('folders'), db.all('docs'), db.all('pages')]);
+  for (const p of pages) if (old(p)) await erasePage(p);
+  for (const d of docs) if (old(d)) await deleteDoc(d);
+  for (const f of folders) if (old(f)) await deleteFolder(f);
+}
+
+// ---------- hidden notebooks that hold library-wide things (saved elements, own templates) ----------
+// They sync like any notebook but never show in the library. Each saved thing is one page.
+export const SYS = { elements: 'sys-elements', templates: 'sys-templates' };
+
+export async function sysDoc(kind) {
+  const id = SYS[kind];
+  let d = await db.get('docs', id);
+  if (!d || d.deleted) {
+    const t = Date.now();
+    d = { id, sys: kind, title: kind, folderId: null, pages: [], template: 'blank', paper: 'white', w: 595, h: 842, created: t, modified: t };
+    await db.put('docs', d);
+  }
+  return d;
+}
+
+export async function sysPages(kind) {
+  const d = await db.get('docs', SYS[kind]);
+  return d && !d.deleted ? loadPages(d) : [];
+}
+
+export async function addSysPage(kind, page) {
+  const d = await sysDoc(kind);
+  page.docId = d.id;
+  await db.put('pages', page);
+  await db.put('docs', { ...d, pages: [...d.pages, page.id], modified: Date.now() });
+}
+
+export async function removeSysPage(kind, page) {
+  const d = await sysDoc(kind);
+  await erasePage(page);
+  await db.put('docs', { ...d, pages: d.pages.filter(id => id !== page.id), modified: Date.now() });
 }
 
 export async function deleteDoc(doc) {
@@ -141,7 +232,7 @@ export async function deleteFolder(folder) {
 
 export async function duplicateDoc(doc) {
   const t = Date.now();
-  const src = (await db.byDoc(doc.id)).filter(p => !p.deleted);
+  const src = (await db.byDoc(doc.id)).filter(p => !p.deleted && !p.trashed);
   const byId = new Map(src.map(p => [p.id, p]));
   const copyId = uid();
   const pages = [];
@@ -161,7 +252,7 @@ export async function duplicateDoc(doc) {
 
 // Pages of a document in notebook order (tolerates records that sync has not delivered yet).
 export async function loadPages(doc) {
-  const recs = (await db.byDoc(doc.id)).filter(p => !p.deleted);
+  const recs = (await db.byDoc(doc.id)).filter(p => !p.deleted && !p.trashed);
   const byId = new Map(recs.map(p => [p.id, p]));
   const pages = doc.pages.map(id => byId.get(id)).filter(Boolean);
   const listed = new Set(doc.pages);

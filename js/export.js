@@ -94,6 +94,9 @@ export async function buildPdf(doc, pages, progress) {
           page.drawImage(jpg, { x: 0, y: 0, width: pg.w, height: H });
         } catch (err) { console.warn('PDF page skipped in export', err); }
       }
+    } else if (pg.bg) {
+      const im = await embedAsset(pg.bg.a);
+      if (im) page.drawImage(im, { x: 0, y: 0, width: pg.w, height: H });
     } else {
       const g = R.templateGeometry(pg), col = hex(pap.line);
       for (const [x1, y1, x2, y2] of g.lines) {
@@ -116,11 +119,16 @@ export async function buildPdf(doc, pages, progress) {
     const ordered = [
       ...pg.items.filter(it => it.t === 'im'),
       ...pg.items.filter(isHl),
-      ...pg.items.filter(it => !isHl(it) && it.t !== 'im' && it.t !== 'tp'),
-      ...pg.items.filter(it => it.t === 'tp')
+      ...pg.items.filter(it => !isHl(it) && it.t !== 'im' && it.t !== 'tp' && it.t !== 'nt'),
+      ...pg.items.filter(it => it.t === 'tp' || it.t === 'nt')
     ];
     for (const it of ordered) {
-      if (it.t === 'tp') {
+      if (it.t === 'nt' || it.t === 'tb') {
+        // Sticky notes and tables go in as pictures of themselves.
+        const bm = R.itemBitmap(it, 3);
+        const png = await out.embedPng(await canvasBytes(bm.canvas, 'image/png'));
+        page.drawImage(png, { x: bm.x, y: H - bm.y - bm.h, width: bm.w, height: bm.h });
+      } else if (it.t === 'tp') {
         // Tape: a flat strip over everything, faint if it has been tapped open.
         page.drawLine({
           start: { x: it.x1, y: H - it.y1 }, end: { x: it.x2, y: H - it.y2 }, thickness: it.w,
@@ -130,9 +138,12 @@ export async function buildPdf(doc, pages, progress) {
         if (it.p.length === 3) {
           if (it.tool !== 'hl') page.drawCircle({ x: it.p[0], y: H - it.p[1], size: R.pw(it, it.p[2]) / 2, color: hex(it.c), blendMode: blend });
         } else {
-          for (const run of R.strokeRuns(it)) path(run.d, it.c, run.w, it.tool === 'hl' ? R.HL_ALPHA : 1);
+          for (const run of R.strokeRuns(it)) path(run.d, it.c, run.w, it.tool === 'hl' ? R.HL_ALPHA : it.st === 'pencil' ? 0.72 : 1);
         }
       } else if (it.t === 'sh') {
+        if (it.f && (it.k === 'rect' || it.k === 'ellipse')) {
+          page.drawSvgPath(R.shapeSvg(it), { x: 0, y: H, color: hex(it.f), blendMode: blend });
+        }
         path(R.shapeSvg(it), it.c, it.w, 1);
       } else if (it.t === 'tx') {
         const bm = R.textBitmap(it, 3);
