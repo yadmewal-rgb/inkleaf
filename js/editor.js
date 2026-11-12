@@ -177,6 +177,8 @@ export async function mountEditor(root, docId, opts = {}) {
   let full = false, dbg = null;
   let clipItems = (await db.getMeta('clip')) || null; // copied items, shared by every notebook on this device
   let panelQ = '', panelBm = false, panelList = null; // pages panel: search text, bookmarks-only, the list element
+  let pickMode = false, lastPick = -1, pickBar = null; // pages panel: choosing several pages to act on together
+  const picked = new Set();                            // ids of the chosen pages
   let sel = null, textEd = null;
   let livePv = null, liveFn = null, rafLive = 0;
   const undoStack = [], redoStack = [];
@@ -3389,7 +3391,7 @@ export async function mountEditor(root, docId, opts = {}) {
       s.line.style.top = (to < cs.length ? cs[to].offsetTop : last.offsetTop + last.offsetHeight) - 7 + 'px';
     };
     card.addEventListener('pointerdown', e => {
-      if (e.button || e.target.closest('button') || panelQ.trim() || panelBm || pages.length < 2) return;
+      if (e.button || e.target.closest('button') || pickMode || panelQ.trim() || panelBm || pages.length < 2) return;
       const st = s = { id: e.pointerId, x0: e.clientX, y0: e.clientY, on: false, to: i, t: 0, mouse: e.pointerType === 'mouse', line: null };
       if (!st.mouse) st.t = setTimeout(() => { if (s === st && !st.on) begin(); }, 350);
     });
@@ -3599,8 +3601,14 @@ export async function mountEditor(root, docId, opts = {}) {
       class: 'chip sm' + (panelBm ? ' on' : ''), type: 'button',
       onclick: () => { panelBm = !panelBm; bmBtn.classList.toggle('on', panelBm); fillPanel(); }
     }, h('span', { class: 'btn-ic', html: I.star }), 'Bookmarks');
+    const pickBtn = h('button', {
+      class: 'chip sm' + (pickMode ? ' on' : ''), type: 'button', title: 'Choose several pages to copy, move, delete or export together',
+      onclick: () => { pickMode = !pickMode; if (!pickMode) picked.clear(); lastPick = -1; buildPanel(); }
+    }, pickMode ? 'Done' : 'Select pages');
+    pickBar = pickMode ? h('div', { class: 'pick-bar' }) : null;
+    panel.classList.toggle('picking', pickMode);
     panelList = h('div', { class: 'panel-list' });
-    panel.append(h('div', { class: 'panel-head' }, q, bmBtn), panelList);
+    panel.append(h('div', { class: 'panel-head' }, q, bmBtn, pickBtn, pickBar), panelList);
     fillPanel();
   }
 
@@ -3630,7 +3638,16 @@ export async function mountEditor(root, docId, opts = {}) {
       c.height = Math.round(220 * pg.h / pg.w);
       c.style.background = R.paperOf(pg).bg;
       thumbs.set(pg.id, c);
-      const card = h('div', { class: 'thumb' + (i === cur ? ' on' : ''), onclick: () => { if (card._dragged) return; scrollToPage(i); if (innerWidth < 700) togglePanel(); } },
+      const card = h('div', {
+        class: 'thumb' + (i === cur ? ' on' : '') + (picked.has(pg.id) ? ' picked' : ''), 'data-pid': pg.id,
+        onclick: e => {
+          if (card._dragged) return;
+          if (pickMode) { pickCard(i, e.shiftKey); return; }
+          scrollToPage(i);
+          if (innerWidth < 700) togglePanel();
+        }
+      },
+        h('span', { class: 'pick-mark' }),
         c,
         pg.title ? h('div', { class: 'thumb-name' }, pg.title) : null,
         h('div', { class: 'thumb-foot' },
@@ -3650,6 +3667,8 @@ export async function mountEditor(root, docId, opts = {}) {
                 { label: 'Duplicate', icon: I.copy, onClick: () => duplicatePage(i) },
                 { label: 'Move up', icon: I.up, onClick: () => movePage(i, -1) },
                 { label: 'Move down', icon: I.down, onClick: () => movePage(i, 1) },
+                { label: 'Paste copied pages after', icon: I.paste, onClick: () => pastePages(i) },
+                { label: 'Select several pages', icon: I.pages, onClick: () => { pickMode = true; picked.add(pg.id); lastPick = i; buildPanel(); } },
                 '-',
                 { label: 'Delete page', icon: I.trash, danger: true, onClick: () => deletePage(i) }
               ], { align: 'right' });
@@ -3661,7 +3680,156 @@ export async function mountEditor(root, docId, opts = {}) {
     });
     if (!shown) panelList.append(h('p', { class: 'panel-empty' }, panelBm && !ql ? 'No bookmarked pages yet. Tap the star under a page.' : 'No pages match.'));
     const on = panelList.querySelector('.thumb.on');
-    if (on && !ql) on.scrollIntoView({ block: 'center' });
+    if (on && !ql && !pickMode) on.scrollIntoView({ block: 'center' });
+    updatePick();
+  }
+
+  // --- several pages at once (pages panel > Select pages)
+  const pickedPages = () => pages.filter(p => picked.has(p.id)); // in notebook order
+  const clonePage = (p, docId) => {
+    const t = Date.now();
+    return { ...p, id: uid(), docId, dels: {}, modified: t, items: p.items.map(it => ({ ...it, id: uid(), m: t })) };
+  };
+
+  // Tap = add or remove one page; Shift+click = everything from the last one tapped to this one.
+  function pickCard(i, range) {
+    if (range && lastPick >= 0) for (let k = Math.min(i, lastPick); k <= Math.max(i, lastPick); k++) picked.add(pages[k].id);
+    else if (picked.has(pages[i].id)) picked.delete(pages[i].id);
+    else picked.add(pages[i].id);
+    lastPick = i;
+    updatePick();
+  }
+
+  function updatePick() {
+    const live = new Set(pages.map(p => p.id));
+    for (const id of [...picked]) if (!live.has(id)) picked.delete(id);
+    if (panelList) for (const c of panelList.querySelectorAll('.thumb')) c.classList.toggle('picked', picked.has(c.getAttribute('data-pid')));
+    if (!pickBar) return;
+    const n = picked.size, all = n === pages.length;
+    pickBar.replaceChildren(
+      h('b', null, n ? `${n} selected` : 'Tap pages'),
+      h('div', { class: 'pick-row' },
+        h('button', { class: 'chip sm', type: 'button', onclick: () => { if (all) picked.clear(); else for (const p of pages) picked.add(p.id); updatePick(); } }, all ? 'None' : 'All'),
+        h('button', { class: 'btn sm primary', type: 'button', onclick: e => pickMenu(e.currentTarget) }, 'Actions')));
+  }
+
+  async function pickMenu(anchor) {
+    const n = picked.size, clip = (await db.getMeta('clipPages')) || [];
+    const need = fn => () => { if (!picked.size) { toast('Tap the pages you want first.'); return; } fn(); };
+    const s = n === 1 ? '' : 's';
+    popMenu(anchor, [
+      { label: 'Copy', icon: I.copy, onClick: need(copyPicked) },
+      clip.length ? { label: `Paste ${clip.length} copied page${clip.length === 1 ? '' : 's'}`, icon: I.paste, onClick: () => pastePages(n ? pages.indexOf(pickedPages().pop()) : pvs.indexOf(currentPv())) } : null,
+      { label: 'Duplicate', icon: I.pages, onClick: need(duplicatePicked) },
+      '-',
+      { label: 'Move to the start', icon: I.up, onClick: need(() => movePicked('start')) },
+      { label: 'Move to the end', icon: I.down, onClick: need(() => movePicked('end')) },
+      {
+        label: 'Move after page...', icon: I.move, onClick: need(async () => {
+          const v = await promptText(`Move ${n} page${s} after page`, '', `0 (the start) to ${pages.length}`);
+          if (v == null || v === '' || isNaN(parseInt(v, 10))) return;
+          movePicked(clamp(parseInt(v, 10), 0, pages.length));
+        })
+      },
+      '-',
+      { label: 'Copy to another notebook', icon: I.book, onClick: need(() => pickedToNotebook(false)) },
+      { label: 'Move to another notebook', icon: I.move, onClick: need(() => pickedToNotebook(true)) },
+      { label: 'Export as PDF', icon: I.share, onClick: need(async () => { commitText(); await flush().catch(saveFailed); exportFlow(doc.id, pickedPages().map(p => p.id)); }) },
+      { label: pickedPages().every(p => p.bm) && n ? 'Remove bookmarks' : 'Bookmark', icon: I.star, onClick: need(bookmarkPicked) },
+      '-',
+      { label: `Delete ${n || ''} page${s}`.replace('  ', ' '), icon: I.trash, danger: true, onClick: need(deletePicked) }
+    ].filter(Boolean), { align: 'right' });
+  }
+
+  async function copyPicked() {
+    const sel = pickedPages();
+    await db.setMeta('clipPages', sel.map(p => ({ ...p, items: p.items.slice() })));
+    toast(`Copied ${sel.length} page${sel.length === 1 ? '' : 's'}. Paste them here or in any notebook from the pages panel.`, 3200);
+  }
+
+  // Copied pages go in after page index i, in this or any other notebook.
+  async function pastePages(i) {
+    const src = (await db.getMeta('clipPages')) || [];
+    if (!src.length) { toast('No pages copied yet. Use Select pages, then Actions > Copy.'); return; }
+    const copies = src.map(p => { const c = clonePage(p, doc.id); delete c.trashed; delete c.ti; return c; });
+    await Promise.all(copies.flatMap(p => [p.bg && R.loadImage(p.bg.a), ...p.items.filter(it => it.t === 'im').map(it => R.loadImage(it.a))]));
+    const at = clamp(i, -1, pages.length - 1) + 1;
+    pages.splice(at, 0, ...copies);
+    for (const c of copies) dirtyPages.add(c);
+    if (pickMode) { picked.clear(); for (const c of copies) picked.add(c.id); }
+    structureChanged(at);
+    toast(`Pasted ${copies.length} page${copies.length === 1 ? '' : 's'}`);
+  }
+
+  function duplicatePicked() {
+    const sel = pickedPages(), at = pages.indexOf(sel[sel.length - 1]) + 1;
+    const copies = sel.map(p => clonePage(p, doc.id));
+    pages.splice(at, 0, ...copies);
+    for (const c of copies) dirtyPages.add(c);
+    picked.clear();
+    for (const c of copies) picked.add(c.id);
+    structureChanged(at);
+  }
+
+  // where: 'start', 'end', or n = after the page that is number n now.
+  function movePicked(where) {
+    const sel = pickedPages(), rest = pages.filter(p => !picked.has(p.id));
+    const at = where === 'start' ? 0 : where === 'end' ? rest.length : rest.filter(p => pages.indexOf(p) < where).length;
+    rest.splice(at, 0, ...sel);
+    pages.splice(0, pages.length, ...rest);
+    structureChanged(at);
+  }
+
+  function bookmarkPicked() {
+    const sel = pickedPages(), all = sel.every(p => p.bm);
+    for (const p of sel) { p.bm = !all; dirty(p); }
+    updateIndicator();
+    fillPanel();
+  }
+
+  async function deletePicked() {
+    const sel = pickedPages(), n = sel.length;
+    if (n >= pages.length) { toast('A notebook needs at least one page. Leave one unselected.'); return; }
+    if (n > 1 && !await confirmBox('Delete pages', `Move ${n} pages to the bin? They can be restored for ${TRASH_DAYS} days.`, 'Delete', true)) return;
+    commitText();
+    await flush().catch(saveFailed);
+    const first = pages.indexOf(sel[0]);
+    const at = new Map(sel.map(p => [p, pages.indexOf(p)]));
+    for (const pg of sel) {
+      pages.splice(pages.indexOf(pg), 1);
+      dirtyPages.delete(pg);
+      gonePages.add(pg.id);
+      await trashPage(pg, doc, at.get(pg));
+    }
+    picked.clear();
+    structureChanged(Math.min(first, pages.length - 1));
+    toast(`${n} page${n === 1 ? ' is' : 's are'} in the bin for ${TRASH_DAYS} days`);
+  }
+
+  async function pickedToNotebook(move) {
+    const sel = pickedPages(), n = sel.length;
+    if (move && n >= pages.length) { toast('A notebook needs at least one page. Leave one unselected.'); return; }
+    const d = await chooseNotebook(`${move ? 'Move' : 'Copy'} ${n} page${n === 1 ? '' : 's'} to`, doc.id);
+    if (!d) return;
+    commitText();
+    await flush().catch(saveFailed);
+    const dest = await db.get('docs', d.id);
+    if (!dest || dest.deleted || dest.trashed) { toast('That notebook is no longer in your library.'); return; }
+    const t = Date.now();
+    let recs;
+    if (move) {
+      const first = pages.indexOf(sel[0]);
+      for (const pg of sel) { pages.splice(pages.indexOf(pg), 1); dirtyPages.delete(pg); gonePages.add(pg.id); }
+      recs = sel.map(pg => ({ ...pg, docId: dest.id, modified: t })); // the same pages, now belonging to the other notebook
+      await db.putMany('pages', recs);
+      picked.clear();
+      structureChanged(Math.min(first, pages.length - 1));
+    } else {
+      recs = sel.map(p => clonePage(p, dest.id));
+      await db.putMany('pages', recs);
+    }
+    await db.put('docs', { ...dest, pages: [...(dest.pages || []), ...recs.map(p => p.id)], modified: Date.now() });
+    toast(`${n} page${n === 1 ? '' : 's'} ${move ? 'moved' : 'copied'} to the end of "${dest.title}"`, 3200);
   }
 
   const thumbTimers = new Map();

@@ -180,13 +180,14 @@ export async function buildPdf(doc, pages, progress) {
   return new Blob([bytes], { type: 'application/pdf' });
 }
 
-export async function exportFlow(docId) {
+export async function exportFlow(docId, onlyIds) {
   const b = busy('Preparing PDF...');
   let blob, name;
   try {
     const doc = await db.get('docs', docId);
-    const pages = await loadPages(doc);
-    name = safeName(doc.title) + '.pdf';
+    let pages = await loadPages(doc);
+    if (onlyIds) pages = pages.filter(p => onlyIds.includes(p.id)); // just the chosen pages
+    name = safeName(doc.title) + (onlyIds ? ` (${pages.length} page${pages.length === 1 ? '' : 's'})` : '') + '.pdf';
     blob = await buildPdf(doc, pages, (i, n) => b.set(`Preparing PDF... page ${i} of ${n}`));
   } catch (e) {
     console.error(e);
