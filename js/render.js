@@ -5,6 +5,13 @@ import { uid, distSeg, inPoly } from './util.js';
 import { renderPdfPage } from './pdfrender.js';
 
 export const FONT = 'system-ui, -apple-system, "Segoe UI", Roboto, "Noto Sans", sans-serif';
+export const FONTS = {
+  sans: FONT,
+  serif: 'Georgia, "Times New Roman", "Noto Serif", serif',
+  mono: 'ui-monospace, "Cascadia Mono", Consolas, Menlo, monospace'
+};
+// Typed text carries optional styles for the whole box: b(old), i(talic), u(nderline), ff (font), al (l, c or r).
+export const fontOf = it => `${it.i ? 'italic ' : ''}${it.b ? 'bold ' : ''}${it.fs}px ${FONTS[it.ff] || FONT}`;
 export const LH = 1.3;
 export const HL_ALPHA = 0.5;
 
@@ -302,7 +309,7 @@ function wrap(ctx, text, maxW) {
 export function textLines(it) {
   let l = lineCache.get(it);
   if (!l) {
-    mctx.font = `${it.fs}px ${FONT}`;
+    mctx.font = fontOf(it);
     l = wrap(mctx, it.s, it.w);
     lineCache.set(it, l);
   }
@@ -312,12 +319,50 @@ export function textLines(it) {
 export const textHeight = it => textLines(it).length * it.fs * LH;
 
 function drawText(ctx, it, ox = it.x, oy = it.y) {
-  ctx.font = `${it.fs}px ${FONT}`;
+  ctx.font = fontOf(it);
   ctx.fillStyle = it.c;
   ctx.textBaseline = 'middle';
+  const al = it.al === 'c' ? 'center' : it.al === 'r' ? 'right' : 'left';
+  ctx.textAlign = al;
+  const lh = it.fs * LH, ax = al === 'center' ? ox + it.w / 2 : al === 'right' ? ox + it.w : ox;
+  textLines(it).forEach((l, i) => {
+    if (!l) return;
+    const y = oy + (i + 0.5) * lh;
+    ctx.fillText(l, ax, y);
+    if (it.u) {
+      const w = ctx.measureText(l).width, x0 = al === 'center' ? ax - w / 2 : al === 'right' ? ax - w : ax;
+      ctx.fillRect(x0, y + it.fs * 0.46, w, Math.max(0.6, it.fs * 0.065));
+    }
+  });
   ctx.textAlign = 'left';
-  const lh = it.fs * LH;
-  textLines(it).forEach((l, i) => { if (l) ctx.fillText(l, ox, oy + (i + 0.5) * lh); });
+}
+
+// ---------- tape ----------
+
+// A strip that hides what is under it; it.o = 1 once it has been tapped open (then it is drawn faintly).
+function drawTape(ctx, tp) {
+  const dx = tp.x2 - tp.x1, dy = tp.y2 - tp.y1, len = Math.hypot(dx, dy) || 1, w = tp.w;
+  ctx.save();
+  ctx.translate(tp.x1, tp.y1);
+  ctx.rotate(Math.atan2(dy, dx));
+  ctx.globalAlpha = tp.o ? 0.2 : 1;
+  ctx.fillStyle = tp.c;
+  ctx.fillRect(0, -w / 2, len, w);
+  ctx.beginPath();
+  ctx.rect(0, -w / 2, len, w);
+  ctx.clip();
+  ctx.strokeStyle = 'rgba(255,255,255,.34)';
+  ctx.lineWidth = w * 0.26;
+  ctx.lineCap = 'butt';
+  ctx.beginPath();
+  for (let x = -w; x < len + w; x += w * 1.15) { ctx.moveTo(x, w / 2); ctx.lineTo(x + w, -w / 2); }
+  ctx.stroke();
+  ctx.restore();
+}
+
+// Tape sits above everything else and is never blended with the paper, so callers draw it as a last, separate step.
+export function drawTapes(ctx, items, skip, clip) {
+  for (const it of items) if (it.t === 'tp' && !(skip && skip.has(it.id)) && !outside(it, clip)) drawTape(ctx, it);
 }
 
 // Text rendered to a transparent bitmap (PDF export uses this so any script, e.g. Devanagari, survives).
@@ -376,6 +421,7 @@ export function drawItem(ctx, it) {
     case 's': drawStroke(ctx, it); break;
     case 'sh': drawShape(ctx, it); break;
     case 'tx': drawText(ctx, it); break;
+    case 'tp': drawTape(ctx, it); break;
     case 'im': {
       const img = getImage(it.a);
       if (img) {
@@ -414,7 +460,7 @@ export function drawItems(ctx, items, skip, images = true, clip = null) {
   if (images) drawImages(ctx, items, skip, clip);
   const vis = clip ? items.filter(it => !outside(it, clip)) : items;
   for (const it of vis) if (isHl(it) && !(skip && skip.has(it.id))) drawItem(ctx, it);
-  for (const it of vis) if (!isHl(it) && it.t !== 'im' && !(skip && skip.has(it.id))) drawItem(ctx, it);
+  for (const it of vis) if (!isHl(it) && it.t !== 'im' && it.t !== 'tp' && !(skip && skip.has(it.id))) drawItem(ctx, it);
 }
 
 const bcache = new WeakMap();
@@ -432,6 +478,12 @@ export function bounds(it) {
     b = { x: x0 - m, y: y0 - m, w: x1 - x0 + 2 * m, h: y1 - y0 + 2 * m };
   } else if (it.t === 'sh') {
     const m = it.k === 'arrow' ? Math.max(9, it.w * 4.5) : it.w;
+    b = {
+      x: Math.min(it.x1, it.x2) - m, y: Math.min(it.y1, it.y2) - m,
+      w: Math.abs(it.x2 - it.x1) + 2 * m, h: Math.abs(it.y2 - it.y1) + 2 * m
+    };
+  } else if (it.t === 'tp') {
+    const m = it.w / 2;
     b = {
       x: Math.min(it.x1, it.x2) - m, y: Math.min(it.y1, it.y2) - m,
       w: Math.abs(it.x2 - it.x1) + 2 * m, h: Math.abs(it.y2 - it.y1) + 2 * m
@@ -471,6 +523,7 @@ export function hitsCircle(it, x, y, r) {
     for (let i = 0; i < S.length; i += 4) if (distSeg(x, y, S[i], S[i + 1], S[i + 2], S[i + 3]) <= rr) return true;
     return false;
   }
+  if (it.t === 'tp') return distSeg(x, y, it.x1, it.y1, it.x2, it.y2) <= r + it.w / 2;
   return true;
 }
 
@@ -514,7 +567,7 @@ export function transformItem(it, k, ox, oy, dx, dy) {
     o.p = new Array(it.p.length);
     for (let i = 0; i < it.p.length; i += 3) { o.p[i] = X(it.p[i]); o.p[i + 1] = Y(it.p[i + 1]); o.p[i + 2] = it.p[i + 2]; }
     o.w = it.w * k;
-  } else if (it.t === 'sh') {
+  } else if (it.t === 'sh' || it.t === 'tp') {
     o.x1 = X(it.x1); o.y1 = Y(it.y1); o.x2 = X(it.x2); o.y2 = Y(it.y2); o.w = it.w * k;
   } else if (it.t === 'tx') {
     o.x = X(it.x); o.y = Y(it.y); o.w = it.w * k; o.fs = it.fs * k;
@@ -532,7 +585,7 @@ export function rotateItem(it, cx, cy) {
   if (it.t === 's') {
     o.p = new Array(it.p.length);
     for (let i = 0; i < it.p.length; i += 3) { o.p[i] = X(it.p[i], it.p[i + 1]); o.p[i + 1] = Y(it.p[i], it.p[i + 1]); o.p[i + 2] = it.p[i + 2]; }
-  } else if (it.t === 'sh') {
+  } else if (it.t === 'sh' || it.t === 'tp') {
     o.x1 = X(it.x1, it.y1); o.y1 = Y(it.x1, it.y1); o.x2 = X(it.x2, it.y2); o.y2 = Y(it.x2, it.y2);
   } else {
     const b = bounds(it), mx = b.x + b.w / 2, my = b.y + b.h / 2, nx = X(mx, my), ny = Y(mx, my);
@@ -565,4 +618,5 @@ export async function renderPageTo(page, canvas, pxW) {
   if (!paperOf(page).dark) ctx.globalCompositeOperation = 'multiply';
   drawItems(ctx, page.items, null, false);
   ctx.globalCompositeOperation = 'source-over';
+  drawTapes(ctx, page.items);
 }

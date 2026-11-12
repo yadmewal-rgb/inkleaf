@@ -116,10 +116,17 @@ export async function buildPdf(doc, pages, progress) {
     const ordered = [
       ...pg.items.filter(it => it.t === 'im'),
       ...pg.items.filter(isHl),
-      ...pg.items.filter(it => !isHl(it) && it.t !== 'im')
+      ...pg.items.filter(it => !isHl(it) && it.t !== 'im' && it.t !== 'tp'),
+      ...pg.items.filter(it => it.t === 'tp')
     ];
     for (const it of ordered) {
-      if (it.t === 's') {
+      if (it.t === 'tp') {
+        // Tape: a flat strip over everything, faint if it has been tapped open.
+        page.drawLine({
+          start: { x: it.x1, y: H - it.y1 }, end: { x: it.x2, y: H - it.y2 }, thickness: it.w,
+          color: hex(it.c), opacity: it.o ? 0.2 : 1, lineCap: LineCapStyle.Butt
+        });
+      } else if (it.t === 's') {
         if (it.p.length === 3) {
           if (it.tool !== 'hl') page.drawCircle({ x: it.p[0], y: H - it.p[1], size: R.pw(it, it.p[2]) / 2, color: hex(it.c), blendMode: blend });
         } else {

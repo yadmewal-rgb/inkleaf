@@ -42,5 +42,14 @@ export const I = {
   crop: s('<path d="M7 3v14h14"/><path d="M3 7h14v14"/>'),
   fit: s('<path d="M4 9V5h4M20 9V5h-4M4 15v4h4M20 15v4h-4"/>'),
   finger: s('<path d="M9 11V5.500a1.500 1.500 0 013 0V11"/><path d="M12 10.500a1.500 1.500 0 013 0V12"/><path d="M15 11.500a1.500 1.500 0 013 0V15a6 6 0 01-6 6h-.5a6 6 0 01-5-2.700L4 14.500a1.500 1.500 0 012.500-1.600L9 15"/>'),
+  tape: s('<rect x="3" y="8" width="18" height="8" rx="1"/><path d="M8 8l-2 8M13 8l-2 8M18 8l-2 8"/>'),
+  laser: s('<circle cx="12" cy="12" r="2.4" fill="currentColor"/><path d="M12 3.5v3M12 17.5v3M3.5 12h3M17.5 12h3M6 6l2 2M16 16l2 2M6 18l2-2M16 8l2-2"/>'),
+  ruler: s('<path d="M3 16L16 3l5 5L8 21z"/><path d="M7.5 11.500l2 2M10.5 8.500l2 2M13.5 5.500l2 2"/>'),
+  zoomwin: s('<circle cx="11" cy="11" r="6.5"/><path d="M16 16l4.5 4.5M11 8.500v5M8.500 11h5"/>'),
+  list: s('<path d="M9 6h11M9 12h11M9 18h11"/><circle cx="4.5" cy="6" r="1" fill="currentColor"/><circle cx="4.5" cy="12" r="1" fill="currentColor"/><circle cx="4.5" cy="18" r="1" fill="currentColor"/>'),
+  flow: s('<path d="M4 12h16M16 8l4 4-4 4M8 8l-4 4 4 4"/>'),
+  fwd: s('<path d="M9 5l7 7-7 7"/>'),
+  newline: s('<path d="M20 5v8a2 2 0 01-2 2H6"/><path d="M10 11l-4 4 4 4"/>'),
+  grip: s('<path d="M12 3v18M3 12h18M9 6l3-3 3 3M9 18l3 3 3-3M6 9l-3 3 3 3M18 9l3 3-3 3"/>'),
   template: s('<rect x="4" y="3" width="16" height="18" rx="2"/><path d="M8 8h8M8 12h8M8 16h8"/>')
 };

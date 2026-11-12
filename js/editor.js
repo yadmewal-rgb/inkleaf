@@ -1,8 +1,9 @@
 // The notebook editor: page layout, pan/zoom, stylus/finger/mouse input, tools, selection, undo.
 import { db, newPage, loadPages } from './db.js';
-import { h, uid, nextZ, clamp, bus, distSeg, downloadBlob, safeName } from './util.js';
+import { h, uid, nextZ, clamp, bus, distSeg, downloadBlob, safeName, debounce } from './util.js';
 import * as R from './render.js';
 import { renderPdfPage } from './pdfrender.js';
+import { pageLinks, resolveDest, pdfOutline, pageText, textMatches } from './pdftools.js';
 import { I } from './icons.js';
 import { popMenu, popover, confirmBox, promptText, toast, modal, chipGroup, templatePicker, PAPER_OPTS } from './ui.js';
 import { exportFlow } from './export.js';
@@ -24,7 +25,15 @@ const SHAPES = [['rect', 'Rectangle'], ['ellipse', 'Ellipse'], ['line', 'Line'],
 const MM = 0.3528; // one page unit (a PDF point) in millimetres
 const mmToPt = mm => Math.round(mm / MM * 100) / 100;
 
+const TAPE_COLORS = ['#e9d8a6', '#f4b6c2', '#a9d6e5', '#c9c9c9', '#2b2d42'];
+const LASER_COLORS = ['#ff2d2d', '#22c55e', '#3b82f6'];
+const RULER_L = 170 / MM, RULER_W = 46; // the on-screen ruler: 17 cm long, in page units
+const ZOOM_TOOLS = ['pen', 'hl', 'eraser'];
+
 const DEFAULTS = {
+  tape: { color: '#e9d8a6', size: mmToPt(7) },
+  laser: { color: '#ff2d2d' },
+  flow: 'v',      // 'v' = pages run down the screen, 'h' = side by side, one at a time
   tool: 'pen',
   pen: { color: INK, size: mmToPt(0.7), style: 'fountain' },
   scribble: true, // a zigzag over ink erases it
@@ -32,7 +41,7 @@ const DEFAULTS = {
   hl: { color: '#ffd43b', size: mmToPt(5.5) },
   eraser: { size: mmToPt(5.5), mode: 'stroke' },
   shape: { kind: 'rect', color: '#1971c2', size: mmToPt(0.8) },
-  text: { color: INK, size: 16 },
+  text: { color: INK, size: 16, b: false, i: false, u: false, ff: 'sans', al: 'l' },
   fingerDraw: null, // null = automatic: fingers draw until a stylus has been seen
   penSeen: false
 };
@@ -99,7 +108,30 @@ export async function mountEditor(root, docId) {
 
   vp.append(world);
   const pullHint = h('div', { class: 'pullhint', hidden: true });
-  overlay.append(eraserCur, selBox, selBar, pullHint);
+  const laserCv = h('canvas', { class: 'laser' });
+  // Find bar
+  const findInp = h('input', { class: 'inp sm', type: 'search', placeholder: 'Find in this notebook' });
+  const findLbl = h('span', { class: 'find-n' });
+  const findBar = h('div', { class: 'findbar', hidden: true },
+    findInp, findLbl,
+    h('button', { class: 'ic sm', type: 'button', title: 'Previous (Shift+Enter)', html: I.up, onclick: () => findStep(-1) }),
+    h('button', { class: 'ic sm', type: 'button', title: 'Next (Enter)', html: I.down, onclick: () => findStep(1) }),
+    h('button', { class: 'ic sm', type: 'button', title: 'Close', html: I.close, onclick: () => closeFind() }));
+  // Zoom window: a magnified strip of the page to write in, shown along the bottom of the screen.
+  const zcv = h('canvas', { class: 'zw-c' }), zlive = h('canvas', { class: 'zw-c zw-live' });
+  const zpad = h('div', { class: 'zw-pad' }, zcv, zlive);
+  const zwin = h('div', { class: 'zwin', hidden: true },
+    h('div', { class: 'zw-bar' },
+      h('button', { class: 'ic sm', type: 'button', title: 'Move left', html: I.back, onclick: () => zoomMove(-0.7) }),
+      h('button', { class: 'ic sm', type: 'button', title: 'Move right', html: I.fwd, onclick: () => zoomMove(0.7) }),
+      h('button', { class: 'ic sm', type: 'button', title: 'Next line', html: I.newline, onclick: () => zoomNewline() }),
+      h('span', { class: 'hint' }, 'Write here. Drag the frame on the page to choose the spot.'),
+      h('div', { class: 'grow' }),
+      h('button', { class: 'ic sm', type: 'button', title: 'Close the zoom window', html: I.close, onclick: () => toggleZoom(false) })),
+    zpad);
+  const zgrip = h('div', { class: 'zgrip', title: 'Move', html: I.grip }), zsize = h('div', { class: 'handle', title: 'Resize' });
+  const zframe = h('div', { class: 'zframe', hidden: true }, zgrip, zsize);
+  overlay.append(eraserCur, selBox, selBar, zframe, laserCv, pullHint, findBar);
   const el = h('div', { class: 'ed' },
     h('div', { class: 'bar' },
       h('button', { class: 'ic', type: 'button', title: 'Back to library', onclick: exit, html: I.back }),
@@ -111,7 +143,7 @@ export async function mountEditor(root, docId) {
       h('button', { class: 'ic', type: 'button', title: 'Add page', onclick: () => addPageAfter(currentPv()), html: I.plus }),
       h('button', { class: 'ic', type: 'button', title: 'More', onclick: e => moreMenu(e.currentTarget), html: I.more })),
     h('div', { class: 'bar tools' }, toolsEl, h('div', { class: 'vsep' }), optsEl, h('div', { class: 'grow' }), fullTools),
-    h('div', { class: 'stage' }, vp, overlay, panel),
+    h('div', { class: 'stage' }, vp, overlay, zwin, panel),
     fileInp);
   root.append(el);
 
@@ -141,6 +173,14 @@ export async function mountEditor(root, docId) {
   let rafInk = 0;
   let panelOpen = false, thumbObs = null;
   const thumbs = new Map(); // pageId -> canvas
+  let hz = prefs.flow === 'h';  // pages side by side
+  let wheelAcc = 0, wheelLock = 0, wheelT = 0;
+  const laser = { strokes: [], raf: 0 };
+  let ruler = null;             // {x, y: centre in world units, ang, el, cv, lbl, s}
+  let zw = null, zpan = null, rafZoom = 0; // zoom window: {pv, x, y, w, h, zs, d, rect, home, pdfC, pdfKey, pdfAsk, tok}
+  let find = null, findTok = 0; // find bar: {q, hits: [{pg, rects, els}], cur}
+  const pdfText = new Map();    // pageId -> text of its PDF page, once loaded (for the pages panel search)
+  let textWarm = null;
 
   const fingerDraws = () => prefs.fingerDraw === true || (prefs.fingerDraw == null && !penSeen);
   const inkFor = (pv, color) => (color === INK && R.paperOf(pv.page).dark ? INK_ON_DARK : color);
@@ -160,18 +200,35 @@ export async function mountEditor(root, docId) {
     for (const page of pages) {
       const bg = h('canvas', { class: 'bg' }), ink = h('canvas', { class: 'ink' });
       const pel = h('div', { class: 'page' }, bg, ink);
-      const pv = { page, el: pel, bg, ink, img: null, hi: null, x: 0, y: 0, rs: 0, clip: null, bgRs: 0, bgTok: 0, hiTok: 0 };
+      const pv = { page, el: pel, bg, ink, img: null, tape: null, hi: null, links: undefined, x: 0, y: 0, rs: 0, clip: null, bgRs: 0, bgTok: 0, hiTok: 0 };
       stylePv(pv);
       pvs.push(pv);
       world.append(pel);
     }
     layout();
+    if (zw) {
+      const nv = pvs.find(v => v.page === zw.pv.page);
+      if (nv) { zw.pv = nv; queueZoom(); } else toggleZoom(false);
+    }
+    if (find) showFindMarks();
   }
 
   // Round a CSS length to whole device pixels.
   const snap = v => { const d = window.devicePixelRatio || 1; return Math.round(v * d) / d; };
 
   function layout() {
+    if (hz) {
+      worldH = Math.max(...pages.map(p => p.h)) + 2 * GAP;
+      let x = GAP;
+      for (const pv of pvs) {
+        pv.x = x;
+        pv.y = (worldH - pv.page.h) / 2;
+        x += pv.page.w + GAP;
+        Object.assign(pv.el.style, { left: snap(pv.x * ls) + 'px', top: snap(pv.y * ls) + 'px', width: pv.page.w * ls + 'px', height: pv.page.h * ls + 'px' });
+      }
+      worldW = x;
+      return;
+    }
     worldW = Math.max(...pages.map(p => p.w));
     let y = GAP;
     for (const pv of pvs) {
@@ -193,6 +250,7 @@ export async function mountEditor(root, docId) {
       if (!pv.rs) continue;
       place(pv.ink, pv);
       if (pv.img) place(pv.img, pv);
+      if (pv.tape) place(pv.tape, pv);
       placeHi(pv);
     }
     if (livePv) place(live, livePv);
@@ -200,12 +258,29 @@ export async function mountEditor(root, docId) {
 
   function measure() { vpRect = vp.getBoundingClientRect(); }
 
+  // The zoom that shows a page comfortably: its full width when pages run downwards, the whole page when side by side.
+  function fitScale(pg, max = 2.5) {
+    if (!hz) return clamp((vpRect.width - 24) / worldW, MIN_S, max);
+    return clamp(Math.min((vpRect.width - 24) / pg.w, (vpRect.height - 24) / pg.h), MIN_S, max);
+  }
+
+  // Where tx must be to show a page in side-by-side mode: centred if it fits, otherwise its left edge.
+  function pageTx(pv) {
+    const w = pv.page.w * scale, vw = vpRect.width;
+    return w <= vw - 8 ? vw / 2 - (pv.x + pv.page.w / 2) * scale : 12 - pv.x * scale;
+  }
+
   function clampView() {
     const vw = vpRect.width, vh = vpRect.height, pad = 12;
     const cw = worldW * scale, ch = worldH * scale;
-    tx = cw + 2 * pad <= vw ? (vw - cw) / 2 : clamp(tx, vw - cw - pad, pad);
+    if (hz && pvs.length) { // the first and last page may sit in the middle of the screen
+      const a = pvs[0], b = pvs[pvs.length - 1];
+      const hi = Math.max(pad, vw / 2 - (a.x + a.page.w / 2) * scale), lo = Math.min(vw - cw - pad, vw / 2 - (b.x + b.page.w / 2) * scale);
+      tx = clamp(tx, Math.min(lo, hi), hi);
+    } else tx = cw + 2 * pad <= vw ? (vw - cw) / 2 : clamp(tx, vw - cw - pad, pad);
     const top = full && !el.classList.contains('mini') ? 58 : 0; // room to pull the page out from under the floating tool bar
-    ty = ch + top <= vh ? top : clamp(ty, vh - ch, top);
+    const bot = zw ? zwin.offsetHeight : 0;                      // and from behind the zoom window
+    ty = ch + top <= vh - bot ? (hz ? Math.max(top, (vh - bot - ch) / 2) : top) : clamp(ty, vh - bot - ch, top);
   }
 
   function applyView() {
@@ -265,13 +340,17 @@ export async function mountEditor(root, docId) {
   }
 
   function inRange(pv, margin) {
+    if (hz) {
+      const l = (-tx - margin) / scale, r = (-tx + vpRect.width + margin) / scale;
+      return pv.x + pv.page.w > l && pv.x < r;
+    }
     const top = (-ty - margin) / scale, bot = (-ty + vpRect.height + margin) / scale;
     return pv.y + pv.page.h > top && pv.y < bot;
   }
 
   // Only pages near the viewport keep live canvases; the rest are released to save memory.
   function updateVisible() {
-    const vh = vpRect.height;
+    const vh = hz ? vpRect.width : vpRect.height;
     for (const pv of pvs) {
       if (inRange(pv, vh * 0.5)) {
         if (!pv.rs || stale(pv)) renderPv(pv);
@@ -309,6 +388,7 @@ export async function mountEditor(root, docId) {
     place(pv.ink, pv);
     pv.ink.width = W;
     pv.ink.height = H;
+    loadLinks(pv);
     paintInk(pv);
     paintBg(pv, p.base, force);
     paintHi(pv);
@@ -378,6 +458,7 @@ export async function mountEditor(root, docId) {
     pv.ink.width = pv.ink.height = 0;
     place(pv.ink, pv);
     if (pv.img) { pv.img.remove(); pv.img = null; }
+    if (pv.tape) { pv.tape.remove(); pv.tape = null; }
     if (pv.hi) { pv.hi.remove(); pv.hi = null; pv.hiClip = null; }
     if (livePv === pv) { live.remove(); live.width = live.height = 0; livePv = null; }
   }
@@ -396,6 +477,27 @@ export async function mountEditor(root, docId) {
     xf(c, pv);
     R.drawItems(c, pv.page.items, hiddenIds(pv), false, pv.clip);
     paintImg(pv);
+    paintTape(pv);
+    if (zw && zw.pv === pv) queueZoom();
+  }
+
+  // Tape covers the ink, so it gets its own unblended layer above it (created only when the page has tape).
+  function paintTape(pv) {
+    if (!pv.rs || !pv.page.items.some(it => it.t === 'tp')) {
+      if (pv.tape) { pv.tape.remove(); pv.tape = null; }
+      return;
+    }
+    if (!pv.tape) { pv.tape = h('canvas', { class: 'tape' }); pv.ink.after(pv.tape); }
+    if (pv.tape.width !== pv.ink.width || pv.tape.height !== pv.ink.height) {
+      pv.tape.width = pv.ink.width;
+      pv.tape.height = pv.ink.height;
+    }
+    place(pv.tape, pv);
+    const c = pv.tape.getContext('2d');
+    c.setTransform(1, 0, 0, 1, 0, 0);
+    c.clearRect(0, 0, pv.tape.width, pv.tape.height);
+    xf(c, pv);
+    R.drawTapes(c, pv.page.items, hiddenIds(pv), pv.clip);
   }
 
   // Pictures live on their own opaque layer between the paper and the ink (created only when needed).
@@ -447,6 +549,12 @@ export async function mountEditor(root, docId) {
 
   function clearLive() {
     liveFn = null;
+    if (zw && zlive.width) {
+      const z = zlive.getContext('2d');
+      z.setTransform(1, 0, 0, 1, 0, 0);
+      z.clearRect(0, 0, zlive.width, zlive.height);
+      zxf(z);
+    }
     if (!livePv || !live.width) return;
     const c = live.getContext('2d');
     c.setTransform(1, 0, 0, 1, 0, 0);
@@ -471,16 +579,22 @@ export async function mountEditor(root, docId) {
   const toScreen = (pv, x, y) => [(pv.x + x) * scale + tx, (pv.y + y) * scale + ty];
 
   function pvAt(cx, cy) {
-    const wy = (cy - vpRect.top - ty) / scale;
+    const wy = (cy - vpRect.top - ty) / scale, wx = (cx - vpRect.left - tx) / scale;
     let best = pvs[0], bd = Infinity;
     for (const pv of pvs) {
-      const d = wy < pv.y ? pv.y - wy : wy > pv.y + pv.page.h ? wy - pv.y - pv.page.h : 0;
+      const d = hz
+        ? (wx < pv.x ? pv.x - wx : wx > pv.x + pv.page.w ? wx - pv.x - pv.page.w : 0)
+        : (wy < pv.y ? pv.y - wy : wy > pv.y + pv.page.h ? wy - pv.y - pv.page.h : 0);
       if (d < bd) { bd = d; best = pv; }
     }
     return best;
   }
 
   function currentPv() {
+    if (hz) {
+      const cx = (-tx + vpRect.width / 2) / scale;
+      return pvs.find(pv => cx < pv.x + pv.page.w + GAP / 2) || pvs[pvs.length - 1];
+    }
     const cy = (-ty + vpRect.height / 2) / scale;
     return pvs.find(pv => cy < pv.y + pv.page.h + GAP) || pvs[pvs.length - 1];
   }
@@ -488,15 +602,61 @@ export async function mountEditor(root, docId) {
   function fitWidth() {
     measure();
     const keep = pvs.length ? pvs.indexOf(currentPv()) : 0;
-    scale = clamp((vpRect.width - 24) / worldW, MIN_S, 2.5);
-    tx = (vpRect.width - worldW * scale) / 2;
+    scale = fitScale(pvs[keep].page);
+    if (!hz) tx = (vpRect.width - worldW * scale) / 2;
     scrollToPage(keep);
   }
 
   function scrollToPage(i) {
     const pv = pvs[clamp(i, 0, pvs.length - 1)];
-    ty = -(pv.y - GAP) * scale;
+    stopInertia();
+    if (hz) tx = pageTx(pv); else ty = -(pv.y - GAP) * scale;
     applyView();
+  }
+
+  // Glide the view to a position (used to settle on a page when they are side by side).
+  function animateTo(x1, y1) {
+    stopInertia();
+    const x0 = tx, y0 = ty, t0 = performance.now();
+    const step = () => {
+      const k = Math.min(1, (performance.now() - t0) / 230), e = 1 - Math.pow(1 - k, 3);
+      tx = x0 + (x1 - x0) * e;
+      ty = y0 + (y1 - y0) * e;
+      applyView();
+      inertiaRaf = k < 1 && !destroyed ? requestAnimationFrame(step) : 0;
+    };
+    inertiaRaf = requestAnimationFrame(step);
+  }
+
+  function goPage(d) {
+    const i = clamp(pvs.indexOf(currentPv()) + d, 0, pvs.length - 1);
+    if (hz) animateTo(pageTx(pvs[i]), ty); else scrollToPage(i);
+  }
+
+  // Side by side, with a whole page fitting across the screen: come to rest on one page.
+  // vx is the speed of the flick that ended the drag, i0 the page it started on.
+  function snapPage(vx, i0) {
+    if (!hz || !pvs.length) return false;
+    let i = pvs.indexOf(currentPv());
+    if (pvs[i].page.w * scale > vpRect.width + 2) return false; // zoomed in: move freely
+    if (i0 != null && i === i0 && Math.abs(vx) > 0.35) i = clamp(i0 + (vx < 0 ? 1 : -1), 0, pvs.length - 1);
+    animateTo(pageTx(pvs[i]), ty);
+    return true;
+  }
+
+  function setFlow(f) {
+    commitText();
+    clearSel();
+    const i = pvs.indexOf(currentPv());
+    prefs.flow = f;
+    hz = f === 'h';
+    savePrefs();
+    rebuild();
+    measure();
+    scale = fitScale(pages[i]);
+    if (!hz) tx = (vpRect.width - worldW * scale) / 2;
+    scrollToPage(i);
+    toast(hz ? 'Pages side by side: swipe left and right' : 'Pages run down the screen');
   }
 
   function zoomAt(cx, cy, factor) {
@@ -549,6 +709,7 @@ export async function mountEditor(root, docId) {
     clearTimeout(saveT);
     saveT = setTimeout(() => flush().catch(saveFailed), 250);
     if (panelOpen) refreshThumb(page);
+    if (zw && zw.pv.page === page) queueZoom();
   }
 
   function saveFailed(e) {
@@ -650,10 +811,10 @@ export async function mountEditor(root, docId) {
     commitText();
     clearSel();
     const cur = currentPv();
-    const off = cur ? ty + cur.y * scale : 0;
+    const off = cur ? (hz ? tx + cur.x * scale : ty + cur.y * scale) : 0;
     rebuild();
     const now = cur ? pvs.find(v => v.page === cur.page) : null;
-    if (now) ty = off - now.y * scale;
+    if (now) { if (hz) tx = off - now.x * scale; else ty = off - now.y * scale; }
     applyView();
     if (panelOpen) buildPanel();
   }
@@ -821,7 +982,19 @@ export async function mountEditor(root, docId) {
     stopInertia();
     if (e.ctrlKey || e.metaKey) { zoomAt(e.clientX, e.clientY, Math.exp(-e.deltaY * 0.01)); return; }
     const k = e.deltaMode === 1 ? 32 : 1;
-    if (e.shiftKey && !e.deltaX) tx -= e.deltaY * k;
+    if (hz) {
+      const cur = currentPv();
+      if (!e.shiftKey && cur && cur.page.w * scale <= vpRect.width + 2) {
+        // A whole page fits: the wheel turns pages instead of sliding them part of the way.
+        const now = performance.now();
+        wheelAcc += (e.deltaX + e.deltaY) * k;
+        clearTimeout(wheelT);
+        wheelT = setTimeout(() => { wheelAcc = 0; }, 220);
+        if (now > wheelLock && Math.abs(wheelAcc) > 30) { goPage(wheelAcc > 0 ? 1 : -1); wheelLock = now + 380; wheelAcc = 0; }
+        return;
+      }
+      if (e.shiftKey) ty -= e.deltaY * k; else { tx -= (e.deltaX + e.deltaY) * k; }
+    } else if (e.shiftKey && !e.deltaX) tx -= e.deltaY * k;
     else { tx -= e.deltaX * k; ty -= e.deltaY * k; }
     applyView();
   }
@@ -832,7 +1005,7 @@ export async function mountEditor(root, docId) {
   }
 
   function startPan(p) {
-    pan = { pid: p.id, x: p.x, y: p.y, vx: 0, vy: 0, t: performance.now(), t0: performance.now(), moved: 0, pull: 0 };
+    pan = { pid: p.id, x: p.x, y: p.y, vx: 0, vy: 0, t: performance.now(), t0: performance.now(), moved: 0, pull: 0, i0: hz ? pvs.indexOf(currentPv()) : null };
   }
 
   function movePan(e) {
@@ -845,13 +1018,14 @@ export async function mountEditor(root, docId) {
     pan.t = t;
     pan.moved += Math.abs(dx) + Math.abs(dy);
     tx += dx;
-    const want = ty + dy;
+    const wantX = tx, want = ty + dy;
     ty = want;
     applyView();
-    // Dragging up past the end of the last page: keep count of how far, to offer a new page.
-    if (ty - want > 0.5) pan.pull += ty - want; else if (dy > 0) pan.pull = 0;
+    // Dragging past the end of the last page (up, or left when side by side): keep count of how far, to offer a new page.
+    const over = hz ? tx - wantX : ty - want;
+    if (over > 0.5) pan.pull += over; else if ((hz ? dx : dy) > 0) pan.pull = 0;
     pullHint.hidden = pan.pull < 14;
-    pullHint.textContent = pan.pull >= PULL_PX ? 'Release to add a page' : 'Pull up to add a page';
+    pullHint.textContent = pan.pull >= PULL_PX ? 'Release to add a page' : hz ? 'Pull left to add a page' : 'Pull up to add a page';
     pullHint.classList.toggle('go', pan.pull >= PULL_PX);
   }
 
@@ -862,6 +1036,7 @@ export async function mountEditor(root, docId) {
     if (pn.pull >= PULL_PX) { addPageAfter(pvs[pvs.length - 1]); return; }
     const now = performance.now();
     if (p.type === 'touch' && pn.moved < 8 && now - pn.t0 < 350) { tapAt(e.clientX, e.clientY); return; }
+    if (snapPage(now - pn.t > 90 ? 0 : pn.vx, pn.i0)) return;
     if (p.type !== 'touch' || now - pn.t > 90) return;
     let vx = pn.vx, vy = pn.vy;
     if (Math.hypot(vx, vy) < 0.15) return;
@@ -914,11 +1089,12 @@ export async function mountEditor(root, docId) {
       clearSel();
       if (it) setSel(pv, [it]);
     } else {
+      if (tapThing(pv, x, y)) { lastTap = null; return; }
       // Double tap: zoom in on that spot, or back out to the full page width.
       const now = performance.now();
       if (lastTap && now - lastTap.t < 320 && Math.hypot(cx - lastTap.x, cy - lastTap.y) < 40) {
         lastTap = null;
-        const fit = clamp((vpRect.width - 24) / worldW, MIN_S, 2.5);
+        const fit = fitScale(pv.page);
         zoomAt(cx, cy, Math.abs(scale - fit) / fit > 0.15 ? fit / scale : 2);
       } else lastTap = { t: now, x: cx, y: cy };
     }
@@ -939,16 +1115,30 @@ export async function mountEditor(root, docId) {
   }
 
   // ------------------------------------------------------------------ tool actions
-  function startAction(e, forceTool) {
+  // map is given when the press is in the zoom window: it turns screen positions there into page positions.
+  function startAction(e, forceTool, map) {
     const tool = forceTool || prefs.tool;
-    const pv = (tool === 'lasso' && sel && touchOnSelPoint(e)) ? sel.pv : pvAt(e.clientX, e.clientY);
-    const [x, y] = toPage(pv, e.clientX, e.clientY);
+    const pv = map ? zw.pv : (tool === 'lasso' && sel && touchOnSelPoint(e)) ? sel.pv : pvAt(e.clientX, e.clientY);
+    const [x, y] = map ? map(e.clientX, e.clientY) : toPage(pv, e.clientX, e.clientY);
     if (tool !== 'lasso' && sel) clearSel();
-    action = { tool, pid: e.pointerId, ptype: e.pointerType, pv, x0: x, y0: y, cx0: e.clientX, cy0: e.clientY, far: false };
+    action = {
+      tool, pid: e.pointerId, ptype: e.pointerType, pv, x0: x, y0: y, cx0: e.clientX, cy0: e.clientY, far: false,
+      map: map || null, sc: map ? zw.zs : scale // sc = screen pixels per page unit where the pointer is
+    };
     if (tool === 'pen' || tool === 'hl') beginStroke(e, x, y);
     else if (tool === 'eraser') beginErase(e, x, y);
     else if (tool === 'lasso') beginLasso(x, y);
     else if (tool === 'shape') { action.c = useLive(pv); action.x1 = x; action.y1 = y; }
+    else if (tool === 'tape') { action.c = useLive(pv); live.classList.add('plain'); action.x1 = x; action.y1 = y; }
+    else if (tool === 'laser') beginLaser(e);
+  }
+
+  // Where the pointer is on the page being worked on.
+  const apt = (a, e) => (a.map ? a.map(e.clientX, e.clientY) : toPage(a.pv, e.clientX, e.clientY));
+  const ctxs = a => (a.c2 ? [a.c, a.c2] : [a.c]);
+  // Show one unfinished item (a straightened line, a tidied shape, highlighter) on the live layer(s).
+  function liveItem(a, item) {
+    nextLive(() => { clearLive(); for (const c of ctxs(a)) R.drawItem(c, item); });
   }
 
   function touchOnSelPoint(e) {
@@ -963,6 +1153,8 @@ export async function mountEditor(root, docId) {
     else if (a.tool === 'eraser') moveErase(e);
     else if (a.tool === 'lasso') moveLasso(e);
     else if (a.tool === 'shape') moveShape(e);
+    else if (a.tool === 'tape') moveTape(e);
+    else if (a.tool === 'laser') moveLaser(e);
   }
 
   function endAction(e) {
@@ -972,6 +1164,8 @@ export async function mountEditor(root, docId) {
     else if (a.tool === 'eraser') endErase(a, e);
     else if (a.tool === 'lasso') endLasso(a);
     else if (a.tool === 'shape') endShape(a);
+    else if (a.tool === 'tape') endTape(a);
+    else if (a.tool === 'laser') { a.ls.end = performance.now(); if (!a.far) tapThing(a.pv, a.x0, a.y0); }
     else if (a.tool === 'text' && !a.far) startText(a.pv, topItemAt(a.pv.page, a.x0, a.y0, 'tx'), a.x0, a.y0);
     if (pendingRebuild) remoteRebuild();
   }
@@ -985,7 +1179,10 @@ export async function mountEditor(root, docId) {
     if (dbg && (a.tool === 'pen' || a.tool === 'hl')) dbgCount('strokes discarded');
     if (a.tool === 'eraser') endErase(a, null);
     else if (a.tool === 'lasso' && a.mode !== 'draw') endLasso(a);
+    else if (a.tool === 'laser') a.ls.end = performance.now();
     else clearLive();
+    if (a.tool === 'tape') live.classList.remove('plain');
+    if (a.rule && ruler) rulerLabel();
     if (pendingRebuild) remoteRebuild();
   }
 
@@ -1003,7 +1200,7 @@ export async function mountEditor(root, docId) {
 
   // Hold the pen still at the end of a line and it snaps straight.
   function holdCheck(a, e) {
-    if (a.line || a.snap) return;
+    if (a.line || a.snap || a.rule) return;
     if (a.holdT && Math.hypot(e.clientX - a.hx, e.clientY - a.hy) < 6) return;
     a.hx = e.clientX;
     a.hy = e.clientY;
@@ -1017,13 +1214,13 @@ export async function mountEditor(root, docId) {
     if (n < 4) return;
     const x0 = P[0], y0 = P[1], x1 = P[P.length - 3], y1 = P[P.length - 2];
     const len = Math.hypot(x1 - x0, y1 - y0);
-    if (len < 24 / scale) { if (a.tool === 'pen') snapShape(a); return; } // ends close together: perhaps a closed shape
+    if (len < 24 / a.sc) { if (a.tool === 'pen') snapShape(a); return; } // ends close together: perhaps a closed shape
     let dev = 0, sum = 0;
     for (let i = 0; i < P.length; i += 3) {
       dev = Math.max(dev, Math.abs((P[i] - x0) * (y1 - y0) - (P[i + 1] - y0) * (x1 - x0)) / len);
       sum += P[i + 2];
     }
-    if (dev > Math.max(3 / scale, len * 0.09)) { // not a line: maybe a closed shape, otherwise leave the handwriting alone
+    if (dev > Math.max(3 / a.sc, len * 0.09)) { // not a line: maybe a closed shape, otherwise leave the handwriting alone
       if (a.tool === 'pen') snapShape(a);
       return;
     }
@@ -1044,7 +1241,7 @@ export async function mountEditor(root, docId) {
       x0 = Math.min(x0, x); x1 = Math.max(x1, x); y0 = Math.min(y0, y); y1 = Math.max(y1, y);
     }
     const diag = Math.hypot(x1 - x0, y1 - y0), n = pts.length;
-    if (diag < 30 / scale || len < 2.2 * diag) return;
+    if (diag < 30 / a.sc || len < 2.2 * diag) return;
     if (Math.hypot(pts[0][0] - pts[n - 1][0], pts[0][1] - pts[n - 1][1]) > 0.25 * diag) return; // not closed
 
     // Corners: simplify the outline, then drop points that sit on a nearly straight run.
@@ -1097,14 +1294,11 @@ export async function mountEditor(root, docId) {
       item = { t: 'sh', k: 'ellipse', x1: r2(cx - rx), y1: r2(cy - ry), x2: r2(cx + rx), y2: r2(cy + ry), c: a.color, w: a.size };
     }
     a.snap = item;
-    nextLive(() => { clearLive(); R.drawItem(a.c, item); });
+    liveItem(a, item);
   }
 
   function drawLine(a) {
-    nextLive(() => {
-      clearLive();
-      R.drawItem(a.c, { t: 's', tool: a.tool, c: a.color, w: a.size, p: a.pts });
-    });
+    liveItem(a, { t: 's', tool: a.tool, c: a.color, w: a.size, p: a.pts });
   }
 
   // A zigzag drawn over existing ink erases it instead of adding more ink. Returns the items to erase, or null.
@@ -1147,39 +1341,48 @@ export async function mountEditor(root, docId) {
   function beginStroke(e, x, y) {
     const a = action, t = prefs[a.tool];
     a.c = useLive(a.pv);
+    a.c2 = a.map ? zliveCtx() : null; // the same stroke, drawn in the zoom window as it is written
     a.color = inkFor(a.pv, t.color);
     a.size = t.size;
     a.style = a.tool === 'pen' ? (t.style || 'fountain') : null;
     a.sp = inkPressure(a, e);
+    // Started beside the ruler: the whole stroke runs along its edge.
+    a.rule = !a.map && ruler ? ruleFor(a.pv, e.clientX, e.clientY, a.size) : null;
+    if (a.rule) [x, y] = onRule(a.rule, x, y);
     a.pts = [x, y, a.sp];
     holdCheck(a, e);
     a.lx = x;
     a.ly = y;
-    const c = a.c;
-    c.lineCap = 'round';
-    c.lineJoin = 'round';
-    c.strokeStyle = a.color;
-    c.fillStyle = a.color;
-    if (a.tool === 'pen') {
-      c.beginPath();
-      c.arc(x, y, R.pw({ w: a.size }, a.sp) / 2, 0, 6.2832);
-      c.fill();
+    for (const c of ctxs(a)) {
+      c.lineCap = 'round';
+      c.lineJoin = 'round';
+      c.strokeStyle = a.color;
+      c.fillStyle = a.color;
+      if (a.tool === 'pen') {
+        c.beginPath();
+        c.arc(x, y, R.pw({ w: a.size }, a.sp) / 2, 0, 6.2832);
+        c.fill();
+      }
     }
   }
 
   function moveStroke(e) {
     const a = action, P = a.pts, n = P.length;
     if (a.snap) return; // already tidied into a shape
-    let [x, y] = toPage(a.pv, e.clientX, e.clientY);
+    let [x, y] = apt(a, e);
     if (a.line) { // snapped straight: the far end follows the pen
       P[3] = x;
       P[4] = y;
       drawLine(a);
       return;
     }
+    if (a.rule) {
+      [x, y] = onRule(a.rule, x, y);
+      if (ruler) rulerLabel(Math.hypot(x - P[0], y - P[1]));
+    }
     holdCheck(a, e);
     const px = P[n - 3], py = P[n - 2];
-    if (Math.hypot(x - px, y - py) < 0.7 / scale) return;
+    if (Math.hypot(x - px, y - py) < 0.7 / a.sc) return;
     // light smoothing: steadier lines without visible lag
     const k = a.ptype === 'pen' ? 0.78 : 0.6;
     x = px + (x - px) * k;
@@ -1187,22 +1390,20 @@ export async function mountEditor(root, docId) {
     a.sp += (inkPressure(a, e) - a.sp) * 0.5;
     P.push(x, y, a.sp);
     if (a.tool === 'hl') {
-      nextLive(() => {
-        clearLive();
-        R.drawItem(a.c, { t: 's', tool: 'hl', c: a.color, w: a.size, p: P });
-      });
+      liveItem(a, { t: 's', tool: 'hl', c: a.color, w: a.size, p: P });
       return;
     }
     const m = P.length;
     if (m >= 9) {
       const cx = P[m - 6], cy = P[m - 5];
       const mx = (cx + x) / 2, my = (cy + y) / 2;
-      const c = a.c;
-      c.beginPath();
-      c.moveTo(a.lx, a.ly);
-      c.quadraticCurveTo(cx, cy, mx, my);
-      c.lineWidth = R.pw({ w: a.size }, P[m - 4]);
-      c.stroke();
+      for (const c of ctxs(a)) {
+        c.beginPath();
+        c.moveTo(a.lx, a.ly);
+        c.quadraticCurveTo(cx, cy, mx, my);
+        c.lineWidth = R.pw({ w: a.size }, P[m - 4]);
+        c.stroke();
+      }
       a.lx = mx;
       a.ly = my;
     }
@@ -1214,11 +1415,13 @@ export async function mountEditor(root, docId) {
     clearTimeout(a.holdT);
     if (e && !a.line && !a.snap) {
       // Smoothing trails slightly behind the tip, so finish exactly where the pen lifted.
-      const [ex, ey] = toPage(a.pv, e.clientX, e.clientY);
+      let [ex, ey] = apt(a, e);
+      if (a.rule) [ex, ey] = onRule(a.rule, ex, ey);
       const n = a.pts.length;
-      if (Math.hypot(ex - a.pts[n - 3], ey - a.pts[n - 2]) > 0.5 / scale) a.pts.push(ex, ey, a.sp);
+      if (Math.hypot(ex - a.pts[n - 3], ey - a.pts[n - 2]) > 0.5 / a.sc) a.pts.push(ex, ey, a.sp);
     }
-    const gone = a.tool === 'pen' && !a.line && !a.snap && prefs.scribble !== false ? scribbleTargets(a) : null;
+    if (a.rule && ruler) rulerLabel();
+    const gone = a.tool === 'pen' && !a.line && !a.snap && !a.rule && prefs.scribble !== false ? scribbleTargets(a) : null;
     if (gone) {
       removeItems(page, gone);
       clearLive();
@@ -1241,6 +1444,7 @@ export async function mountEditor(root, docId) {
       R.drawItem(c, it);
       c.globalCompositeOperation = 'source-over';
     }
+    if (a.map) zoomPaint(); // so the stroke does not blink in the zoom window when the live layer is wiped
     clearLive();
     pushUndo({ pageId: page.id, add: [it], remove: [] });
     dirty(page);
@@ -1254,18 +1458,18 @@ export async function mountEditor(root, docId) {
     a.lx = x;
     a.ly = y;
     eraseAt(a, x, y);
-    showEraserCur(e.clientX, e.clientY);
+    if (!a.map) showEraserCur(e.clientX, e.clientY);
   }
 
   function moveErase(e) {
     const a = action;
-    const [x, y] = toPage(a.pv, e.clientX, e.clientY);
+    const [x, y] = apt(a, e);
     const r = prefs.eraser.size / 2;
     const steps = Math.max(1, Math.ceil(Math.hypot(x - a.lx, y - a.ly) / (r * 0.5)));
     for (let i = 1; i <= steps; i++) eraseAt(a, a.lx + (x - a.lx) * i / steps, a.ly + (y - a.ly) * i / steps);
     a.lx = x;
     a.ly = y;
-    showEraserCur(e.clientX, e.clientY);
+    if (!a.map) showEraserCur(e.clientX, e.clientY);
   }
 
   function eraseAt(a, x, y) {
@@ -1274,7 +1478,7 @@ export async function mountEditor(root, docId) {
     let hit = false;
     const out = [];
     for (const it of page.items) {
-      if ((it.t !== 's' && it.t !== 'sh') || !R.hitsCircle(it, x, y, r)) { out.push(it); continue; }
+      if ((it.t !== 's' && it.t !== 'sh' && it.t !== 'tp') || !R.hitsCircle(it, x, y, r)) { out.push(it); continue; }
       hit = true;
       if (a.added.has(it.id)) a.added.delete(it.id); else a.removed.set(it.id, it);
       page.dels[it.id] = Date.now();
@@ -1352,6 +1556,7 @@ export async function mountEditor(root, docId) {
     if (!a.far) {
       const it = topItemAt(page, a.x0, a.y0);
       if (it) setSel(a.pv, [it]);
+      else { const ln = linkAt(a.pv, a.x0, a.y0); if (ln) followLink(a.pv, ln); }
       return;
     }
     const items = page.items.filter(it => R.inLasso(it, a.poly));
@@ -1365,7 +1570,7 @@ export async function mountEditor(root, docId) {
       b: { x: u.x - pad, y: u.y - pad, w: u.w + 2 * pad, h: u.h + 2 * pad },
       k: 1, dx: 0, dy: 0
     };
-    live.classList.toggle('plain', items.every(it => it.t === 'im'));
+    live.classList.toggle('plain', items.every(it => it.t === 'im' || it.t === 'tp'));
     paintInk(pv);
     drawSelLive();
     buildSelBar();
@@ -1382,6 +1587,7 @@ export async function mountEditor(root, docId) {
     const ox = pv.clip ? pv.clip.x : 0, oy = pv.clip ? pv.clip.y : 0;
     c.setTransform(pv.rs * k, 0, 0, pv.rs * k, pv.rs * (b.x * (1 - k) + sel.dx - ox), pv.rs * (b.y * (1 - k) + sel.dy - oy));
     R.drawItems(c, sel.items);
+    R.drawTapes(c, sel.items);
     xf(c, pv);
   }
 
@@ -1632,7 +1838,567 @@ export async function mountEditor(root, docId) {
       });
       growText();
     }
+    if (zw) {
+      const [sx, sy] = toScreen(zw.pv, zw.x, zw.y);
+      Object.assign(zframe.style, { left: sx + 'px', top: sy + 'px', width: zw.w * scale + 'px', height: zw.h * scale + 'px' });
+    }
+    if (ruler) positionRuler();
   }
+
+  // --- tape: a strip that hides what is under it until it is tapped
+  function tempTape(a) {
+    const t = prefs.tape;
+    return { t: 'tp', x1: a.x0, y1: a.y0, x2: a.x1, y2: a.y1, c: t.color, w: t.size };
+  }
+
+  function moveTape(e) {
+    const a = action;
+    let [x, y] = toPage(a.pv, e.clientX, e.clientY);
+    // Nearly level or nearly upright strips are straightened.
+    const dx = x - a.x0, dy = y - a.y0;
+    if (Math.abs(dy) < Math.abs(dx) * 0.09) y = a.y0; else if (Math.abs(dx) < Math.abs(dy) * 0.09) x = a.x0;
+    a.x1 = x;
+    a.y1 = y;
+    nextLive(() => { clearLive(); R.drawItem(a.c, tempTape(a)); });
+  }
+
+  function endTape(a) {
+    clearLive();
+    live.classList.remove('plain');
+    const pv = a.pv, page = pv.page;
+    if (!a.far || Math.hypot(a.x1 - a.x0, a.y1 - a.y0) < 6) { // a tap: show or hide what an existing strip covers
+      const tp = topItemAt(page, a.x0, a.y0, 'tp');
+      if (tp) toggleTape(pv, tp);
+      return;
+    }
+    const r2 = v => Math.round(v * 100) / 100;
+    const s = tempTape(a);
+    const it = { ...s, x1: r2(s.x1), y1: r2(s.y1), x2: r2(s.x2), y2: r2(s.y2), id: uid(), z: nextZ(), m: Date.now() };
+    addItems(page, [it]);
+    queueInk(pv);
+    pushUndo({ pageId: page.id, add: [it], remove: [] });
+    dirty(page);
+  }
+
+  function toggleTape(pv, tp) {
+    const nu = { ...tp, m: Date.now() };
+    if (tp.o) delete nu.o; else nu.o = 1;
+    removeItems(pv.page, [tp]);
+    addItems(pv.page, [nu]);
+    pushUndo({ pageId: pv.page.id, remove: [tp], add: [nu] });
+    queueInk(pv);
+    dirty(pv.page);
+  }
+
+  // A tap that is not for drawing: open or close a strip of tape, or follow a PDF link. Returns true if it did something.
+  function tapThing(pv, x, y) {
+    const tp = topItemAt(pv.page, x, y, 'tp');
+    if (tp) { toggleTape(pv, tp); return true; }
+    const ln = linkAt(pv, x, y);
+    if (ln) { followLink(pv, ln); return true; }
+    return false;
+  }
+
+  // --- laser pointer: a glowing trail that fades by itself and is never saved
+  function laserPt(e) { return [(e.clientX - vpRect.left - tx) / scale, (e.clientY - vpRect.top - ty) / scale]; }
+
+  function beginLaser(e) {
+    const a = action;
+    a.ls = { p: laserPt(e), end: 0, c: prefs.laser.color };
+    laser.strokes.push(a.ls);
+    if (!laser.raf) laser.raf = requestAnimationFrame(laserFrame);
+  }
+
+  function moveLaser(e) {
+    const [x, y] = laserPt(e);
+    action.ls.p.push(x, y);
+  }
+
+  function laserFrame() {
+    laser.raf = 0;
+    if (destroyed) return;
+    const d = Math.min(window.devicePixelRatio || 1, 2), W = Math.round(vpRect.width * d), H = Math.round(vpRect.height * d);
+    if (laserCv.width !== W || laserCv.height !== H) { laserCv.width = W; laserCv.height = H; }
+    const c = laserCv.getContext('2d'), now = performance.now();
+    c.setTransform(1, 0, 0, 1, 0, 0);
+    c.clearRect(0, 0, W, H);
+    laser.strokes = laser.strokes.filter(s => !s.end || now - s.end < 900);
+    if (!laser.strokes.length) { laserCv.width = laserCv.height = 0; return; }
+    c.setTransform(d * scale, 0, 0, d * scale, d * tx, d * ty);
+    c.lineCap = 'round';
+    c.lineJoin = 'round';
+    for (const s of laser.strokes) {
+      const P = s.p, n = P.length;
+      c.globalAlpha = s.end ? 1 - (now - s.end) / 900 : 1;
+      c.beginPath();
+      c.moveTo(P[0], P[1]);
+      for (let i = 2; i < n; i += 2) c.lineTo(P[i], P[i + 1]);
+      if (n === 2) c.lineTo(P[0] + 0.01, P[1]);
+      c.shadowColor = s.c;
+      c.shadowBlur = 12 * d;
+      c.strokeStyle = s.c;
+      c.lineWidth = 5 / scale;
+      c.stroke();
+      c.shadowBlur = 0;
+      c.strokeStyle = 'rgba(255,255,255,.85)';
+      c.lineWidth = 1.6 / scale;
+      c.stroke();
+      if (!s.end) { // the dot under the pen
+        c.fillStyle = s.c;
+        c.shadowColor = s.c;
+        c.shadowBlur = 16 * d;
+        c.beginPath();
+        c.arc(P[n - 2], P[n - 1], 5 / scale, 0, 6.2832);
+        c.fill();
+        c.shadowBlur = 0;
+      }
+    }
+    c.globalAlpha = 1;
+    laser.raf = requestAnimationFrame(laserFrame);
+  }
+
+  // --- PDF links and table of contents
+  function loadLinks(pv) {
+    if (pv.links !== undefined || !pv.page.pdf) return;
+    pv.links = null;
+    pageLinks(pv.page.pdf.a, pv.page.pdf.i).then(l => { pv.links = l; }, () => { pv.links = undefined; });
+  }
+
+  function linkAt(pv, x, y) {
+    return (pv.links && pv.links.find(l => x >= l.x && x <= l.x + l.w && y >= l.y && y <= l.y + l.h)) || null;
+  }
+
+  function gotoPdfPage(aid, i) {
+    const k = pages.findIndex(p => p.pdf && p.pdf.a === aid && p.pdf.i === i);
+    if (k >= 0) scrollToPage(k); else toast('That page is not in this notebook.');
+  }
+
+  async function followLink(pv, ln) {
+    if (ln.url) {
+      if (!/^(https?:|mailto:)/i.test(ln.url)) return;
+      if (await confirmBox('Open this link?', ln.url, 'Open')) window.open(ln.url, '_blank', 'noopener');
+      return;
+    }
+    gotoPdfPage(pv.page.pdf.a, await resolveDest(pv.page.pdf.a, ln.dest));
+  }
+
+  async function outlineDialog() {
+    const rows = [];
+    for (const aid of new Set(pages.filter(p => p.pdf).map(p => p.pdf.a))) {
+      for (const o of await pdfOutline(aid).catch(() => [])) rows.push({ ...o, aid });
+    }
+    if (!rows.length) { toast('This PDF has no table of contents.'); return; }
+    const m = modal({
+      title: 'Contents',
+      body: h('div', { class: 'outline' }, rows.map(o => {
+        const k = pages.findIndex(p => p.pdf && p.pdf.a === o.aid && p.pdf.i === o.i);
+        return h('button', {
+          class: 'ol', type: 'button', disabled: k < 0, style: { paddingLeft: 10 + o.depth * 16 + 'px' },
+          onclick: () => { m.close(); scrollToPage(k); }
+        }, h('span', null, o.title), h('small', null, k >= 0 ? String(k + 1) : ''));
+      }))
+    });
+  }
+
+  // --- find: typed text, page names and the text of PDF pages
+  function openFind() {
+    findBar.hidden = false;
+    findInp.focus();
+    findInp.select();
+    if (findInp.value && !find) runFind();
+  }
+
+  function closeFind() {
+    findTok++;
+    find = null;
+    findBar.hidden = true;
+    findLbl.textContent = '';
+    for (const m of world.querySelectorAll('.fmark')) m.remove();
+  }
+
+  async function runFind() {
+    const tok = ++findTok, q = findInp.value.trim().toLowerCase();
+    find = null;
+    for (const m of world.querySelectorAll('.fmark')) m.remove();
+    if (!q) { findLbl.textContent = ''; return; }
+    const hits = [], list = [...pages];
+    for (let n = 0; n < list.length; n++) {
+      const pg = list[n];
+      if ((pg.title || '').toLowerCase().includes(q)) hits.push({ pg, rects: [] });
+      for (const it of pg.items) if (it.t === 'tx' && it.s.toLowerCase().includes(q)) hits.push({ pg, rects: [R.bounds(it)] });
+      if (!pg.pdf) continue;
+      try {
+        const t = await pageText(pg.pdf.a, pg.pdf.i);
+        if (tok !== findTok) return;
+        for (const rects of textMatches(t, q)) hits.push({ pg, rects });
+      } catch { /* that PDF is not on this device yet */ }
+      if (n % 15 === 14) {
+        findLbl.textContent = `Searching ${n + 1}/${list.length}`;
+        await new Promise(r => setTimeout(r));
+        if (tok !== findTok) return;
+      }
+    }
+    find = { q, hits, cur: -1 };
+    showFindMarks();
+    if (!hits.length) { findLbl.textContent = 'No results'; return; }
+    // Start with the first match on or after the page being looked at.
+    const at = pvs.indexOf(currentPv());
+    const first = hits.findIndex(hh => pages.indexOf(hh.pg) >= at);
+    find.cur = (first < 0 ? 0 : first) - 1;
+    findStep(1);
+  }
+
+  // Matches are marked with boxes placed inside the page elements, so they move and zoom with the page.
+  function showFindMarks() {
+    for (const m of world.querySelectorAll('.fmark')) m.remove();
+    if (!find) return;
+    let made = 0;
+    find.hits.forEach((hit, n) => {
+      hit.els = [];
+      const pv = pvs.find(v => v.page === hit.pg);
+      if (!pv || made > 1500) return;
+      for (const r of hit.rects) {
+        const m = h('div', {
+          class: 'fmark' + (n === find.cur ? ' cur' : ''),
+          style: { left: r.x / hit.pg.w * 100 + '%', top: r.y / hit.pg.h * 100 + '%', width: r.w / hit.pg.w * 100 + '%', height: r.h / hit.pg.h * 100 + '%' }
+        });
+        pv.el.append(m);
+        hit.els.push(m);
+        made++;
+      }
+    });
+  }
+
+  function findStep(d) {
+    if (!find || !find.hits.length) return;
+    const n = find.hits.length, old = find.hits[find.cur];
+    if (old && old.els) for (const m of old.els) m.classList.remove('cur');
+    find.cur = (find.cur + d + n) % n;
+    const hit = find.hits[find.cur];
+    if (hit.els) for (const m of hit.els) m.classList.add('cur');
+    findLbl.textContent = `${find.cur + 1} / ${n}`;
+    const i = pages.indexOf(hit.pg);
+    if (i < 0) return;
+    scrollToPage(i);
+    const r = hit.rects[0];
+    if (!r) return;
+    // Bring the match itself into view if the top of the page did not show it.
+    const [sx, sy] = toScreen(pvs[i], r.x, r.y);
+    let moved = false;
+    if (sy < 70 || sy > vpRect.height - 90) { ty += vpRect.height / 3 - sy; moved = true; }
+    if (sx < 16 || sx > vpRect.width - 60) { tx += vpRect.width / 3 - sx; moved = true; }
+    if (moved) applyView();
+  }
+
+  // The pages panel search also looks inside PDF pages; their text is read once, in the background.
+  function warmText() {
+    if (!textWarm) {
+      textWarm = (async () => {
+        for (const pg of [...pages]) {
+          if (!pg.pdf || destroyed) continue;
+          try { pdfText.set(pg.id, (await pageText(pg.pdf.a, pg.pdf.i)).s); } catch { /* not downloaded yet */ }
+        }
+        if (panelOpen && !destroyed && panelQ.trim()) fillPanel();
+      })();
+    }
+  }
+
+  // --- ruler: lies on the page; pen and highlighter strokes started beside it run straight along its edge
+  function toggleRuler() {
+    if (ruler) { ruler.el.remove(); ruler = null; return; }
+    measure();
+    const cv = h('canvas'), lbl = h('span', { class: 'ruler-lbl' });
+    const el = h('div', { class: 'ruler' }, cv, lbl, h('div', { class: 'ruler-rot a', 'data-rot': 'a' }), h('div', { class: 'ruler-rot b', 'data-rot': 'b' }));
+    ruler = { x: (vpRect.width / 2 - tx) / scale, y: (vpRect.height / 2 - ty) / scale, ang: 0, el, cv, lbl, s: 0 };
+    overlay.insertBefore(el, selBox);
+    let drag = null;
+    el.addEventListener('pointerdown', e => {
+      // The hand that rests on the ruler while the pen draws along it must not push it away.
+      if (e.pointerType === 'touch' && ((action && action.ptype === 'pen') || performance.now() - lastPenT < PALM_MS)) return;
+      e.preventDefault();
+      measure();
+      try { el.setPointerCapture(e.pointerId); } catch { /* synthetic pointer */ }
+      drag = { id: e.pointerId, rot: e.target.getAttribute('data-rot'), x: e.clientX, y: e.clientY };
+    });
+    el.addEventListener('pointermove', e => {
+      if (!drag || e.pointerId !== drag.id || !ruler) return;
+      if (drag.rot) {
+        const cx = ruler.x * scale + tx + vpRect.left, cy = ruler.y * scale + ty + vpRect.top;
+        let a = Math.atan2(e.clientY - cy, e.clientX - cx) + (drag.rot === 'a' ? Math.PI : 0);
+        const step = Math.PI / 12, near = Math.round(a / step) * step; // click into place every 15 degrees
+        if (Math.abs(a - near) < 0.035) a = near;
+        ruler.ang = Math.atan2(Math.sin(a), Math.cos(a));
+      } else {
+        ruler.x += (e.clientX - drag.x) / scale;
+        ruler.y += (e.clientY - drag.y) / scale;
+        drag.x = e.clientX;
+        drag.y = e.clientY;
+      }
+      positionRuler();
+    });
+    const drop = e => { if (drag && e.pointerId === drag.id) drag = null; };
+    el.addEventListener('pointerup', drop);
+    el.addEventListener('pointercancel', drop);
+    positionRuler();
+  }
+
+  // Shows the angle, or the length of the line being drawn along the edge.
+  function rulerLabel(len) {
+    let deg = Math.round(-ruler.ang * 180 / Math.PI);
+    deg = ((deg % 180) + 180) % 180;
+    ruler.lbl.textContent = len != null ? `${Math.round(len * MM)} mm` : `${deg}°`;
+  }
+
+  function positionRuler() {
+    const r = ruler, w = RULER_L * scale, hh = RULER_W * scale;
+    const cx = r.x * scale + tx, cy = r.y * scale + ty;
+    Object.assign(r.el.style, { width: w + 'px', height: hh + 'px', left: cx - w / 2 + 'px', top: cy - hh / 2 + 'px', transform: `rotate(${r.ang}rad)` });
+    if (!(action && action.rule)) rulerLabel();
+    if (r.s === scale || zooming) return;
+    // Tick marks: true millimetres at any zoom.
+    r.s = scale;
+    const d = Math.min(window.devicePixelRatio || 1, 4096 / w), c = r.cv.getContext('2d');
+    r.cv.width = Math.max(1, Math.round(w * d));
+    r.cv.height = Math.max(1, Math.round(hh * d));
+    c.setTransform(d * scale, 0, 0, d * scale, 0, 0);
+    const mm = 1 / MM, fine = mm * scale >= 3;
+    c.strokeStyle = c.fillStyle = '#33363d';
+    c.lineWidth = 0.5;
+    c.beginPath();
+    for (let i = 0; i <= 170; i += fine ? 1 : 5) {
+      const x = i * mm, len = i % 10 === 0 ? 9 : i % 5 === 0 ? 6.5 : 4;
+      c.moveTo(x, 0); c.lineTo(x, len);
+      c.moveTo(x, RULER_W); c.lineTo(x, RULER_W - len);
+    }
+    c.stroke();
+    c.font = '7px system-ui, sans-serif';
+    c.textAlign = 'center';
+    c.textBaseline = 'top';
+    for (let cm = 1; cm < 17; cm++) c.fillText(String(cm), cm * 10 * mm, 10.5);
+  }
+
+  // Is the pointer just outside one of the ruler's long edges? Returns the line to follow, in the page's units.
+  function ruleFor(pv, cx, cy, size) {
+    const r = ruler, cos = Math.cos(r.ang), sin = Math.sin(r.ang);
+    const wx = (cx - vpRect.left - tx) / scale - r.x, wy = (cy - vpRect.top - ty) / scale - r.y;
+    const lx = wx * cos + wy * sin, ly = -wx * sin + wy * cos; // along and across the ruler
+    if (Math.abs(lx) > RULER_L / 2 + 12 / scale) return null;
+    const out = Math.abs(ly) - RULER_W / 2;
+    if (out < -3 / scale || out > 22 / scale) return null;
+    const off = (ly < 0 ? -1 : 1) * (RULER_W / 2 + size / 2 + 0.4); // the ink lies against the edge, not under it
+    return { px: r.x - sin * off - pv.x, py: r.y + cos * off - pv.y, ux: cos, uy: sin };
+  }
+
+  function onRule(l, x, y) {
+    const t = (x - l.px) * l.ux + (y - l.py) * l.uy;
+    return [l.px + l.ux * t, l.py + l.uy * t];
+  }
+
+  // --- zoom window: write large at the bottom of the screen, the ink lands small on the page
+  function toggleZoom(on = !zw) {
+    if (!on) {
+      if (action && action.map) cancelAction();
+      zw = null;
+      zpan = null;
+      zwin.hidden = true;
+      zframe.hidden = true;
+      applyView();
+      return;
+    }
+    if (zw) return;
+    commitText();
+    measure();
+    const pv = currentPv(), pg = pv.page;
+    zwin.hidden = false;
+    zframe.hidden = false;
+    const [vx, vy] = toPage(pv, vpRect.left + 24, vpRect.top + vpRect.height * 0.2);
+    zw = { pv, x: clamp(vx, 0, pg.w), y: clamp(vy, 0, pg.h), w: clamp(pg.w * 0.45, 100, pg.w), h: 0, zs: 1, d: 1, rect: null, home: 0, pdfC: null, pdfKey: '', pdfAsk: '', tok: 0 };
+    zoomLayout();
+    zw.home = zw.x;
+    zoomReveal();
+  }
+
+  const zxf = c => { const k = zw.zs * zw.d; c.setTransform(k, 0, 0, k, -zw.x * k, -zw.y * k); };
+  const zmap = (cx, cy) => [zw.x + (cx - zw.rect.left) / zw.zs, zw.y + (cy - zw.rect.top) / zw.zs];
+
+  function zliveCtx() {
+    const c = zlive.getContext('2d');
+    zxf(c);
+    c.globalAlpha = 1;
+    c.setLineDash([]);
+    return c;
+  }
+
+  function zoomClamp() {
+    const pg = zw.pv.page;
+    zw.x = clamp(zw.x, 0, Math.max(0, pg.w - zw.w));
+    zw.y = clamp(zw.y, 0, Math.max(0, pg.h - zw.h));
+  }
+
+  // Size the window's canvases and work out how much of the page it shows.
+  function zoomLayout() {
+    if (!zw) return;
+    const r = zpad.getBoundingClientRect();
+    if (!r.width || !r.height) return;
+    zw.rect = r;
+    zw.zs = r.width / zw.w;
+    zw.h = r.height / zw.zs;
+    zoomClamp();
+    zw.d = Math.min(window.devicePixelRatio || 1, 2.5);
+    const W = Math.round(r.width * zw.d), H = Math.round(r.height * zw.d);
+    if (zcv.width !== W || zcv.height !== H) { zcv.width = zlive.width = W; zcv.height = zlive.height = H; }
+    zlive.classList.toggle('mul', !R.paperOf(zw.pv.page).dark);
+    zoomPaint();
+    positionOverlays();
+  }
+
+  function queueZoom() {
+    if (!zw || rafZoom) return;
+    rafZoom = requestAnimationFrame(() => { rafZoom = 0; if (zw && !destroyed) zoomPaint(); });
+  }
+
+  function zoomPaint() {
+    if (!zw || !zcv.width) return;
+    const z = zw, pg = z.pv.page, k = z.zs * z.d, c = zcv.getContext('2d');
+    const clip = { x: z.x, y: z.y, w: z.w, h: z.h };
+    c.setTransform(1, 0, 0, 1, 0, 0);
+    c.clearRect(0, 0, zcv.width, zcv.height);
+    zxf(c);
+    R.drawPaper(c, pg);
+    if (pg.pdf) {
+      const key = [pg.id, z.x, z.y, z.w, z.h, k].join();
+      if (z.pdfKey === key && z.pdfC) {
+        c.setTransform(1, 0, 0, 1, 0, 0);
+        c.drawImage(z.pdfC, 0, 0);
+        zxf(c);
+      } else if (z.pdfAsk !== key) {
+        z.pdfAsk = key;
+        const tok = ++z.tok;
+        renderPdfPage(pg.pdf.a, pg.pdf.i, k, () => zw !== z || tok !== z.tok, clip)
+          .then(cv => { if (cv && zw === z && tok === z.tok) { z.pdfC = cv; z.pdfKey = key; zoomPaint(); } })
+          .catch(err => console.warn('PDF render for the zoom window failed', err));
+      }
+    }
+    R.drawImages(c, pg.items, null, clip);
+    if (!R.paperOf(pg).dark) c.globalCompositeOperation = 'multiply';
+    R.drawItems(c, pg.items, null, false, clip);
+    c.globalCompositeOperation = 'source-over';
+    R.drawTapes(c, pg.items, null, clip);
+  }
+
+  // Keep the frame where it can be seen, above the zoom window.
+  function zoomReveal() {
+    const [sx, sy] = toScreen(zw.pv, zw.x, zw.y);
+    const visH = vpRect.height - zwin.offsetHeight, fh = zw.h * scale, fw = zw.w * scale;
+    let moved = false;
+    if (sy + fh > visH - 8) { ty -= sy + fh - visH + 28; moved = true; } else if (sy < 8) { ty += 28 - sy; moved = true; }
+    if (sx + fw > vpRect.width - 4) { tx -= sx + fw - vpRect.width + 16; moved = true; } else if (sx < 4) { tx += 16 - sx; moved = true; }
+    if (moved) applyView(); else positionOverlays();
+  }
+
+  function zoomMoved() {
+    zoomClamp();
+    queueZoom();
+    zoomReveal();
+  }
+
+  function zoomMove(f) {
+    if (!zw) return;
+    zw.x += zw.w * f;
+    zoomMoved();
+  }
+
+  function zoomNewline() {
+    if (!zw) return;
+    zw.x = zw.home;
+    zw.y += zw.h * 0.5;
+    zoomMoved();
+  }
+
+  function zDown(e) {
+    if (!zw || (e.pointerType === 'mouse' && e.button !== 0)) return;
+    e.preventDefault();
+    commitText();
+    zw.rect = zpad.getBoundingClientRect();
+    try { zpad.setPointerCapture(e.pointerId); } catch { /* synthetic pointer */ }
+    const now = performance.now();
+    if (e.pointerType === 'pen') {
+      lastPenT = now;
+      if (!penSeen) { penSeen = true; prefs.penSeen = true; savePrefs(); }
+      zpan = null;
+      if (action && action.ptype === 'pen' && (action.tool === 'pen' || action.tool === 'hl')) endAction(null);
+      else if (action) cancelAction();
+    } else if (e.pointerType === 'touch') {
+      if ((action && action.ptype === 'pen') || now - lastPenT < PALM_MS) return; // resting hand
+      if (!fingerDraws()) { zpan = { id: e.pointerId, x: e.clientX, y: e.clientY }; return; } // fingers slide the window along
+    }
+    if (action) return;
+    const erasing = e.pointerType === 'pen' && (e.button === 5 || (e.buttons & 32) || e.button === 2 || (e.buttons & 2));
+    const tool = erasing ? 'eraser' : prefs.tool;
+    if (!ZOOM_TOOLS.includes(tool)) { toast('The zoom window works with the pen, highlighter and eraser.'); return; }
+    startAction(e, tool, zmap);
+  }
+
+  function zMove(e) {
+    if (e.pointerType === 'pen') lastPenT = performance.now();
+    if (!zw) return;
+    if (zpan && zpan.id === e.pointerId) {
+      zw.x -= (e.clientX - zpan.x) / zw.zs;
+      zw.y -= (e.clientY - zpan.y) / zw.zs;
+      zpan.x = e.clientX;
+      zpan.y = e.clientY;
+      zoomClamp();
+      queueZoom();
+      positionOverlays();
+      return;
+    }
+    if (!action || !action.map || action.pid !== e.pointerId) return;
+    const evs = e.getCoalescedEvents ? e.getCoalescedEvents() : null;
+    if (evs && evs.length > 1) for (const ev of evs) actionMove(ev); else actionMove(e);
+  }
+
+  function zUp(e) {
+    if (e.pointerType === 'pen') lastPenT = performance.now();
+    if (zpan && zpan.id === e.pointerId) { zpan = null; if (zw) zw.home = zw.x; return; }
+    if (!action || !action.map || action.pid !== e.pointerId) return;
+    if (e.type !== 'pointercancel') endAction(e);
+    else if (action.ptype !== 'touch' && (action.tool === 'pen' || action.tool === 'hl')) endAction(null);
+    else cancelAction();
+  }
+
+  // The frame on the page: its grip moves it, its corner changes how much the window magnifies.
+  function frameDrag(handle, resize) {
+    let d = null;
+    handle.addEventListener('pointerdown', e => {
+      if (!zw) return;
+      e.preventDefault();
+      try { handle.setPointerCapture(e.pointerId); } catch { /* synthetic pointer */ }
+      d = { id: e.pointerId, x: e.clientX, y: e.clientY };
+    });
+    handle.addEventListener('pointermove', e => {
+      if (!d || e.pointerId !== d.id || !zw) return;
+      const dx = (e.clientX - d.x) / scale, dy = (e.clientY - d.y) / scale;
+      d.x = e.clientX;
+      d.y = e.clientY;
+      if (resize) {
+        zw.w = clamp(zw.w + dx, 60, zw.pv.page.w - zw.x);
+        zoomLayout();
+      } else {
+        zw.x += dx;
+        zw.y += dy;
+        zoomClamp();
+        zw.home = zw.x;
+        queueZoom();
+        positionOverlays();
+      }
+    });
+    const drop = e => { if (d && e.pointerId === d.id) d = null; };
+    handle.addEventListener('pointerup', drop);
+    handle.addEventListener('pointercancel', drop);
+  }
+  frameDrag(zgrip, false);
+  frameDrag(zsize, true);
+  for (const [t, fn] of [['pointerdown', zDown], ['pointermove', zMove], ['pointerup', zUp], ['pointercancel', zUp]]) zpad.addEventListener(t, fn);
 
   // --- shapes
   function tempShape(a) {
@@ -1688,15 +2454,65 @@ export async function mountEditor(root, docId) {
     const w = item ? item.w : clamp(pv.page.w - px - 16, 80, 340);
     const ta = h('textarea', { class: 'texted', spellcheck: false, rows: 1 });
     ta.value = item ? item.s : '';
-    ta.style.fontFamily = R.FONT;
     ta.style.lineHeight = String(R.LH);
-    textEd = { pv, item: item || null, x: px, y: py, w, fs, color: item ? item.c : inkFor(pv, t.color), ta };
+    const st = item || t; // an existing box keeps its own style, a new one takes the tool bar's
+    textEd = {
+      pv, item: item || null, x: px, y: py, w, fs, color: item ? item.c : inkFor(pv, t.color), ta,
+      b: !!st.b, i: !!st.i, u: !!st.u, ff: st.ff || 'sans', al: st.al || 'l'
+    };
     overlay.append(ta);
     if (item) paintInk(pv);
-    positionOverlays();
+    styleTa();
     ta.addEventListener('input', growText);
-    ta.addEventListener('keydown', e => { if (e.key === 'Escape') commitText(); });
+    ta.addEventListener('keydown', e => {
+      if (e.key === 'Escape') commitText();
+      else if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) listEnter(e);
+    });
     ta.focus();
+    if (prefs.tool === 'text') renderOpts();
+  }
+
+  function styleTa() {
+    const t = textEd;
+    if (!t) return;
+    Object.assign(t.ta.style, {
+      fontFamily: R.FONTS[t.ff] || R.FONT, fontWeight: t.b ? '700' : '400', fontStyle: t.i ? 'italic' : 'normal',
+      textDecoration: t.u ? 'underline' : 'none', textAlign: t.al === 'c' ? 'center' : t.al === 'r' ? 'right' : 'left'
+    });
+    positionOverlays();
+  }
+
+  // A tool bar choice for typed text: remembered for new boxes, and applied to the box being typed in.
+  function textStyle(k, v) {
+    if (!textEd || !textEd.item) { prefs.text[k] = v; savePrefs(); }
+    if (textEd) {
+      textEd[k === 'size' ? 'fs' : k] = v;
+      styleTa();
+      textEd.ta.focus();
+    }
+    renderOpts();
+  }
+
+  // Enter inside a list starts the next bullet, number or tick box; Enter on an empty one ends the list.
+  const LIST_RE = /^(\s*)(•|-|\*|\[ ?\]|\[x\]|(\d+)[.)])\s+/;
+  function listEnter(e) {
+    const ta = textEd.ta, v = ta.value, at = ta.selectionStart, ls = v.lastIndexOf('\n', at - 1) + 1, line = v.slice(ls, at);
+    const m = LIST_RE.exec(line);
+    if (!m) return;
+    e.preventDefault();
+    if (m[0].length === line.length) ta.setRangeText('', ls, at, 'end');
+    else ta.setRangeText('\n' + (m[3] ? m[0].replace(m[3], String(+m[3] + 1)) : m[0].replace('[x]', '[ ]')), at, ta.selectionEnd, 'end');
+    growText();
+  }
+
+  // The List button: put a bullet in front of the line being typed, or take it away again.
+  function toggleBullet() {
+    if (!textEd) { toast('Tap the page to start typing first.'); return; }
+    const ta = textEd.ta, v = ta.value, at = ta.selectionStart, ls = v.lastIndexOf('\n', at - 1) + 1;
+    const m = LIST_RE.exec(v.slice(ls));
+    if (m) ta.setRangeText('', ls, ls + m[0].length, 'preserve'); else ta.setRangeText('• ', ls, ls, 'end');
+    ta.focus();
+    growText();
   }
 
   function growText() {
@@ -1713,15 +2529,28 @@ export async function mountEditor(root, docId) {
     const s = te.ta.value.replace(/\s+$/, '');
     te.ta.remove();
     const page = te.pv.page;
+    if (prefs.tool === 'text') renderOpts();
+    const sty = { fs: te.fs, c: te.color }; // only the styles that are switched on are stored
+    for (const k of ['b', 'i', 'u']) if (te[k]) sty[k] = 1;
+    if (te.ff !== 'sans') sty.ff = te.ff;
+    if (te.al !== 'l') sty.al = te.al;
     if (te.item) {
-      if (s === te.item.s) { paintInk(te.pv); return; }
       const old = te.item, add = [];
+      const same = s === old.s && old.fs === te.fs && old.c === te.color && !old.b === !te.b && !old.i === !te.i && !old.u === !te.u
+        && (old.ff || 'sans') === te.ff && (old.al || 'l') === te.al;
+      if (same) { paintInk(te.pv); return; }
       removeItems(page, [old]);
-      if (s) { const nu = { ...old, s }; addItems(page, [nu]); add.push(nu); }
+      if (s) {
+        const nu = { ...old, s };
+        for (const k of ['b', 'i', 'u', 'ff', 'al']) delete nu[k];
+        Object.assign(nu, sty);
+        addItems(page, [nu]);
+        add.push(nu);
+      }
       pushUndo({ pageId: page.id, remove: [old], add });
     } else if (s) {
       const r2 = v => Math.round(v * 100) / 100;
-      const it = { id: uid(), t: 'tx', x: r2(te.x), y: r2(te.y), w: r2(te.w), s, fs: te.fs, c: te.color, z: nextZ(), m: Date.now() };
+      const it = { id: uid(), t: 'tx', x: r2(te.x), y: r2(te.y), w: r2(te.w), s, ...sty, z: nextZ(), m: Date.now() };
       addItems(page, [it]);
       pushUndo({ pageId: page.id, add: [it], remove: [] });
     } else return;
@@ -1839,6 +2668,73 @@ export async function mountEditor(root, docId) {
     structureChanged(j);
   }
 
+  function movePageTo(i, j) {
+    if (i === j) return;
+    const [p] = pages.splice(i, 1);
+    pages.splice(j, 0, p);
+    structureChanged(j);
+  }
+
+  // Drag a page in the panel to a new place: hold it for a moment with a finger or pen, or just drag with the mouse.
+  function dragCard(card, i) {
+    let s = null;
+    const cards = () => [...panelList.querySelectorAll('.thumb')];
+    const begin = () => {
+      s.on = true;
+      s.line = h('div', { class: 'drop-line' });
+      panelList.append(s.line);
+      card.classList.add('drag');
+      try { card.setPointerCapture(s.id); } catch { /* synthetic pointer */ }
+      track(s.y0);
+    };
+    const track = y => {
+      card.style.transform = `translateY(${y - s.y0}px) scale(.94)`;
+      const pr = panel.getBoundingClientRect();
+      if (y < pr.top + 44) panel.scrollTop -= 14; else if (y > pr.bottom - 44) panel.scrollTop += 14;
+      const cs = cards();
+      let to = cs.length;
+      for (let k = 0; k < cs.length; k++) {
+        if (cs[k] === card) continue;
+        const r = cs[k].getBoundingClientRect();
+        if (y < r.top + r.height / 2) { to = k; break; }
+      }
+      s.to = to;
+      const last = cs[cs.length - 1];
+      s.line.style.top = (to < cs.length ? cs[to].offsetTop : last.offsetTop + last.offsetHeight) - 7 + 'px';
+    };
+    card.addEventListener('pointerdown', e => {
+      if (e.button || e.target.closest('button') || panelQ.trim() || panelBm || pages.length < 2) return;
+      const st = s = { id: e.pointerId, x0: e.clientX, y0: e.clientY, on: false, to: i, t: 0, mouse: e.pointerType === 'mouse', line: null };
+      if (!st.mouse) st.t = setTimeout(() => { if (s === st && !st.on) begin(); }, 350);
+    });
+    card.addEventListener('pointermove', e => {
+      if (!s || e.pointerId !== s.id) return;
+      if (!s.on) {
+        if (Math.hypot(e.clientX - s.x0, e.clientY - s.y0) <= 7) return;
+        if (!s.mouse) { clearTimeout(s.t); s = null; return; } // moved before the hold: the finger is scrolling the list
+        begin();
+      }
+      track(e.clientY);
+    });
+    const end = e => {
+      if (!s || e.pointerId !== s.id) return;
+      const d = s;
+      s = null;
+      clearTimeout(d.t);
+      if (!d.on) return;
+      card._dragged = true; // the click that follows is not a "go to this page"
+      setTimeout(() => { card._dragged = false; }, 60);
+      d.line.remove();
+      card.classList.remove('drag');
+      card.style.transform = '';
+      if (e.type === 'pointerup') movePageTo(i, d.to > i ? d.to - 1 : d.to);
+    };
+    card.addEventListener('pointerup', end);
+    card.addEventListener('pointercancel', end);
+    card.addEventListener('touchmove', e => { if (s && s.on && e.cancelable) e.preventDefault(); }, { passive: false });
+    card.addEventListener('contextmenu', e => { if (s) e.preventDefault(); });
+  }
+
   function templateDialog() {
     const pv = currentPv(), pg = pv.page;
     if (pg.pdf) { toast('PDF pages keep their own background.'); return; }
@@ -1904,6 +2800,7 @@ export async function mountEditor(root, docId) {
   function pageMatches(pg, q) {
     if (!q) return true;
     if ((pg.title || '').toLowerCase().includes(q)) return true;
+    if (pg.pdf && (pdfText.get(pg.id) || '').includes(q)) return true;
     return pg.items.some(it => it.t === 'tx' && it.s.toLowerCase().includes(q));
   }
 
@@ -1924,7 +2821,7 @@ export async function mountEditor(root, docId) {
       class: 'chip sm' + (panelBm ? ' on' : ''), type: 'button',
       onclick: () => { panelBm = !panelBm; bmBtn.classList.toggle('on', panelBm); fillPanel(); }
     }, h('span', { class: 'btn-ic', html: I.star }), 'Bookmarks');
-    panelList = h('div');
+    panelList = h('div', { class: 'panel-list' });
     panel.append(h('div', { class: 'panel-head' }, q, bmBtn), panelList);
     fillPanel();
   }
@@ -1935,7 +2832,8 @@ export async function mountEditor(root, docId) {
     if (!panelOpen || !panelList) return;
     panelList.replaceChildren();
     const ql = panelQ.trim().toLowerCase(), numeric = /^\d+$/.test(ql);
-    thumbObs = new IntersectionObserver(entries => {
+    if (ql && !numeric && pages.some(p => p.pdf)) warmText();
+    thumbObs =new IntersectionObserver(entries => {
       for (const en of entries) {
         if (!en.isIntersecting) continue;
         thumbObs.unobserve(en.target);
@@ -1954,7 +2852,7 @@ export async function mountEditor(root, docId) {
       c.height = Math.round(220 * pg.h / pg.w);
       c.style.background = R.paperOf(pg).bg;
       thumbs.set(pg.id, c);
-      const card = h('div', { class: 'thumb' + (i === cur ? ' on' : ''), onclick: () => { scrollToPage(i); if (innerWidth < 700) togglePanel(); } },
+      const card = h('div', { class: 'thumb' + (i === cur ? ' on' : ''), onclick: () => { if (card._dragged) return; scrollToPage(i); if (innerWidth < 700) togglePanel(); } },
         c,
         pg.title ? h('div', { class: 'thumb-name' }, pg.title) : null,
         h('div', { class: 'thumb-foot' },
@@ -1980,6 +2878,7 @@ export async function mountEditor(root, docId) {
             }
           })));
       panelList.append(card);
+      dragCard(card, i);
       thumbObs.observe(c);
     });
     if (!shown) panelList.append(h('p', { class: 'panel-empty' }, panelBm && !ql ? 'No bookmarked pages yet. Tap the star under a page.' : 'No pages match.'));
@@ -1998,7 +2897,8 @@ export async function mountEditor(root, docId) {
   // ------------------------------------------------------------------ toolbar
   const TOOLS = [
     ['pen', I.pen, 'Pen (P)'], ['hl', I.hl, 'Highlighter (H)'], ['eraser', I.eraser, 'Eraser (E)'],
-    ['lasso', I.lasso, 'Select (L)'], ['shape', I.shape, 'Shapes (S)'], ['text', I.text, 'Text (T)']
+    ['lasso', I.lasso, 'Select (L)'], ['shape', I.shape, 'Shapes (S)'], ['text', I.text, 'Text (T)'],
+    ['tape', I.tape, 'Tape (A)'], ['laser', I.laser, 'Laser pointer (K)']
   ];
 
   function renderTools() {
@@ -2023,7 +2923,12 @@ export async function mountEditor(root, docId) {
 
   function swatches(key, colors) {
     const cur = prefs[key].color;
-    const pick = c => { prefs[key].color = c; savePrefs(); renderOpts(); };
+    const pick = c => {
+      prefs[key].color = c;
+      savePrefs();
+      if (key === 'text' && textEd) { textEd.color = inkFor(textEd.pv, c); styleTa(); textEd.ta.focus(); }
+      renderOpts();
+    };
     const custom = h('label', { class: 'sw custom' + (colors.includes(cur) ? '' : ' on'), title: 'Custom colour', style: { '--c': colors.includes(cur) ? 'transparent' : cur } },
       h('input', { type: 'color', value: cur, onchange: e => pick(e.target.value) }));
     return colors.map(c => h('button', { class: 'sw' + (cur === c ? ' on' : ''), type: 'button', title: c, style: { '--c': c }, onclick: () => pick(c) })).concat(custom);
@@ -2132,9 +3037,22 @@ export async function mountEditor(root, docId) {
         h('div', { class: 'vsep' }), ...swatches('shape', PEN_COLORS), h('div', { class: 'vsep' }), ...sizes('shape', [0.4, 0.8, 1.4], [5, 8, 12], 3)
       ];
     } else if (t === 'text') {
+      const cur = textEd ? { ...textEd, size: textEd.fs } : prefs.text; // the bar shows the box being typed in
+      const tgl = (k, label, title) => h('button', {
+        class: 'tgl ' + k + (cur[k] ? ' on' : ''), type: 'button', title, onclick: () => textStyle(k, !cur[k])
+      }, label);
       kids = [...swatches('text', PEN_COLORS), h('div', { class: 'vsep' }),
-        seg([[12, 'Small'], [16, 'Medium'], [24, 'Large']], prefs.text.size, v => { prefs.text.size = v; savePrefs(); renderOpts(); }),
+        seg([[12, 'S'], [16, 'M'], [24, 'L'], [36, 'XL']], cur.size, v => textStyle('size', v)),
+        tgl('b', 'B', 'Bold'), tgl('i', 'I', 'Italic'), tgl('u', 'U', 'Underline'),
+        seg([['sans', 'Sans'], ['serif', 'Serif'], ['mono', 'Mono']], cur.ff || 'sans', v => textStyle('ff', v)),
+        seg([['l', 'Left'], ['c', 'Centre'], ['r', 'Right']], cur.al || 'l', v => textStyle('al', v)),
+        h('button', { class: 'btn sm', type: 'button', title: 'Bulleted list', onclick: toggleBullet }, h('span', { class: 'btn-ic', html: I.list }), 'List'),
         h('span', { class: 'hint' }, 'Tap the page to type')];
+    } else if (t === 'tape') {
+      kids = [...swatches('tape', TAPE_COLORS), h('div', { class: 'vsep' }), ...sizes('tape', [4, 7, 11], [7, 11, 15], 20),
+        h('span', { class: 'hint' }, 'Drag to cover something. Tap a strip to show or hide what is under it.')];
+    } else if (t === 'laser') {
+      kids = [...swatches('laser', LASER_COLORS), h('span', { class: 'hint' }, 'Point and draw: nothing is saved. Tap a link or a strip of tape to use it.')];
     } else {
       kids = [
         clipItems && clipItems.length ? h('button', { class: 'btn sm', type: 'button', title: 'Paste (Ctrl+V)', onclick: () => pasteClip() }, h('span', { class: 'btn-ic', html: I.paste }), 'Paste') : null,
@@ -2160,6 +3078,10 @@ export async function mountEditor(root, docId) {
       ['Hold the pen still at the end of a line', 'Make it straight'],
       ['Hold still after closing a circle, box or triangle', 'Tidy the shape'],
       ['Pull up past the last page', 'Add a new page'],
+      ['Tap a strip of tape with a finger', 'Show or hide what is under it'],
+      ['Tap a link in a PDF with a finger', 'Follow it'],
+      ['Start a line beside the ruler', 'It runs straight along the edge'],
+      ['Hold a page in the pages panel, then drag', 'Move it to a new place'],
       ['Two-finger tap', 'Undo'],
       ['Three-finger tap', 'Redo'],
       ['Pinch', 'Zoom in and out'],
@@ -2180,8 +3102,15 @@ export async function mountEditor(root, docId) {
     const label = fd === true ? 'Finger drawing: on' : fd === false ? 'Finger drawing: off' : `Finger drawing: auto (${fingerDraws() ? 'on' : 'off'})`;
     popMenu(anchor, [
       { label: 'Export as PDF', icon: I.share, onClick: async () => { commitText(); await flush().catch(saveFailed); exportFlow(doc.id); } },
+      { label: 'Find text', icon: I.search, onClick: openFind },
+      pages.some(p => p.pdf) ? { label: 'PDF contents', icon: I.list, onClick: outlineDialog } : null,
+      '-',
+      { label: ruler ? 'Put the ruler away' : 'Ruler', icon: I.ruler, onClick: toggleRuler },
+      { label: zw ? 'Close the zoom window' : 'Zoom window', icon: I.zoomwin, onClick: () => toggleZoom() },
+      { label: hz ? 'Pages: side by side' : 'Pages: down the screen', icon: I.flow, onClick: () => setFlow(hz ? 'v' : 'h') },
+      '-',
       { label: 'Page template', icon: I.template, onClick: templateDialog },
-      { label: 'Fit page width', icon: I.fit, onClick: fitWidth },
+      { label: hz ? 'Fit whole page' : 'Fit page width', icon: I.fit, onClick: fitWidth },
       { label: full ? 'Leave full screen' : 'Full screen', icon: full ? I.fullExit : I.full, onClick: () => setFull(!full) },
       {
         label: 'Scribble to erase: ' + (prefs.scribble !== false ? 'on' : 'off'), icon: I.eraser, onClick: () => {
@@ -2201,7 +3130,7 @@ export async function mountEditor(root, docId) {
       },
       '-',
       { label: 'Delete this page', icon: I.trash, danger: true, onClick: () => deletePage(pvs.indexOf(currentPv())) }
-    ], { align: 'right' });
+    ].filter(Boolean), { align: 'right' });
   }
 
   // ------------------------------------------------------------------ keyboard, lifecycle
@@ -2212,13 +3141,18 @@ export async function mountEditor(root, docId) {
     else if (mod && (key === 'c' || key === 'x') && sel) { e.preventDefault(); copySel(key === 'x'); }
     else if (mod && key === 'v') { e.preventDefault(); pasteClip(); }
     else if (mod && key === 'y') { e.preventDefault(); redo(); }
+    else if (mod && key === 'f') { e.preventDefault(); openFind(); }
+    else if (e.key === 'PageDown' || (hz && e.key === 'ArrowRight')) { e.preventDefault(); goPage(1); }
+    else if (e.key === 'PageUp' || (hz && e.key === 'ArrowLeft')) { e.preventDefault(); goPage(-1); }
     else if (e.key === ' ') { e.preventDefault(); spaceDown = true; vp.classList.add('grab'); }
     else if ((e.key === 'Delete' || e.key === 'Backspace') && sel) { e.preventDefault(); deleteSel(); }
-    else if (e.key === 'Escape') { if (sel) clearSel(); else setFull(false); }
+    else if (e.key === 'Escape') { if (sel) clearSel(); else if (find || !findBar.hidden) closeFind(); else setFull(false); }
     else if (!mod && !e.altKey) {
-      const t = { p: 'pen', h: 'hl', e: 'eraser', l: 'lasso', s: 'shape', t: 'text' }[key];
+      const t = { p: 'pen', h: 'hl', e: 'eraser', l: 'lasso', s: 'shape', t: 'text', a: 'tape', k: 'laser' }[key];
       if (t) setTool(t);
       else if (key === 'f') setFull(!full);
+      else if (key === 'r') toggleRuler();
+      else if (key === 'z') toggleZoom();
     }
   }
 
@@ -2308,7 +3242,16 @@ export async function mountEditor(root, docId) {
     flush().catch(saveFailed); // saving triggers the upload
   }
 
-  const ro = new ResizeObserver(() => { measure(); applyView(); });
+  const ro = new ResizeObserver(() => { measure(); if (zw) zoomLayout(); applyView(); });
+
+  const findSoon = debounce(() => { if (!destroyed && !findBar.hidden) runFind(); }, 280);
+  findInp.addEventListener('input', findSoon);
+  findInp.addEventListener('keydown', e => {
+    if (e.key === 'Enter') { e.preventDefault(); if (find) findStep(e.shiftKey ? -1 : 1); else runFind(); }
+    else if (e.key === 'Escape') { e.preventDefault(); closeFind(); }
+  });
+  // Tool bar buttons must not take the keyboard away from a text box that is being typed in.
+  optsEl.addEventListener('mousedown', e => { if (textEd && !e.target.closest('input')) e.preventDefault(); });
 
   function exit() {
     location.hash = doc.folderId ? '#/f/' + doc.folderId : '#/';
@@ -2318,6 +3261,7 @@ export async function mountEditor(root, docId) {
     commitText();
     clearSel();
     destroyed = true;
+    findTok++;
     stopInertia();
     ro.disconnect();
     if (thumbObs) thumbObs.disconnect();
@@ -2372,10 +3316,11 @@ export async function mountEditor(root, docId) {
   renderOpts();
   updateUndoUi();
   measure();
-  scale = clamp((vpRect.width - 24) / worldW, MIN_S, COARSE ? 2.5 : 1.6);
-  tx = (vpRect.width - worldW * scale) / 2;
   let startAt = 0;
   try { startAt = parseInt(localStorage.getItem('inkleaf.pos.' + doc.id) || '0', 10) || 0; } catch { /* ignore */ }
+  startAt = clamp(startAt, 0, pages.length - 1);
+  scale = fitScale(pages[startAt], COARSE ? 2.5 : 1.6);
+  tx = (vpRect.width - worldW * scale) / 2;
   scrollToPage(startAt);
   ro.observe(vp);
 
