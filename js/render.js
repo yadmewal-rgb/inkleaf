@@ -381,9 +381,14 @@ export function drawItem(ctx, it) {
       if (img) {
         ctx.imageSmoothingQuality = 'high';
         // it.cr = [left, top, width, height] of the kept part, as fractions of the picture (set by cropping)
-        const cr = it.cr, nw = img.naturalWidth, nh = img.naturalHeight;
-        if (cr) ctx.drawImage(img, cr[0] * nw, cr[1] * nh, cr[2] * nw, cr[3] * nh, it.x, it.y, it.w, it.h);
-        else ctx.drawImage(img, it.x, it.y, it.w, it.h);
+        // it.r  = quarter turns clockwise (set by rotating); x, y, w, h are always the box as it sits on the page
+        const cr = it.cr || [0, 0, 1, 1], nw = img.naturalWidth, nh = img.naturalHeight, r = it.r || 0;
+        const dw = r % 2 ? it.h : it.w, dh = r % 2 ? it.w : it.h;
+        ctx.save();
+        ctx.translate(it.x + it.w / 2, it.y + it.h / 2);
+        if (r) ctx.rotate(r * Math.PI / 2);
+        ctx.drawImage(img, cr[0] * nw, cr[1] * nh, cr[2] * nw, cr[3] * nh, -dw / 2, -dh / 2, dw, dh);
+        ctx.restore();
       } else { ctx.fillStyle = 'rgba(128,128,128,.22)'; ctx.fillRect(it.x, it.y, it.w, it.h); }
       break;
     }
@@ -515,6 +520,24 @@ export function transformItem(it, k, ox, oy, dx, dy) {
     o.x = X(it.x); o.y = Y(it.y); o.w = it.w * k; o.fs = it.fs * k;
   } else {
     o.x = X(it.x); o.y = Y(it.y); o.w = it.w * k; o.h = it.h * k;
+  }
+  return o;
+}
+
+// A quarter turn clockwise around (cx, cy). Typed text stays upright and just moves with the rest.
+export function rotateItem(it, cx, cy) {
+  const r2 = v => Math.round(v * 100) / 100;
+  const X = (x, y) => r2(cx - (y - cy)), Y = (x, y) => r2(cy + (x - cx));
+  const o = { ...it, m: Date.now() };
+  if (it.t === 's') {
+    o.p = new Array(it.p.length);
+    for (let i = 0; i < it.p.length; i += 3) { o.p[i] = X(it.p[i], it.p[i + 1]); o.p[i + 1] = Y(it.p[i], it.p[i + 1]); o.p[i + 2] = it.p[i + 2]; }
+  } else if (it.t === 'sh') {
+    o.x1 = X(it.x1, it.y1); o.y1 = Y(it.x1, it.y1); o.x2 = X(it.x2, it.y2); o.y2 = Y(it.x2, it.y2);
+  } else {
+    const b = bounds(it), mx = b.x + b.w / 2, my = b.y + b.h / 2, nx = X(mx, my), ny = Y(mx, my);
+    if (it.t === 'im') { o.w = it.h; o.h = it.w; o.r = ((it.r || 0) + 1) % 4; o.x = r2(nx - o.w / 2); o.y = r2(ny - o.h / 2); }
+    else { o.x = r2(nx - b.w / 2); o.y = r2(ny - b.h / 2); }
   }
   return o;
 }

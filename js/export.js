@@ -132,14 +132,28 @@ export async function buildPdf(doc, pages, progress) {
         const png = await out.embedPng(await canvasBytes(bm.canvas, 'image/png'));
         page.drawImage(png, { x: it.x, y: H - it.y - bm.h, width: it.w, height: bm.h });
       } else if (it.t === 'im') {
+        if (it.cr || it.r) {
+          // Cropped or rotated picture: draw it the way the page shows it and embed that.
+          try {
+            const a = await db.get('assets', it.a);
+            if (await R.loadImage(it.a)) {
+              const k = Math.min(4, 2400 / Math.max(it.w, it.h));
+              const c = document.createElement('canvas');
+              c.width = Math.max(1, Math.round(it.w * k));
+              c.height = Math.max(1, Math.round(it.h * k));
+              const ctx = c.getContext('2d');
+              ctx.scale(k, k);
+              ctx.translate(-it.x, -it.y);
+              R.drawItem(ctx, it);
+              const png = a && a.mime === 'image/png';
+              const im = png ? await out.embedPng(await canvasBytes(c, 'image/png')) : await out.embedJpg(await canvasBytes(c, 'image/jpeg', 0.92));
+              page.drawImage(im, { x: it.x, y: H - it.y - it.h, width: it.w, height: it.h });
+            }
+          } catch (e) { console.warn('Image skipped in export', e); }
+          continue;
+        }
         const im = await embedAsset(it.a);
-        if (im && it.cr) {
-          // Cropped picture: draw the whole image enlarged so the kept part fills the box, clipped to the box.
-          const [cx, cy, cw, ch] = it.cr, fw = it.w / cw, fh = it.h / ch;
-          page.pushOperators(L.pushGraphicsState(), L.rectangle(it.x, H - it.y - it.h, it.w, it.h), L.clip(), L.endPath());
-          page.drawImage(im, { x: it.x - cx * fw, y: H - it.y - it.h - (1 - cy - ch) * fh, width: fw, height: fh });
-          page.pushOperators(L.popGraphicsState());
-        } else if (im) page.drawImage(im, { x: it.x, y: H - it.y - it.h, width: it.w, height: it.h });
+        if (im) page.drawImage(im, { x: it.x, y: H - it.y - it.h, width: it.w, height: it.h });
       }
     }
   }

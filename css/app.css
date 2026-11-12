@@ -218,6 +218,29 @@ h2, h3, p { margin: 0; }
 .gest-row b { font-weight: 600; }
 .gest-row span { color: var(--muted); text-align: right; }
 
+/* favourite pens */
+.fav {
+  flex: none; display: inline-flex; align-items: center; gap: 4px; height: 32px; padding: 0 8px;
+  border: 1px solid var(--line); border-radius: 999px; background: var(--surface);
+  touch-action: manipulation; -webkit-touch-callout: none;
+}
+.fav .dot { outline: 1px solid rgba(128, 128, 128, .45); }
+.fav small { font-size: 11px; color: var(--muted); font-variant-numeric: tabular-nums; }
+.fav.on { border-color: var(--accent); background: var(--accent-soft); }
+.btn.sm { height: 32px; padding: 0 12px; font-size: 13px; flex: none; }
+.star-on { color: #e0a400; }
+
+/* pages panel: search, bookmarks, page names */
+.panel-head { display: flex; flex-direction: column; gap: 8px; margin-bottom: 12px; }
+.inp.sm { height: 34px; padding: 0 10px; font-size: 13px; }
+.chip.sm { min-height: 30px; font-size: 12.5px; justify-content: center; }
+.chip.sm svg { width: 15px; height: 15px; }
+.thumb-name { font-size: 12px; font-weight: 600; margin-top: 4px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.panel-empty { color: var(--muted); font-size: 12.5px; text-align: center; padding: 12px 0; }
+button.pageind { border: 0; background: transparent; border-radius: 8px; padding: 6px 8px; flex: none; }
+button.pageind:hover { background: var(--surface-2); }
+.shot { max-width: 100%; max-height: 58vh; border-radius: 6px; outline: 1px solid var(--line); }
+
 /* pattern chooser: small drawn pages */
 .tpls { display: grid; grid-template-columns: repeat(auto-fill, minmax(66px, 1fr)); gap: 10px 8px; }
 .tpl { display: flex; flex-direction: column; align-items: center; gap: 4px; padding: 0; border: 0; background: transparent; font-size: 11px; line-height: 1.2; text-align: center; color: var(--muted); }

@@ -185,7 +185,8 @@ export function mergePage(L, R) {
     .filter(it => !(dels[it.id] >= (it.m || 0)))
     .sort((x, y) => (x.z - y.z) || (x.id < y.id ? -1 : 1));
   const fits = X => sameItems(items, X.items || []) && sameDels(dels, X.dels || {})
-    && X.template === base.template && X.paper === base.paper;
+    && X.template === base.template && X.paper === base.paper
+    && !X.bm === !base.bm && (X.title || '') === (base.title || '');
   if (fits(R)) return R;
   if (fits(L)) return L;
   return { ...base, items, dels, modified: Date.now() };

@@ -1,6 +1,6 @@
 // The notebook editor: page layout, pan/zoom, stylus/finger/mouse input, tools, selection, undo.
 import { db, newPage, loadPages } from './db.js';
-import { h, uid, nextZ, clamp, bus } from './util.js';
+import { h, uid, nextZ, clamp, bus, distSeg, downloadBlob, safeName } from './util.js';
 import * as R from './render.js';
 import { renderPdfPage } from './pdfrender.js';
 import { I } from './icons.js';
@@ -28,6 +28,7 @@ const DEFAULTS = {
   tool: 'pen',
   pen: { color: INK, size: mmToPt(0.7), style: 'fountain' },
   scribble: true, // a zigzag over ink erases it
+  favs: [],       // favourite pens: [{color, size, style}]
   hl: { color: '#ffd43b', size: mmToPt(5.5) },
   eraser: { size: mmToPt(5.5), mode: 'stroke' },
   shape: { kind: 'rect', color: '#1971c2', size: mmToPt(0.8) },
@@ -68,7 +69,8 @@ export async function mountEditor(root, docId) {
   const selBar = h('div', { class: 'selbar', hidden: true });
   const panel = h('aside', { class: 'panel', hidden: true });
   const titleBtn = h('button', { class: 'title', type: 'button', title: 'Rename', onclick: rename }, doc.title);
-  const pageInd = h('span', { class: 'pageind' });
+  const pageInd = h('button', { class: 'pageind', type: 'button', title: 'Go to page', onclick: () => gotoPrompt() });
+  const bmBtn = h('button', { class: 'ic', type: 'button', title: 'Bookmark this page', onclick: () => toggleBookmark(currentPv().page), html: I.star });
   const undoBtn = h('button', { class: 'ic', type: 'button', title: 'Undo (Ctrl+Z)', onclick: () => undo(), html: I.undo });
   const redoBtn = h('button', { class: 'ic', type: 'button', title: 'Redo (Ctrl+Y)', onclick: () => redo(), html: I.redo });
   const toolsEl = h('div', { class: 'toolset' });
@@ -79,7 +81,7 @@ export async function mountEditor(root, docId) {
   const undoBtn2 = h('button', { class: 'ic', type: 'button', title: 'Undo', onclick: () => undo(), html: I.undo });
   const redoBtn2 = h('button', { class: 'ic', type: 'button', title: 'Redo', onclick: () => redo(), html: I.redo });
   // In full screen the tool bar floats over the page; "mini" shrinks it to undo, redo and the page number.
-  const pageInd2 = h('span', { class: 'pageind' });
+  const pageInd2 = h('button', { class: 'pageind', type: 'button', title: 'Go to page', onclick: () => gotoPrompt() });
   const miniBtn = h('button', { class: 'ic', type: 'button', title: 'Shrink the tool bar', onclick: () => setMini(!el.classList.contains('mini')), html: I.collapse });
   const fullTools = h('div', { class: 'fullonly' },
     undoBtn2, redoBtn2, pageInd2,
@@ -103,7 +105,7 @@ export async function mountEditor(root, docId) {
       h('button', { class: 'ic', type: 'button', title: 'Back to library', onclick: exit, html: I.back }),
       titleBtn, pageInd,
       h('div', { class: 'grow' }),
-      syncBtn, undoBtn, redoBtn,
+      syncBtn, undoBtn, redoBtn, bmBtn,
       h('button', { class: 'ic', type: 'button', title: 'Full screen (F)', onclick: () => setFull(true), html: I.full }),
       h('button', { class: 'ic', type: 'button', title: 'Pages', onclick: togglePanel, html: I.pages }),
       h('button', { class: 'ic', type: 'button', title: 'Add page', onclick: () => addPageAfter(currentPv()), html: I.plus }),
@@ -125,6 +127,8 @@ export async function mountEditor(root, docId) {
   let multiTap = null;   // a two/three finger tap in progress
   let lastTap = null;    // previous single finger tap, for double-tap
   let full = false, dbg = null;
+  let clipItems = (await db.getMeta('clip')) || null; // copied items, shared by every notebook on this device
+  let panelQ = '', panelBm = false, panelList = null; // pages panel: search text, bookmarks-only, the list element
   let sel = null, textEd = null;
   let livePv = null, liveFn = null, rafLive = 0;
   const undoStack = [], redoStack = [];
@@ -510,6 +514,8 @@ export async function mountEditor(root, docId) {
   function updateIndicator() {
     const i = pvs.indexOf(currentPv());
     pageInd.textContent = pageInd2.textContent = `${i + 1} / ${pvs.length}`;
+    const bm = !!(pvs[i] && pvs[i].page.bm);
+    if (bmBtn._on !== bm) { bmBtn._on = bm; bmBtn.innerHTML = bm ? I.starOn : I.star; bmBtn.classList.toggle('star-on', bm); bmBtn.title = bm ? 'Remove bookmark' : 'Bookmark this page'; }
     try { localStorage.setItem('inkleaf.pos.' + doc.id, String(i)); } catch { /* private mode */ }
   }
 
@@ -605,6 +611,10 @@ export async function mountEditor(root, docId) {
     P.dels = m.dels;
     P.template = m.template;
     P.paper = m.paper;
+    const marks = !P.bm !== !m.bm || (P.title || '') !== (m.title || '');
+    P.bm = m.bm;
+    P.title = m.title;
+    if (marks) { updateIndicator(); if (panelOpen) fillPanel(); }
     if (m === rec) P.modified = rec.modified; else dirty(P); // a true merge of both sides gets saved and sent back
     const pv = pvs.find(v => v.page === P);
     if (pv) {
@@ -993,7 +1003,7 @@ export async function mountEditor(root, docId) {
 
   // Hold the pen still at the end of a line and it snaps straight.
   function holdCheck(a, e) {
-    if (a.line) return;
+    if (a.line || a.snap) return;
     if (a.holdT && Math.hypot(e.clientX - a.hx, e.clientY - a.hy) < 6) return;
     a.hx = e.clientX;
     a.hy = e.clientY;
@@ -1007,17 +1017,87 @@ export async function mountEditor(root, docId) {
     if (n < 4) return;
     const x0 = P[0], y0 = P[1], x1 = P[P.length - 3], y1 = P[P.length - 2];
     const len = Math.hypot(x1 - x0, y1 - y0);
-    if (len < 24 / scale) return;
+    if (len < 24 / scale) { if (a.tool === 'pen') snapShape(a); return; } // ends close together: perhaps a closed shape
     let dev = 0, sum = 0;
     for (let i = 0; i < P.length; i += 3) {
       dev = Math.max(dev, Math.abs((P[i] - x0) * (y1 - y0) - (P[i + 1] - y0) * (x1 - x0)) / len);
       sum += P[i + 2];
     }
-    if (dev > Math.max(3 / scale, len * 0.09)) return; // not a line: leave the handwriting alone
+    if (dev > Math.max(3 / scale, len * 0.09)) { // not a line: maybe a closed shape, otherwise leave the handwriting alone
+      if (a.tool === 'pen') snapShape(a);
+      return;
+    }
     a.line = true;
     const p = Math.round(sum / n * 100) / 100;
     a.pts = [x0, y0, p, x1, y1, p];
     drawLine(a);
+  }
+
+  // A closed outline held still at the end is tidied into a circle/ellipse, rectangle, triangle or four-sided shape.
+  function snapShape(a) {
+    const P = a.pts, pts = [];
+    let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity, len = 0;
+    for (let i = 0; i < P.length; i += 3) {
+      const x = P[i], y = P[i + 1];
+      if (i) len += Math.hypot(x - P[i - 3], y - P[i - 2]);
+      pts.push([x, y]);
+      x0 = Math.min(x0, x); x1 = Math.max(x1, x); y0 = Math.min(y0, y); y1 = Math.max(y1, y);
+    }
+    const diag = Math.hypot(x1 - x0, y1 - y0), n = pts.length;
+    if (diag < 30 / scale || len < 2.2 * diag) return;
+    if (Math.hypot(pts[0][0] - pts[n - 1][0], pts[0][1] - pts[n - 1][1]) > 0.25 * diag) return; // not closed
+
+    // Corners: simplify the outline, then drop points that sit on a nearly straight run.
+    const keep = new Set([0, n - 1]);
+    const rdp = (i, j) => {
+      let worst = 0, at = -1;
+      for (let k = i + 1; k < j; k++) {
+        const d = distSeg(pts[k][0], pts[k][1], pts[i][0], pts[i][1], pts[j][0], pts[j][1]);
+        if (d > worst) { worst = d; at = k; }
+      }
+      if (worst > diag * 0.07) { keep.add(at); rdp(i, at); rdp(at, j); }
+    };
+    rdp(0, n - 1);
+    let v = [...keep].sort((p, q) => p - q).map(i => pts[i]);
+    v.pop(); // the end meets the start
+    const turn = (p, q, r) => {
+      const a1 = Math.atan2(p[1] - q[1], p[0] - q[0]), a2 = Math.atan2(r[1] - q[1], r[0] - q[0]);
+      let d = Math.abs(a1 - a2);
+      if (d > Math.PI) d = 2 * Math.PI - d;
+      return d; // interior angle at q
+    };
+    for (let pass = 0; pass < 2 && v.length > 3; pass++) {
+      v = v.filter((q, i) => turn(v[(i + v.length - 1) % v.length], q, v[(i + 1) % v.length]) < 2.6 || v.length <= 3);
+    }
+
+    let item = null;
+    const r2 = x => Math.round(x * 100) / 100;
+    if (v.length === 3 || v.length === 4) {
+      const square = v.length === 4 && v.every((q, i) => {
+        const r = v[(i + 1) % 4], ang = Math.abs(Math.atan2(r[1] - q[1], r[0] - q[0])) % (Math.PI / 2);
+        return Math.min(ang, Math.PI / 2 - ang) < 0.32;
+      });
+      if (square) item = { t: 'sh', k: 'rect', x1: r2(x0), y1: r2(y0), x2: r2(x1), y2: r2(y1), c: a.color, w: a.size };
+      else {
+        const p = [];
+        v.forEach((q, i) => {
+          const r = v[(i + 1) % v.length], steps = Math.max(2, Math.ceil(Math.hypot(r[0] - q[0], r[1] - q[1]) / 2));
+          for (let s = 0; s < steps; s++) p.push(r2(q[0] + (r[0] - q[0]) * s / steps), r2(q[1] + (r[1] - q[1]) * s / steps), 0.5);
+        });
+        p.push(r2(v[0][0]), r2(v[0][1]), 0.5);
+        item = { t: 's', tool: 'pen', c: a.color, w: a.size, p };
+      }
+    } else {
+      const cx = (x0 + x1) / 2, cy = (y0 + y1) / 2;
+      let rx = (x1 - x0) / 2, ry = (y1 - y0) / 2, dev = 0;
+      if (rx < 4 || ry < 4) return;
+      for (const [x, y] of pts) dev += Math.abs(Math.hypot((x - cx) / rx, (y - cy) / ry) - 1);
+      if (dev / n > 0.16) return;
+      if (Math.abs(rx - ry) / Math.max(rx, ry) < 0.14) rx = ry = (rx + ry) / 2; // nearly round: make it a true circle
+      item = { t: 'sh', k: 'ellipse', x1: r2(cx - rx), y1: r2(cy - ry), x2: r2(cx + rx), y2: r2(cy + ry), c: a.color, w: a.size };
+    }
+    a.snap = item;
+    nextLive(() => { clearLive(); R.drawItem(a.c, item); });
   }
 
   function drawLine(a) {
@@ -1089,6 +1169,7 @@ export async function mountEditor(root, docId) {
 
   function moveStroke(e) {
     const a = action, P = a.pts, n = P.length;
+    if (a.snap) return; // already tidied into a shape
     let [x, y] = toPage(a.pv, e.clientX, e.clientY);
     if (a.line) { // snapped straight: the far end follows the pen
       P[3] = x;
@@ -1131,13 +1212,13 @@ export async function mountEditor(root, docId) {
   function endStroke(a, e) {
     const page = a.pv.page;
     clearTimeout(a.holdT);
-    if (e && !a.line) {
+    if (e && !a.line && !a.snap) {
       // Smoothing trails slightly behind the tip, so finish exactly where the pen lifted.
       const [ex, ey] = toPage(a.pv, e.clientX, e.clientY);
       const n = a.pts.length;
       if (Math.hypot(ex - a.pts[n - 3], ey - a.pts[n - 2]) > 0.5 / scale) a.pts.push(ex, ey, a.sp);
     }
-    const gone = a.tool === 'pen' && !a.line && prefs.scribble !== false ? scribbleTargets(a) : null;
+    const gone = a.tool === 'pen' && !a.line && !a.snap && prefs.scribble !== false ? scribbleTargets(a) : null;
     if (gone) {
       removeItems(page, gone);
       clearLive();
@@ -1148,7 +1229,7 @@ export async function mountEditor(root, docId) {
       return;
     }
     if (dbg) dbgCount('strokes saved');
-    const it = {
+    const it = a.snap ? { ...a.snap, id: uid(), z: nextZ(), m: Date.now() } : {
       id: uid(), t: 's', tool: a.tool, c: a.color, w: a.size,
       p: a.pts.map(v => Math.round(v * 100) / 100), z: nextZ(), m: Date.now()
     };
@@ -1354,6 +1435,79 @@ export async function mountEditor(root, docId) {
     setSel(pv, copies);
   }
 
+  // --- copy / paste (works across pages and notebooks; kept in the local database so it survives switching)
+  async function copySel(cut) {
+    if (!sel) return;
+    clipItems = sel.items.map(it => ({ ...it, p: it.p ? it.p.slice() : undefined }));
+    db.setMeta('clip', clipItems).catch(() => {});
+    const n = clipItems.length;
+    if (cut) deleteSel();
+    toast(`${cut ? 'Cut' : 'Copied'} ${n} item${n > 1 ? 's' : ''}. Use Paste in the Select tool, on any page or notebook.`, 2600);
+    if (prefs.tool === 'lasso') renderOpts();
+  }
+
+  async function pasteClip() {
+    const src = clipItems || await db.getMeta('clip');
+    if (!src || !src.length) { toast('Nothing copied yet.'); return; }
+    commitText();
+    clearSel();
+    measure();
+    const pv = currentPv(), pg = pv.page, u = R.unionBounds(src);
+    // centre of the view, kept inside the page
+    const [vx, vy] = toPage(pv, vpRect.left + vpRect.width / 2, vpRect.top + vpRect.height / 2);
+    const dx = clamp(vx - u.w / 2, 4, Math.max(4, pg.w - u.w - 4)) - u.x, dy = clamp(vy - u.h / 2, 4, Math.max(4, pg.h - u.h - 4)) - u.y;
+    await Promise.all(src.filter(it => it.t === 'im').map(it => R.loadImage(it.a)));
+    const items = src.map(it => ({ ...R.transformItem(it, 1, 0, 0, dx, dy), id: uid(), z: nextZ() }));
+    addItems(pg, items);
+    pushUndo({ pageId: pg.id, add: items, remove: [] });
+    dirty(pg);
+    setTool('lasso');
+    setSel(pv, items);
+  }
+
+  function rotateSel() {
+    if (!sel) return;
+    const b = sel.b, cx = b.x + b.w / 2, cy = b.y + b.h / 2;
+    const old = sel.items;
+    replaceSel(old, old.map(it => R.rotateItem(it, cx, cy)));
+  }
+
+  // The selected area as a picture (paper and everything on it), to save, share or copy.
+  async function selPicture() {
+    if (!sel) return;
+    const { pv, b } = sel, pg = pv.page;
+    const x = clamp(b.x, 0, pg.w), y = clamp(b.y, 0, pg.h), w = Math.min(pg.w, b.x + b.w) - x, hgt = Math.min(pg.h, b.y + b.h) - y;
+    if (w < 2 || hgt < 2) return;
+    const k = Math.min(4, 2600 / Math.max(w, hgt));
+    const whole = document.createElement('canvas');
+    await R.renderPageTo(pg, whole, pg.w * k);
+    const c = document.createElement('canvas');
+    c.width = Math.round(w * k);
+    c.height = Math.round(hgt * k);
+    c.getContext('2d').drawImage(whole, -Math.round(x * k), -Math.round(y * k));
+    const blob = await new Promise(res => c.toBlob(res, 'image/png'));
+    if (!blob) { toast('Could not make the picture.'); return; }
+    const name = safeName(doc.title) + ' selection.png';
+    const file = new File([blob], name, { type: 'image/png' });
+    const url = URL.createObjectURL(blob);
+    const actions = [{ label: 'Download', onClick: () => { downloadBlob(blob, name); } }];
+    if (navigator.clipboard && window.ClipboardItem) {
+      actions.push({
+        label: 'Copy', onClick: async () => {
+          try { await navigator.clipboard.write([new ClipboardItem({ 'image/png': blob })]); toast('Picture copied'); } catch { toast('This browser would not copy the picture. Use Download.'); }
+        }
+      });
+    }
+    if (navigator.canShare && navigator.canShare({ files: [file] })) {
+      actions.push({ label: 'Share', primary: true, onClick: async () => { try { await navigator.share({ files: [file] }); } catch { /* cancelled */ } } });
+    }
+    modal({
+      title: 'Selection as a picture', wide: true,
+      body: h('div', { class: 'crop-wrap' }, h('img', { class: 'shot', src: url })),
+      actions, onClose: () => setTimeout(() => URL.revokeObjectURL(url), 2000)
+    });
+  }
+
   function recolorSel(color) {
     if (!sel) return;
     const old = sel.items;
@@ -1399,8 +1553,15 @@ export async function mountEditor(root, docId) {
     const apply = () => {
       if (!sel || sel.items.length !== 1 || sel.items[0] !== it) return;
       const r2 = v => Math.round(v * 100) / 100, r4 = v => Math.round(v * 1e4) / 1e4;
-      const ux = it.w / old[2], uy = it.h / old[3]; // page units per whole picture: the picture keeps its size on the page
+      const odd = (it.r || 0) % 2; // turned on its side: the box's width shows the picture's height
+      const ux = (odd ? it.h : it.w) / old[2], uy = (odd ? it.w : it.h) / old[3]; // page units per whole picture: it keeps its size on the page
       const nu = { ...it, x: r2(it.x + (l - old[0]) * ux), y: r2(it.y + (t - old[1]) * uy), w: r2(w * ux), h: r2(hh * uy), m: Date.now() };
+      if (it.r) { // a rotated picture stays centred where it was
+        nu.w = r2(odd ? hh * uy : w * ux);
+        nu.h = r2(odd ? w * ux : hh * uy);
+        nu.x = r2(it.x + it.w / 2 - nu.w / 2);
+        nu.y = r2(it.y + it.h / 2 - nu.h / 2);
+      }
       if (l < 0.002 && t < 0.002 && w > 0.998 && hh > 0.998) delete nu.cr; else nu.cr = [r4(l), r4(t), r4(w), r4(hh)];
       replaceSel([it], [nu]);
     };
@@ -1439,8 +1600,17 @@ export async function mountEditor(root, docId) {
       kids.push(h('button', { class: 'ic', type: 'button', title: 'Crop', html: I.crop, onclick: () => cropDialog(one) }));
     }
     kids.push(
-      h('button', { class: 'ic', type: 'button', title: 'Duplicate', html: I.copy, onclick: duplicateSel }),
-      h('button', { class: 'ic danger', type: 'button', title: 'Delete', html: I.trash, onclick: deleteSel }));
+      h('button', { class: 'ic', type: 'button', title: 'Copy (Ctrl+C)', html: I.copy, onclick: () => copySel(false) }),
+      h('button', { class: 'ic', type: 'button', title: 'Rotate', html: I.rotate, onclick: rotateSel }),
+      h('button', { class: 'ic danger', type: 'button', title: 'Delete', html: I.trash, onclick: deleteSel }),
+      h('button', {
+        class: 'ic', type: 'button', title: 'More', html: I.more,
+        onclick: e => popMenu(e.currentTarget, [
+          { label: 'Cut', icon: I.cut, onClick: () => copySel(true) },
+          { label: 'Duplicate', icon: I.pages, onClick: duplicateSel },
+          { label: 'Save as a picture', icon: I.image, onClick: selPicture }
+        ])
+      }));
     selBar.replaceChildren(...kids);
   }
 
@@ -1708,11 +1878,63 @@ export async function mountEditor(root, docId) {
     buildPanel();
   }
 
+  // --- bookmarks, page names, jumping to a page
+  function toggleBookmark(pg) {
+    pg.bm = !pg.bm;
+    dirty(pg);
+    updateIndicator();
+    if (panelOpen) fillPanel();
+  }
+
+  async function namePage(pg) {
+    const name = await promptText('Name this page', pg.title || '', 'For example: Chapter 3 summary');
+    if (name == null || name === (pg.title || '')) return;
+    pg.title = name;
+    dirty(pg);
+    if (panelOpen) fillPanel();
+  }
+
+  async function gotoPrompt() {
+    const v = await promptText('Go to page', '', `1 to ${pvs.length}`);
+    const n = parseInt(v, 10);
+    if (n >= 1) scrollToPage(n - 1);
+  }
+
+  // Does a page match the panel's search box? Looks at the page name and any typed text on it.
+  function pageMatches(pg, q) {
+    if (!q) return true;
+    if ((pg.title || '').toLowerCase().includes(q)) return true;
+    return pg.items.some(it => it.t === 'tx' && it.s.toLowerCase().includes(q));
+  }
+
   function buildPanel() {
+    panel.replaceChildren();
+    panelList = null;
+    if (!panelOpen) { fillPanel(); return; }
+    const q = h('input', {
+      class: 'inp sm', type: 'search', placeholder: 'Find, or page no.', value: panelQ,
+      oninput: () => { panelQ = q.value; fillPanel(); },
+      onkeydown: e => {
+        if (e.key !== 'Enter') return;
+        const n = /^\d+$/.test(q.value.trim()) ? parseInt(q.value, 10) : 0;
+        if (n >= 1) { panelQ = q.value = ''; scrollToPage(n - 1); fillPanel(); }
+      }
+    });
+    const bmBtn = h('button', {
+      class: 'chip sm' + (panelBm ? ' on' : ''), type: 'button',
+      onclick: () => { panelBm = !panelBm; bmBtn.classList.toggle('on', panelBm); fillPanel(); }
+    }, h('span', { class: 'btn-ic', html: I.star }), 'Bookmarks');
+    panelList = h('div');
+    panel.append(h('div', { class: 'panel-head' }, q, bmBtn), panelList);
+    fillPanel();
+  }
+
+  function fillPanel() {
     if (thumbObs) { thumbObs.disconnect(); thumbObs = null; }
     thumbs.clear();
-    panel.replaceChildren();
-    if (!panelOpen) return;
+    if (!panelOpen || !panelList) return;
+    panelList.replaceChildren();
+    const ql = panelQ.trim().toLowerCase(), numeric = /^\d+$/.test(ql);
     thumbObs = new IntersectionObserver(entries => {
       for (const en of entries) {
         if (!en.isIntersecting) continue;
@@ -1721,7 +1943,11 @@ export async function mountEditor(root, docId) {
       }
     }, { root: panel, rootMargin: '300px' });
     const cur = pvs.indexOf(currentPv());
+    let shown = 0;
     pages.forEach((pg, i) => {
+      if (panelBm && !pg.bm) return;
+      if (ql && !(numeric ? String(i + 1).startsWith(ql) : pageMatches(pg, ql))) return;
+      shown++;
       const c = h('canvas', { class: 'thumb-c' });
       c._page = pg;
       c.width = 220;
@@ -1730,13 +1956,20 @@ export async function mountEditor(root, docId) {
       thumbs.set(pg.id, c);
       const card = h('div', { class: 'thumb' + (i === cur ? ' on' : ''), onclick: () => { scrollToPage(i); if (innerWidth < 700) togglePanel(); } },
         c,
+        pg.title ? h('div', { class: 'thumb-name' }, pg.title) : null,
         h('div', { class: 'thumb-foot' },
           h('span', null, String(i + 1)),
+          h('span', { class: 'grow' }),
+          h('button', {
+            class: 'ic sm' + (pg.bm ? ' star-on' : ''), type: 'button', title: pg.bm ? 'Remove bookmark' : 'Bookmark this page', html: pg.bm ? I.starOn : I.star,
+            onclick: e => { e.stopPropagation(); toggleBookmark(pg); }
+          }),
           h('button', {
             class: 'ic sm', type: 'button', title: 'Page options', html: I.more,
             onclick: e => {
               e.stopPropagation();
               popMenu(e.currentTarget, [
+                { label: pg.title ? 'Rename this page' : 'Name this page', icon: I.edit, onClick: () => namePage(pg) },
                 { label: 'Add page after', icon: I.plus, onClick: () => addPageAfter(pvs[i]) },
                 { label: 'Duplicate', icon: I.copy, onClick: () => duplicatePage(i) },
                 { label: 'Move up', icon: I.up, onClick: () => movePage(i, -1) },
@@ -1746,11 +1979,12 @@ export async function mountEditor(root, docId) {
               ], { align: 'right' });
             }
           })));
-      panel.append(card);
+      panelList.append(card);
       thumbObs.observe(c);
     });
-    const on = panel.querySelector('.thumb.on');
-    if (on) on.scrollIntoView({ block: 'center' });
+    if (!shown) panelList.append(h('p', { class: 'panel-empty' }, panelBm && !ql ? 'No bookmarked pages yet. Tap the star under a page.' : 'No pages match.'));
+    const on = panelList.querySelector('.thumb.on');
+    if (on && !ql) on.scrollIntoView({ block: 'center' });
   }
 
   const thumbTimers = new Map();
@@ -1837,11 +2071,50 @@ export async function mountEditor(root, docId) {
   const seg = (items, cur, onPick) => h('div', { class: 'seg' }, items.map(([v, label]) =>
     h('button', { class: v === cur ? 'on' : '', type: 'button', onclick: () => onPick(v) }, label)));
 
+  // Favourite pens: saved colour + tip size + style, one tap to switch. Hold (or right-click) one to remove it.
+  const STYLE_NAMES = { ball: 'Ballpoint', fountain: 'Fountain', brush: 'Brush' };
+  function favPens() {
+    const cur = prefs.pen, favs = prefs.favs || (prefs.favs = []);
+    const same = f => f.color === cur.color && Math.abs(f.size - cur.size) < 0.02 && (f.style || 'fountain') === (cur.style || 'fountain');
+    const chips = favs.map((f, i) => {
+      let held = false, t = 0;
+      const remove = () => popMenu(b, [{ label: 'Remove this favourite', icon: I.trash, danger: true, onClick: () => { favs.splice(i, 1); savePrefs(); renderOpts(); } }]);
+      const d = clamp(f.size * 3.4, 4, 17);
+      const b = h('button', {
+        class: 'fav' + (same(f) ? ' on' : ''), type: 'button',
+        title: `${fmtMm(f.size)} ${STYLE_NAMES[f.style] || 'Fountain'} (hold to remove)`,
+        onpointerdown: () => { held = false; clearTimeout(t); t = setTimeout(() => { held = true; remove(); }, 600); },
+        onpointerup: () => clearTimeout(t),
+        onpointerleave: () => clearTimeout(t),
+        oncontextmenu: e => { e.preventDefault(); clearTimeout(t); if (!held) { held = true; remove(); } },
+        onclick: () => {
+          if (held) { held = false; return; }
+          Object.assign(prefs.pen, { color: f.color, size: f.size, style: f.style || 'fountain' });
+          savePrefs();
+          renderOpts();
+        }
+      }, h('span', { class: 'dot', style: { width: d + 'px', height: d + 'px', background: f.color } }), h('small', null, fmtMm(f.size).replace(' mm', '')));
+      return b;
+    });
+    const add = h('button', {
+      class: 'ic sm', type: 'button', title: 'Save this pen as a favourite', html: I.star,
+      onclick: () => {
+        if (favs.some(same)) { toast('This pen is already a favourite.'); return; }
+        if (favs.length >= 8) { toast('Eight favourites is the limit. Hold one to remove it.'); return; }
+        favs.push({ color: cur.color, size: cur.size, style: cur.style || 'fountain' });
+        savePrefs();
+        renderOpts();
+      }
+    });
+    return [...chips, add];
+  }
+
   function renderOpts() {
     const t = prefs.tool;
     let kids = [];
     if (t === 'pen') {
       kids = [
+        ...favPens(), h('div', { class: 'vsep' }),
         ...swatches('pen', PEN_COLORS), h('div', { class: 'vsep' }),
         ...sizes('pen', [0.3, 0.5, 0.7, 1, 1.5], [3, 5, 7, 10, 14], 3), h('div', { class: 'vsep' }),
         seg([['ball', 'Ballpoint'], ['fountain', 'Fountain'], ['brush', 'Brush']], prefs.pen.style || 'fountain', v => { prefs.pen.style = v; savePrefs(); renderOpts(); })
@@ -1863,7 +2136,10 @@ export async function mountEditor(root, docId) {
         seg([[12, 'Small'], [16, 'Medium'], [24, 'Large']], prefs.text.size, v => { prefs.text.size = v; savePrefs(); renderOpts(); }),
         h('span', { class: 'hint' }, 'Tap the page to type')];
     } else {
-      kids = [h('span', { class: 'hint' }, 'Circle items to select them, or tap one. Drag to move, pull the corner to resize.')];
+      kids = [
+        clipItems && clipItems.length ? h('button', { class: 'btn sm', type: 'button', title: 'Paste (Ctrl+V)', onclick: () => pasteClip() }, h('span', { class: 'btn-ic', html: I.paste }), 'Paste') : null,
+        h('span', { class: 'hint' }, 'Circle items to select them, or tap one. Drag to move, pull the corner to resize.')
+      ].filter(Boolean);
     }
     optsEl.replaceChildren(...kids);
   }
@@ -1882,6 +2158,7 @@ export async function mountEditor(root, docId) {
     const rows = [
       ['Scribble over writing', 'Erase it'],
       ['Hold the pen still at the end of a line', 'Make it straight'],
+      ['Hold still after closing a circle, box or triangle', 'Tidy the shape'],
       ['Pull up past the last page', 'Add a new page'],
       ['Two-finger tap', 'Undo'],
       ['Three-finger tap', 'Redo'],
@@ -1932,6 +2209,8 @@ export async function mountEditor(root, docId) {
     if (e.target.closest && e.target.closest('input, textarea, dialog')) return;
     const mod = e.ctrlKey || e.metaKey, key = e.key.toLowerCase();
     if (mod && key === 'z') { e.preventDefault(); if (e.shiftKey) redo(); else undo(); }
+    else if (mod && (key === 'c' || key === 'x') && sel) { e.preventDefault(); copySel(key === 'x'); }
+    else if (mod && key === 'v') { e.preventDefault(); pasteClip(); }
     else if (mod && key === 'y') { e.preventDefault(); redo(); }
     else if (e.key === ' ') { e.preventDefault(); spaceDown = true; vp.classList.add('grab'); }
     else if ((e.key === 'Delete' || e.key === 'Backspace') && sel) { e.preventDefault(); deleteSel(); }
