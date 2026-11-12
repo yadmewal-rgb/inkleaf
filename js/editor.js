@@ -400,7 +400,7 @@ export async function mountEditor(root, docId) {
     dirtyPages.add(page);
     changed = true;
     clearTimeout(saveT);
-    saveT = setTimeout(() => flush().catch(saveFailed), 500);
+    saveT = setTimeout(() => flush().catch(saveFailed), 250);
     if (panelOpen) refreshThumb(page);
   }
 

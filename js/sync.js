@@ -17,9 +17,9 @@ const SCOPE = 'https://www.googleapis.com/auth/drive.appdata';
 const API = 'https://www.googleapis.com';
 const STORES = { a: 'assets', f: 'folders', d: 'docs', p: 'pages' };
 const FILE_FIELDS = 'id,name,modifiedTime,mimeType,description';
-const LIVE_MS = 3000;   // poll interval while a notebook is open
+const LIVE_MS = 1500;   // poll interval while a notebook is open
 const IDLE_MS = 15000;  // poll interval in the library
-const PUSH_MS = 900;    // delay between a local save and its upload
+const PUSH_MS = 250;    // delay between a local save and its upload
 
 let http = (url, opts) => fetch(url, opts);
 export const _setHttp = fn => { http = fn; }; // lets tests swap in a fake Drive
@@ -237,6 +237,50 @@ async function pullAsset(id, file) {
   return true;
 }
 
+// Attached files can be large, so they are moved in the background, two at a time, and never hold up
+// the live syncing of pages. A failed transfer is retried after a pause.
+const assetQ = [], assetBusy = new Set(), assetRetry = new Map();
+let assetActive = 0;
+const IDLE_TEXT = 'Live sync is on. Everything is up to date.';
+const FILES_TEXT = 'Live sync is on. Still transferring files (PDFs, pictures)...';
+
+function setIdle() {
+  if (assetActive || assetQ.length) setStatus('syncing', FILES_TEXT); else setStatus('ok', IDLE_TEXT);
+}
+
+// job: 'up' to upload a local file, or the Drive file info to download.
+function queueAsset(id, job) {
+  const r = assetRetry.get(id);
+  if (assetBusy.has(id) || (r && r.at > Date.now())) return;
+  assetBusy.add(id);
+  assetQ.push([id, job]);
+  pumpAssets();
+}
+
+function pumpAssets() {
+  while (assetActive < 2 && assetQ.length) {
+    const [id, job] = assetQ.shift();
+    assetActive++;
+    (job === 'up' ? pushAsset(id) : pullAsset(id, job))
+      .then(() => { assetRetry.delete(id); saveState(); })
+      .catch(e => {
+        assetRetry.set(id, { at: Date.now() + 30000, job });
+        if (!e.signin) console.warn('File transfer failed and will be retried', e);
+      })
+      .finally(() => {
+        assetBusy.delete(id);
+        assetActive--;
+        pumpAssets();
+        if (!assetActive && !assetQ.length && status.state === 'syncing') setIdle();
+      });
+  }
+  if (assetActive && status.state === 'ok') setIdle();
+}
+
+function retryAssets() {
+  for (const [id, r] of assetRetry) if (r.at <= Date.now()) { assetRetry.delete(id); queueAsset(id, r.job); }
+}
+
 // Bring one remote folder / notebook / page record in, merging with whatever is here.
 async function applyRemote(kind, id, file) {
   const name = kind + '_' + id, store = STORES[kind], s = st[name];
@@ -300,18 +344,19 @@ async function fullPass() {
   }
   if (dels.length) await db.setMeta('assetDels', []);
   const localIds = new Set(await db.keys('assets'));
-  await pool(3, [...localIds], async id => {
+  for (const id of localIds) {
     const name = 'a_' + id, file = remote.get(name);
-    if (file) { if (!st[name]) st[name] = { fid: file.id, lm: 0, rm: file.modifiedTime }; return; }
+    if (file) { if (!st[name]) st[name] = { fid: file.id, lm: 0, rm: file.modifiedTime }; continue; }
     if (st[name]) {
       delete st[name];
       // Removed from Drive by another device. Keep it (and put it back) if a page here still uses it.
-      if (!referenced.has(id)) { await db.put('assets', { id, deleted: true, modified: Date.now() }, true); return; }
+      if (!referenced.has(id)) { await db.put('assets', { id, deleted: true, modified: Date.now() }, true); continue; }
     }
-    await pushAsset(id);
-  });
-  const missing = [...remote.keys()].filter(n => n.startsWith('a_') && !localIds.has(n.slice(2)));
-  await pool(3, missing, async name => { if (await pullAsset(name.slice(2), remote.get(name))) changed = true; });
+    queueAsset(id, 'up');
+  }
+  for (const name of remote.keys()) {
+    if (name.startsWith('a_') && !localIds.has(name.slice(2))) queueAsset(name.slice(2), remote.get(name));
+  }
 
   cursor = start;
   saveState();
@@ -331,8 +376,8 @@ async function pullChanges() {
     files.sort((x, y) => rank[x.name[0]] - rank[y.name[0]]);
     for (const f of files) {
       const kind = f.name[0], id = f.name.slice(2);
-      const did = kind === 'a' ? await pullAsset(id, f) : await applyRemote(kind, id, f);
-      if (did) changed = true;
+      if (kind === 'a') { if (!st[f.name]) queueAsset(id, f); continue; }
+      if (await applyRemote(kind, id, f)) changed = true;
     }
     if (j.newStartPageToken) { cursor = j.newStartPageToken; tok = null; } else tok = j.nextPageToken || null;
   }
@@ -345,8 +390,8 @@ async function pushDoc(docId) {
   const pages = await db.byDoc(docId);
   for (const p of pages) {
     if (p.deleted) continue;
-    if (p.pdf) await pushAsset(p.pdf.a);
-    for (const it of p.items || []) if (it.t === 'im') await pushAsset(it.a);
+    if (p.pdf && !st['a_' + p.pdf.a]) queueAsset(p.pdf.a, 'up');
+    for (const it of p.items || []) if (it.t === 'im' && !st['a_' + it.a]) queueAsset(it.a, 'up');
   }
   for (const p of pages) {
     const s = st['p_' + p.id];
@@ -380,7 +425,7 @@ function run(fn, interactive) {
       setStatus('syncing', 'Syncing with Google Drive...');
       const changed = await fn();
       db.setMeta('lastSync', Date.now()).catch(() => {});
-      setStatus('ok', 'Live sync is on. Everything is up to date.');
+      setIdle();
       if (changed) bus.emit('synced');
       return true;
     } catch (e) {
@@ -401,9 +446,10 @@ async function tick() {
       try {
         const changed = await pullChanges();
         if (changed) bus.emit('synced');
-        if (status.state !== 'ok') setStatus('ok', 'Live sync is on. Everything is up to date.');
+        setIdle();
       } catch (e) { fail(e, false); }
     });
+    retryAssets();
     if (writeSeq !== pushedSeq) await pushNow(); // something saved earlier has not reached Drive yet
   } else if (clientId && !tokenValid() && status.state !== 'signin') {
     setStatus('signin', 'Sync paused. Tap to sign in to Google Drive again.');
