@@ -1,5 +1,5 @@
 // Offline support: network first, falling back to the cached copy.
-const CACHE = 'inkleaf-v1';
+const CACHE = 'inkleaf-v2';
 const SHELL = [
   './', 'index.html', 'manifest.webmanifest', 'css/app.css',
   'js/app.js', 'js/util.js', 'js/icons.js', 'js/ui.js', 'js/db.js', 'js/render.js',
@@ -24,7 +24,8 @@ self.addEventListener('fetch', e => {
   const url = new URL(e.request.url);
   if (e.request.method !== 'GET' || url.origin !== location.origin) return;
   e.respondWith(
-    fetch(e.request)
+    // "no-cache" re-checks with the server every time, so a newly published version shows up straight away.
+    fetch(e.request.url, { cache: 'no-cache' })
       .then(res => {
         if (res.ok) {
           const copy = res.clone();
