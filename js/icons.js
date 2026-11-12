@@ -32,6 +32,8 @@ export const I = {
   palette: s('<path d="M12 3a9 9 0 100 18c1.5 0 2-1 2-2s-.5-1.5-.5-2.5S14.5 15 16 15h1.5A3.5 3.5 0 0021 11.500C21 6.800 17 3 12 3z"/><circle cx="7.500" cy="11.500" r="1" fill="currentColor"/><circle cx="10.500" cy="7.500" r="1" fill="currentColor"/><circle cx="15" cy="8" r="1" fill="currentColor"/>'),
   full: s('<path d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5"/>'),
   fullExit: s('<path d="M9 4v5H4M15 4v5h5M9 20v-5H4M15 20v-5h5"/>'),
+  collapse: s('<path d="M6 14l6-6 6 6"/>'),
+  expand: s('<path d="M6 10l6 6 6-6"/>'),
   crop: s('<path d="M7 3v14h14"/><path d="M3 7h14v14"/>'),
   fit: s('<path d="M4 9V5h4M20 9V5h-4M4 15v4h4M20 15v4h-4"/>'),
   finger: s('<path d="M9 11V5.500a1.500 1.500 0 013 0V11"/><path d="M12 10.500a1.500 1.500 0 013 0V12"/><path d="M15 11.500a1.500 1.500 0 013 0V15a6 6 0 01-6 6h-.5a6 6 0 01-5-2.700L4 14.500a1.500 1.500 0 012.500-1.600L9 15"/>'),

@@ -113,8 +113,9 @@ export function popMenu(anchor, items, opts) {
 }
 
 export const TEMPLATE_OPTS = [
-  { v: 'blank', label: 'Blank' }, { v: 'ruled', label: 'Ruled' }, { v: 'narrow', label: 'Narrow' }, { v: 'wide', label: 'Wide' },
-  { v: 'margin', label: 'Margin' }, { v: 'cornell', label: 'Cornell' }, { v: 'todo', label: 'Checklist' },
+  { v: 'blank', label: 'Blank' }, { v: 'wide', label: 'Lines 12 mm' }, { v: 'ruled', label: 'Lines 9 mm' }, { v: 'narrow', label: 'Lines 7 mm' },
+  { v: 'fine', label: 'Lines 5 mm' }, { v: 'xfine', label: 'Lines 4 mm' },
+  { v: 'margin', label: 'Margin 9 mm' }, { v: 'narrowmargin', label: 'Margin 7 mm' }, { v: 'cornell', label: 'Cornell' }, { v: 'todo', label: 'Checklist' },
   { v: 'grid', label: 'Grid' }, { v: 'gridsmall', label: 'Small grid' }, { v: 'dots', label: 'Dotted' },
   { v: 'iso', label: 'Isometric' }, { v: 'music', label: 'Music' }
 ];

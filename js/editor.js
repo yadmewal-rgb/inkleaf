@@ -21,13 +21,16 @@ const PEN_COLORS = [INK, '#e03131', '#1971c2', '#2f9e44', '#f08c00', '#9c36b5', 
 const HL_COLORS = ['#ffd43b', '#8ce99a', '#74c0fc', '#faa2c1', '#ffa94d'];
 const SHAPES = [['rect', 'Rectangle'], ['ellipse', 'Ellipse'], ['line', 'Line'], ['arrow', 'Arrow']];
 
+const MM = 0.3528; // one page unit (a PDF point) in millimetres
+const mmToPt = mm => Math.round(mm / MM * 100) / 100;
+
 const DEFAULTS = {
   tool: 'pen',
-  pen: { color: INK, size: 2.2, style: 'fountain' },
+  pen: { color: INK, size: mmToPt(0.7), style: 'fountain' },
   scribble: true, // a zigzag over ink erases it
-  hl: { color: '#ffd43b', size: 16 },
-  eraser: { size: 16, mode: 'stroke' },
-  shape: { kind: 'rect', color: '#1971c2', size: 2.2 },
+  hl: { color: '#ffd43b', size: mmToPt(5.5) },
+  eraser: { size: mmToPt(5.5), mode: 'stroke' },
+  shape: { kind: 'rect', color: '#1971c2', size: mmToPt(0.8) },
   text: { color: INK, size: 16 },
   fingerDraw: null, // null = automatic: fingers draw until a stylus has been seen
   penSeen: false
@@ -75,10 +78,16 @@ export async function mountEditor(root, docId) {
   // Shown at the end of the tool bar while the title bar is hidden in full screen.
   const undoBtn2 = h('button', { class: 'ic', type: 'button', title: 'Undo', onclick: () => undo(), html: I.undo });
   const redoBtn2 = h('button', { class: 'ic', type: 'button', title: 'Redo', onclick: () => redo(), html: I.redo });
+  // In full screen the tool bar floats over the page; "mini" shrinks it to undo, redo and the page number.
+  const pageInd2 = h('span', { class: 'pageind' });
+  const miniBtn = h('button', { class: 'ic', type: 'button', title: 'Shrink the tool bar', onclick: () => setMini(!el.classList.contains('mini')), html: I.collapse });
   const fullTools = h('div', { class: 'fullonly' },
-    undoBtn2, redoBtn2,
-    h('button', { class: 'ic', type: 'button', title: 'Add page', onclick: () => addPageAfter(currentPv()), html: I.plus }),
-    h('button', { class: 'ic', type: 'button', title: 'Leave full screen (F)', onclick: () => setFull(false), html: I.fullExit }));
+    undoBtn2, redoBtn2, pageInd2,
+    h('button', { class: 'ic nomini', type: 'button', title: 'Pages', onclick: () => togglePanel(), html: I.pages }),
+    h('button', { class: 'ic nomini', type: 'button', title: 'Add page', onclick: () => addPageAfter(currentPv()), html: I.plus }),
+    h('button', { class: 'ic nomini', type: 'button', title: 'More', onclick: e => moreMenu(e.currentTarget), html: I.more }),
+    miniBtn,
+    h('button', { class: 'ic nomini', type: 'button', title: 'Leave full screen (F)', onclick: () => setFull(false), html: I.fullExit }));
   const showSync = s => {
     syncBtn.hidden = s.state === 'off';
     syncBtn.classList.toggle('spin', s.state === 'syncing');
@@ -191,7 +200,8 @@ export async function mountEditor(root, docId) {
     const vw = vpRect.width, vh = vpRect.height, pad = 12;
     const cw = worldW * scale, ch = worldH * scale;
     tx = cw + 2 * pad <= vw ? (vw - cw) / 2 : clamp(tx, vw - cw - pad, pad);
-    ty = ch <= vh ? 0 : clamp(ty, vh - ch, 0);
+    const top = full && !el.classList.contains('mini') ? 58 : 0; // room to pull the page out from under the floating tool bar
+    ty = ch + top <= vh ? top : clamp(ty, vh - ch, top);
   }
 
   function applyView() {
@@ -499,7 +509,7 @@ export async function mountEditor(root, docId) {
 
   function updateIndicator() {
     const i = pvs.indexOf(currentPv());
-    pageInd.textContent = `${i + 1} / ${pvs.length}`;
+    pageInd.textContent = pageInd2.textContent = `${i + 1} / ${pvs.length}`;
     try { localStorage.setItem('inkleaf.pos.' + doc.id, String(i)); } catch { /* private mode */ }
   }
 
@@ -1785,11 +1795,43 @@ export async function mountEditor(root, docId) {
     return colors.map(c => h('button', { class: 'sw' + (cur === c ? ' on' : ''), type: 'button', title: c, style: { '--c': c }, onclick: () => pick(c) })).concat(custom);
   }
 
-  function sizes(key, list, dots) {
-    return list.map((s, i) => h('button', {
-      class: 'sz' + (prefs[key].size === s ? ' on' : ''), type: 'button', title: 'Size ' + s,
-      onclick: () => { prefs[key].size = s; savePrefs(); renderOpts(); }
-    }, h('span', { class: 'dot', style: { width: dots[i] + 'px', height: dots[i] + 'px' } })));
+  // Tip sizes are stored in page units (points) and shown in millimetres, as on paper.
+  const fmtMm = pt => { const mm = pt * MM; return (mm < 1 ? String(Math.round(mm * 100) / 100) : mm.toFixed(1)) + ' mm'; };
+
+  // Preset dots (given in mm) followed by a button showing the exact size, which opens a slider.
+  function sizes(key, mms, dots, maxMm) {
+    const cur = prefs[key].size;
+    const btns = mms.map((mm, i) => {
+      const s = mmToPt(mm);
+      return h('button', {
+        class: 'sz' + (Math.abs(cur - s) < 0.02 ? ' on' : ''), type: 'button', title: mm + ' mm',
+        onclick: () => { prefs[key].size = s; savePrefs(); renderOpts(); }
+      }, h('span', { class: 'dot', style: { width: dots[i] + 'px', height: dots[i] + 'px' } }));
+    });
+    return [...btns, h('button', { class: 'mm', type: 'button', title: 'Tip size', onclick: e => sizePopover(e.currentTarget, key, mms[0] >= 2 ? 1 : 0.1, maxMm) }, fmtMm(cur))];
+  }
+
+  function sizePopover(anchor, key, minMm, maxMm) {
+    const val = h('b', null, fmtMm(prefs[key].size));
+    const line = h('span');
+    const show = () => {
+      val.textContent = fmtMm(prefs[key].size);
+      line.style.height = Math.max(1, prefs[key].size * scale) + 'px'; // as thick as it will be on the page right now
+      line.style.background = key === 'eraser' ? 'var(--muted)' : prefs[key].color;
+      const pill = optsEl.querySelector('.mm'); // the tool bar may have been redrawn since the slider opened
+      if (pill) pill.textContent = fmtMm(prefs[key].size);
+    };
+    const rng = h('input', {
+      type: 'range', class: 'mm-range', min: minMm, max: maxMm, step: maxMm > 4 ? 0.25 : 0.05,
+      value: Math.round(prefs[key].size * MM * 100) / 100,
+      oninput: () => { prefs[key].size = mmToPt(Number(rng.value)); show(); },
+      onchange: () => { savePrefs(); renderOpts(); }
+    });
+    show();
+    popover(anchor, h('div', { class: 'mm-pop' },
+      h('div', { class: 'mm-head' }, h('span', null, 'Tip size'), val),
+      rng,
+      h('div', { class: 'mm-prev' }, line)));
   }
 
   const seg = (items, cur, onPick) => h('div', { class: 'seg' }, items.map(([v, label]) =>
@@ -1801,20 +1843,20 @@ export async function mountEditor(root, docId) {
     if (t === 'pen') {
       kids = [
         ...swatches('pen', PEN_COLORS), h('div', { class: 'vsep' }),
-        ...sizes('pen', [0.8, 1.4, 2.2, 3.5, 6], [3, 5, 8, 11, 15]), h('div', { class: 'vsep' }),
+        ...sizes('pen', [0.3, 0.5, 0.7, 1, 1.5], [3, 5, 7, 10, 14], 3), h('div', { class: 'vsep' }),
         seg([['ball', 'Ballpoint'], ['fountain', 'Fountain'], ['brush', 'Brush']], prefs.pen.style || 'fountain', v => { prefs.pen.style = v; savePrefs(); renderOpts(); })
       ];
     }
-    else if (t === 'hl') kids = [...swatches('hl', HL_COLORS), h('div', { class: 'vsep' }), ...sizes('hl', [10, 16, 24], [7, 11, 15])];
+    else if (t === 'hl') kids = [...swatches('hl', HL_COLORS), h('div', { class: 'vsep' }), ...sizes('hl', [3.5, 5.5, 8.5], [7, 11, 15], 14)];
     else if (t === 'eraser') {
       kids = [
         seg([['stroke', 'Whole stroke'], ['precise', 'Precise']], prefs.eraser.mode, v => { prefs.eraser.mode = v; savePrefs(); renderOpts(); }),
-        h('div', { class: 'vsep' }), ...sizes('eraser', [8, 16, 30], [7, 11, 16])
+        h('div', { class: 'vsep' }), ...sizes('eraser', [3, 5.5, 10.5], [7, 11, 16], 20)
       ];
     } else if (t === 'shape') {
       kids = [
         seg(SHAPES, prefs.shape.kind, v => { prefs.shape.kind = v; savePrefs(); renderOpts(); }),
-        h('div', { class: 'vsep' }), ...swatches('shape', PEN_COLORS), h('div', { class: 'vsep' }), ...sizes('shape', [1.2, 2.2, 4], [5, 8, 12])
+        h('div', { class: 'vsep' }), ...swatches('shape', PEN_COLORS), h('div', { class: 'vsep' }), ...sizes('shape', [0.4, 0.8, 1.4], [5, 8, 12], 3)
       ];
     } else if (t === 'text') {
       kids = [...swatches('text', PEN_COLORS), h('div', { class: 'vsep' }),
@@ -1919,12 +1961,32 @@ export async function mountEditor(root, docId) {
     if (full === on) return;
     full = on;
     el.classList.toggle('full', on);
+    if (!on) setMini(false);
+    keepAwake(on);
     if (on) {
       try {
         const de = document.documentElement, req = de.requestFullscreen || de.webkitRequestFullscreen;
         if (req && !nativeFull()) { const r = req.call(de); if (r && r.catch) r.catch(() => {}); }
       } catch { /* not supported (iPhone): hiding the title bar still gives more room */ }
     } else leaveNativeFull();
+  }
+
+  function setMini(on) {
+    el.classList.toggle('mini', on);
+    miniBtn.innerHTML = on ? I.expand : I.collapse;
+    miniBtn.title = on ? 'Show the tool bar' : 'Shrink the tool bar';
+  }
+
+  // Full screen is for long writing sessions, so the screen is kept from dimming while it is on.
+  let wake = null;
+  async function keepAwake(on) {
+    try {
+      if (on && !wake && navigator.wakeLock) {
+        wake = await navigator.wakeLock.request('screen');
+        wake.addEventListener('release', () => { wake = null; });
+        if (!full) keepAwake(false);
+      } else if (!on && wake) { const w = wake; wake = null; await w.release(); }
+    } catch { /* not allowed or not supported */ }
   }
 
   // The browser left full screen by itself (Esc, back gesture): bring the title bar back.
@@ -1962,7 +2024,7 @@ export async function mountEditor(root, docId) {
   }
 
   function onVisibility() {
-    if (document.visibilityState !== 'hidden') return;
+    if (document.visibilityState !== 'hidden') { if (full) keepAwake(true); return; } // the lock is dropped while hidden
     commitText();
     flush().catch(saveFailed); // saving triggers the upload
   }
@@ -1986,6 +2048,7 @@ export async function mountEditor(root, docId) {
     document.removeEventListener('fullscreenchange', onFsChange);
     document.removeEventListener('webkitfullscreenchange', onFsChange);
     if (full) leaveNativeFull();
+    keepAwake(false);
     offs.forEach(off => off());
     R.onImageLoaded(null);
     try {

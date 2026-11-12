@@ -34,8 +34,10 @@ export function templateGeometry(pg) {
   if (t === 'ruled') rule(26);
   else if (t === 'narrow') rule(19, 60);
   else if (t === 'wide') rule(34, 78);
-  else if (t === 'margin') {
-    rule(26);
+  else if (t === 'fine') rule(14.17, 56);   // 5 mm
+  else if (t === 'xfine') rule(11.34, 52);  // 4 mm
+  else if (t === 'margin' || t === 'narrowmargin') {
+    if (t === 'margin') rule(26); else rule(19, 60);
     accent.push([64, 0, 64, h]);
   } else if (t === 'cornell') {
     const cue = Math.round(w * 0.28), foot = h - 132;
