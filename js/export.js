@@ -99,6 +99,9 @@ export async function buildPdf(doc, pages, progress) {
       for (const [x1, y1, x2, y2] of g.lines) {
         page.drawLine({ start: { x: x1, y: H - y1 }, end: { x: x2, y: H - y2 }, thickness: 0.6, color: col });
       }
+      for (const [x1, y1, x2, y2] of g.accent) {
+        page.drawLine({ start: { x: x1, y: H - y1 }, end: { x: x2, y: H - y2 }, thickness: 0.8, color: hex(pap.accent) });
+      }
       for (const [x, y] of g.dots) page.drawCircle({ x, y: H - y, size: 0.9, color: col });
     }
 

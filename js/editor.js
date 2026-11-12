@@ -10,7 +10,10 @@ import { syncNow, syncStatus, mergePage, mergeDoc } from './sync.js';
 
 const GAP = 14, MIN_S = 0.2, MAX_S = 6;
 const COARSE = matchMedia('(pointer: coarse)').matches;
-const MAXPX = COARSE ? 5.5e6 : 9e6; // cap on pixels per page canvas (memory on tablets)
+const MAXPX = COARSE ? 5.5e6 : 9e6; // cap on pixels per whole-page canvas (memory on tablets)
+const REGION_PX = COARSE ? 6e6 : 12e6; // cap when only the visible part of a page is drawn (zoomed in)
+const REGION_PAD = 0.15;               // extra drawn around the visible part, as a fraction of the screen
+const PALM_MS = 350;                   // touches this soon after the stylus was seen are treated as the palm
 const INK = '#1c1d21', INK_ON_DARK = '#f1f3f5';
 
 const PEN_COLORS = [INK, '#e03131', '#1971c2', '#2f9e44', '#f08c00', '#9c36b5', '#ffffff'];
@@ -67,6 +70,13 @@ export async function mountEditor(root, docId) {
   const optsEl = h('div', { class: 'opts' });
   const fileInp = h('input', { type: 'file', accept: 'image/*', hidden: true, onchange: onImageFile });
   const syncBtn = h('button', { class: 'ic', type: 'button', html: I.sync, onclick: () => syncNow(true) });
+  // Shown at the end of the tool bar while the title bar is hidden in full screen.
+  const undoBtn2 = h('button', { class: 'ic', type: 'button', title: 'Undo', onclick: () => undo(), html: I.undo });
+  const redoBtn2 = h('button', { class: 'ic', type: 'button', title: 'Redo', onclick: () => redo(), html: I.redo });
+  const fullTools = h('div', { class: 'fullonly' },
+    undoBtn2, redoBtn2,
+    h('button', { class: 'ic', type: 'button', title: 'Add page', onclick: () => addPageAfter(currentPv()), html: I.plus }),
+    h('button', { class: 'ic', type: 'button', title: 'Leave full screen (F)', onclick: () => setFull(false), html: I.fullExit }));
   const showSync = s => {
     syncBtn.hidden = s.state === 'off';
     syncBtn.classList.toggle('spin', s.state === 'syncing');
@@ -82,10 +92,11 @@ export async function mountEditor(root, docId) {
       titleBtn, pageInd,
       h('div', { class: 'grow' }),
       syncBtn, undoBtn, redoBtn,
+      h('button', { class: 'ic', type: 'button', title: 'Full screen (F)', onclick: () => setFull(true), html: I.full }),
       h('button', { class: 'ic', type: 'button', title: 'Pages', onclick: togglePanel, html: I.pages }),
       h('button', { class: 'ic', type: 'button', title: 'Add page', onclick: () => addPageAfter(currentPv()), html: I.plus }),
       h('button', { class: 'ic', type: 'button', title: 'More', onclick: e => moreMenu(e.currentTarget), html: I.more })),
-    h('div', { class: 'bar tools' }, toolsEl, h('div', { class: 'vsep' }), optsEl),
+    h('div', { class: 'bar tools' }, toolsEl, h('div', { class: 'vsep' }), optsEl, h('div', { class: 'grow' }), fullTools),
     h('div', { class: 'stage' }, vp, overlay, panel),
     fileInp);
   root.append(el);
@@ -93,11 +104,15 @@ export async function mountEditor(root, docId) {
   // ------------------------------------------------------------------ view state
   let scale = 1, tx = 0, ty = 0, vpRect = vp.getBoundingClientRect(), worldW = 0, worldH = 0;
   let zooming = false, zoomT = 0, rafView = 0;
-  const pvs = []; // one "page view" per page: {page, el, bg, ink, x, y, rs, bgTok}
+  const pvs = []; // one "page view" per page: {page, el, bg, hi, ink, x, y, rs, clip, bgRs, bgTok, hiTok}
 
   let ptrs = new Map();
   let action = null, pan = null, pinch = null, spaceDown = false, inertiaRaf = 0;
   let penSeen = !!prefs.penSeen;
+  let lastPenT = -1e9;   // when the stylus was last seen (touching or hovering)
+  let multiTap = null;   // a two/three finger tap in progress
+  let lastTap = null;    // previous single finger tap, for double-tap
+  let full = false, dbg = null;
   let sel = null, textEd = null;
   let livePv = null, liveFn = null, rafLive = 0;
   const undoStack = [], redoStack = [];
@@ -129,7 +144,7 @@ export async function mountEditor(root, docId) {
     for (const page of pages) {
       const bg = h('canvas', { class: 'bg' }), ink = h('canvas', { class: 'ink' });
       const pel = h('div', { class: 'page' }, bg, ink);
-      const pv = { page, el: pel, bg, ink, img: null, x: 0, y: 0, rs: 0, bgTok: 0 };
+      const pv = { page, el: pel, bg, ink, img: null, hi: null, x: 0, y: 0, rs: 0, clip: null, bgRs: 0, bgTok: 0, hiTok: 0 };
       stylePv(pv);
       pvs.push(pv);
       world.append(pel);
@@ -172,9 +187,42 @@ export async function mountEditor(root, docId) {
     }
   }
 
-  function targetRs(page) {
-    const dpr = Math.min(window.devicePixelRatio || 1, 3);
-    return Math.min(scale * dpr, Math.sqrt(MAXPX / (page.w * page.h)));
+  // The part of a page that is on screen, in page units, widened by pad (a fraction of the screen). null = none.
+  function visRect(pv, pad) {
+    const vw = vpRect.width / scale, vh = vpRect.height / scale;
+    const x0 = Math.max(0, -tx / scale - pv.x - vw * pad), y0 = Math.max(0, -ty / scale - pv.y - vh * pad);
+    const x1 = Math.min(pv.page.w, -tx / scale - pv.x + vw * (1 + pad)), y1 = Math.min(pv.page.h, -ty / scale - pv.y + vh * (1 + pad));
+    return x1 - x0 < 1 || y1 - y0 < 1 ? null : { x: x0, y: y0, w: x1 - x0, h: y1 - y0 };
+  }
+
+  // How a page should be drawn right now. A whole-page canvas is used while it is sharp enough; zoomed in
+  // further, only the visible part ("clip") is drawn, at full screen resolution.
+  function plan(pv) {
+    const pg = pv.page;
+    const want = scale * Math.min(window.devicePixelRatio || 1, 3);
+    const base = Math.min(want, Math.sqrt(MAXPX / (pg.w * pg.h)));
+    const whole = { rs: base, base, clip: null };
+    if (want <= base * 1.03) return whole;
+    const r = visRect(pv, REGION_PAD);
+    if (!r) return whole;
+    const rs = Math.min(want, Math.sqrt(REGION_PX / (r.w * r.h)));
+    if (rs <= base * 1.03) return whole;
+    const x = Math.floor(r.x * rs) / rs, y = Math.floor(r.y * rs) / rs; // start on a whole pixel
+    const W = Math.max(1, Math.ceil((r.x + r.w - x) * rs)), H = Math.max(1, Math.ceil((r.y + r.h - y) * rs));
+    return { rs, base, clip: { x, y, w: W / rs, h: H / rs, W, H } };
+  }
+
+  // Does the page need redrawing for the current view? Resolution changes wait until a zoom has settled.
+  function stale(pv) {
+    if (action && action.pv === pv) return false;
+    const c = pv.clip;
+    if (c) {
+      const v = visRect(pv, 0), e = 1 / scale;
+      if (v && (v.x < c.x - e || v.y < c.y - e || v.x + v.w > c.x + c.w + e || v.y + v.h > c.y + c.h + e)) return true;
+    }
+    if (zooming) return false;
+    const p = plan(pv);
+    return !p.clip !== !c || Math.abs(pv.rs - p.rs) / pv.rs > 0.04;
   }
 
   function inRange(pv, margin) {
@@ -187,31 +235,76 @@ export async function mountEditor(root, docId) {
     const vh = vpRect.height;
     for (const pv of pvs) {
       if (inRange(pv, vh * 0.5)) {
-        if (!pv.rs) renderPv(pv);
-        else if (!zooming && Math.abs(pv.rs - targetRs(pv.page)) / pv.rs > 0.04) renderPv(pv);
+        if (!pv.rs || stale(pv)) renderPv(pv);
       } else if (pv.rs && !inRange(pv, vh * 1.5) && !(sel && sel.pv === pv) && !(action && action.pv === pv) && !(textEd && textEd.pv === pv)) {
         releasePv(pv);
       }
     }
   }
 
-  function renderPv(pv) {
-    const rs = targetRs(pv.page);
-    pv.rs = rs;
-    const W = Math.max(1, Math.round(pv.page.w * rs)), H = Math.max(1, Math.round(pv.page.h * rs));
+  // Position a layer canvas over the part of the page it covers.
+  function place(c, pv) {
+    const k = pv.clip;
+    Object.assign(c.style, k
+      ? { left: k.x + 'px', top: k.y + 'px', width: k.w + 'px', height: k.h + 'px' }
+      : { left: '', top: '', width: '', height: '' });
+  }
+
+  // Page units -> canvas pixels for a page's ink layers.
+  function xf(c, pv) {
+    const k = pv.clip, rs = pv.rs;
+    c.setTransform(rs, 0, 0, rs, k ? -k.x * rs : 0, k ? -k.y * rs : 0);
+  }
+
+  function renderPv(pv, force) {
+    const p = plan(pv);
+    pv.rs = p.rs;
+    pv.clip = p.clip;
+    const W = p.clip ? p.clip.W : Math.max(1, Math.round(pv.page.w * p.rs));
+    const H = p.clip ? p.clip.H : Math.max(1, Math.round(pv.page.h * p.rs));
+    place(pv.ink, pv);
     pv.ink.width = W;
     pv.ink.height = H;
     paintInk(pv);
-    paintBg(pv, rs, W, H);
+    paintBg(pv, p.base, force);
+    paintHi(pv);
     if (livePv === pv) {
+      place(live, pv);
       live.width = W;
       live.height = H;
       if (sel && sel.pv === pv) drawSelLive();
     }
   }
 
-  function paintBg(pv, rs, W, H) {
+  // Sharp paper (and PDF) for the visible part of a zoomed-in page, laid over the whole-page background.
+  function paintHi(pv) {
+    const k = pv.clip, pg = pv.page, rs = pv.rs, tok = ++pv.hiTok;
+    if (!k) {
+      if (pv.hi) { pv.hi.remove(); pv.hi = null; }
+      return;
+    }
+    const put = pdfCanvas => {
+      if (!pv.hi) { pv.hi = h('canvas', { class: 'hi' }); pv.bg.after(pv.hi); }
+      const c = pv.hi;
+      c.width = k.W;
+      c.height = k.H;
+      Object.assign(c.style, { left: k.x + 'px', top: k.y + 'px', width: k.w + 'px', height: k.h + 'px' });
+      const x = c.getContext('2d');
+      if (pdfCanvas) x.drawImage(pdfCanvas, 0, 0);
+      else { x.setTransform(rs, 0, 0, rs, -k.x * rs, -k.y * rs); R.drawPaper(x, pg); }
+    };
+    if (!pg.pdf) { put(null); return; }
+    // The previous sharp piece stays in place until the new one is ready.
+    renderPdfPage(pg.pdf.a, pg.pdf.i, rs, () => tok !== pv.hiTok || !pv.rs, k)
+      .then(c => { if (c && tok === pv.hiTok && pv.rs) put(c); })
+      .catch(err => console.warn('PDF region render failed', err));
+  }
+
+  function paintBg(pv, rs, force) {
+    if (!force && pv.bg.width && pv.bgRs && Math.abs(pv.bgRs - rs) / rs < 0.04) return;
+    pv.bgRs = rs;
     const tok = ++pv.bgTok, pg = pv.page;
+    const W = Math.max(1, Math.round(pg.w * rs)), H = Math.max(1, Math.round(pg.h * rs));
     const draw = pdfCanvas => {
       pv.bg.width = W;
       pv.bg.height = H;
@@ -232,10 +325,15 @@ export async function mountEditor(root, docId) {
 
   function releasePv(pv) {
     pv.rs = 0;
+    pv.bgRs = 0;
+    pv.clip = null;
     pv.bgTok++;
+    pv.hiTok++;
     pv.bg.width = pv.bg.height = 0;
     pv.ink.width = pv.ink.height = 0;
+    place(pv.ink, pv);
     if (pv.img) { pv.img.remove(); pv.img = null; }
+    if (pv.hi) { pv.hi.remove(); pv.hi = null; }
     if (livePv === pv) { live.remove(); live.width = live.height = 0; livePv = null; }
   }
 
@@ -250,8 +348,8 @@ export async function mountEditor(root, docId) {
     const c = pv.ink.getContext('2d');
     c.setTransform(1, 0, 0, 1, 0, 0);
     c.clearRect(0, 0, pv.ink.width, pv.ink.height);
-    c.setTransform(pv.rs, 0, 0, pv.rs, 0, 0);
-    R.drawItems(c, pv.page.items, hiddenIds(pv), false);
+    xf(c, pv);
+    R.drawItems(c, pv.page.items, hiddenIds(pv), false, pv.clip);
     paintImg(pv);
   }
 
@@ -261,16 +359,17 @@ export async function mountEditor(root, docId) {
       if (pv.img) { pv.img.remove(); pv.img = null; }
       return;
     }
-    if (!pv.img) { pv.img = h('canvas', { class: 'img' }); pv.bg.after(pv.img); }
+    if (!pv.img) { pv.img = h('canvas', { class: 'img' }); pv.ink.before(pv.img); }
     if (pv.img.width !== pv.ink.width || pv.img.height !== pv.ink.height) {
       pv.img.width = pv.ink.width;
       pv.img.height = pv.ink.height;
     }
+    place(pv.img, pv);
     const c = pv.img.getContext('2d');
     c.setTransform(1, 0, 0, 1, 0, 0);
     c.clearRect(0, 0, pv.img.width, pv.img.height);
-    c.setTransform(pv.rs, 0, 0, pv.rs, 0, 0);
-    R.drawImages(c, pv.page.items, hiddenIds(pv));
+    xf(c, pv);
+    R.drawImages(c, pv.page.items, hiddenIds(pv), pv.clip);
   }
 
   function queueInk(pv) {
@@ -289,12 +388,13 @@ export async function mountEditor(root, docId) {
     if (!pv.rs) renderPv(pv);
     if (livePv !== pv || live.width !== pv.ink.width || live.height !== pv.ink.height) {
       pv.el.append(live);
+      place(live, pv);
       live.width = pv.ink.width;
       live.height = pv.ink.height;
       livePv = pv;
     }
     const c = live.getContext('2d');
-    c.setTransform(pv.rs, 0, 0, pv.rs, 0, 0);
+    xf(c, pv);
     c.globalAlpha = 1;
     c.setLineDash([]);
     return c;
@@ -306,7 +406,7 @@ export async function mountEditor(root, docId) {
     const c = live.getContext('2d');
     c.setTransform(1, 0, 0, 1, 0, 0);
     c.clearRect(0, 0, live.width, live.height);
-    if (livePv.rs) c.setTransform(livePv.rs, 0, 0, livePv.rs, 0, 0);
+    if (livePv.rs) xf(c, livePv);
   }
 
   function nextLive(fn) {
@@ -433,7 +533,7 @@ export async function mountEditor(root, docId) {
     else if (kind === 'a') {
       for (const pv of pvs) {
         const pg = pv.page;
-        if (pv.rs && ((pg.pdf && pg.pdf.a === rec.id) || pg.items.some(it => it.t === 'im' && it.a === rec.id))) renderPv(pv);
+        if (pv.rs && ((pg.pdf && pg.pdf.a === rec.id) || pg.items.some(it => it.t === 'im' && it.a === rec.id))) renderPv(pv, true);
       }
     }
   }
@@ -467,7 +567,7 @@ export async function mountEditor(root, docId) {
     if (m === rec) P.modified = rec.modified; else dirty(P); // a true merge of both sides gets saved and sent back
     const pv = pvs.find(v => v.page === P);
     if (pv) {
-      if (restyle) { stylePv(pv); if (pv.rs) renderPv(pv); } else queueInk(pv);
+      if (restyle) { stylePv(pv); if (pv.rs) renderPv(pv, true); } else queueInk(pv);
     }
     if (panelOpen) refreshThumb(P);
   }
@@ -543,8 +643,8 @@ export async function mountEditor(root, docId) {
   }
 
   function updateUndoUi() {
-    undoBtn.disabled = !undoStack.length;
-    redoBtn.disabled = !redoStack.length;
+    undoBtn.disabled = undoBtn2.disabled = !undoStack.length;
+    redoBtn.disabled = redoBtn2.disabled = !redoStack.length;
   }
 
   // ------------------------------------------------------------------ pointer input
@@ -553,42 +653,62 @@ export async function mountEditor(root, docId) {
     measure();
     if (textEd) { commitText(); return; } // this press just closes the text box
     try { vp.setPointerCapture(e.pointerId); } catch { /* synthetic pointer */ }
-    const p = { id: e.pointerId, type: e.pointerType, x: e.clientX, y: e.clientY, ignored: false };
+    const p = { id: e.pointerId, type: e.pointerType, x: e.clientX, y: e.clientY, x0: e.clientX, y0: e.clientY, ignored: false };
     ptrs.set(e.pointerId, p);
     stopInertia();
 
     if (e.pointerType === 'pen') {
+      lastPenT = performance.now();
       if (!penSeen) { penSeen = true; prefs.penSeen = true; savePrefs(); }
       for (const q of ptrs.values()) if (q.type === 'touch') q.ignored = true; // resting palm
-      if (action) cancelAction();
+      // A stroke whose pen-up never arrived is kept, not thrown away.
+      if (action && action.ptype === 'pen' && (action.tool === 'pen' || action.tool === 'hl')) {
+        if (action.pid !== e.pointerId) ptrs.delete(action.pid);
+        endAction(null);
+      } else if (action) cancelAction();
       pan = null;
       pinch = null;
+      multiTap = null;
       const erasing = e.button === 5 || (e.buttons & 32) || e.button === 2 || (e.buttons & 2);
+      if (dbg) dbgEv(e, erasing ? 'erase' : 'draw');
       startAction(e, erasing ? 'eraser' : null);
       return;
     }
     if (e.pointerType === 'mouse') {
+      if (dbg) dbgEv(e, 'mouse');
       if (e.button === 1 || spaceDown) startPan(p);
       else if (e.button === 0) startAction(e);
       return;
     }
-    // touch
-    if (action && action.ptype === 'pen') { p.ignored = true; return; }
+    // touch: anything that lands while the stylus is writing or hovering is the resting hand
+    if ((action && action.ptype === 'pen') || performance.now() - lastPenT < PALM_MS) {
+      p.ignored = true;
+      if (dbg) dbgEv(e, 'palm');
+      return;
+    }
     const ts = [...ptrs.values()].filter(q => q.type === 'touch' && !q.ignored);
+    if (dbg) dbgEv(e, ts.length >= 2 ? 'fingers ' + ts.length : fingerDraws() ? 'draw' : 'scroll');
     if (ts.length >= 2) {
       if (action) cancelAction();
       pan = null;
-      if (!pinch) startPinch(ts[0], ts[1]);
+      if (!pinch) {
+        startPinch(ts[0], ts[1]);
+        if (ts.length === 2) multiTap = { t0: performance.now(), n: 2, moved: false, scale, tx, ty };
+      }
+      if (multiTap) multiTap.n = Math.max(multiTap.n, ts.length);
     } else if (fingerDraws() || touchOnSel(e)) startAction(e);
     else startPan(p);
   }
 
   function onMove(e) {
+    if (e.pointerType === 'pen') lastPenT = performance.now();
+    if (dbg) dbgEv(e);
     const p = ptrs.get(e.pointerId);
     if (!p) { hover(e); return; }
     p.x = e.clientX;
     p.y = e.clientY;
     if (p.ignored) return;
+    if (multiTap && p.type === 'touch' && Math.hypot(p.x - p.x0, p.y - p.y0) > 14) multiTap.moved = true;
     if (action && action.pid === e.pointerId) {
       const evs = e.getCoalescedEvents ? e.getCoalescedEvents() : null;
       if (evs && evs.length > 1) for (const ev of evs) actionMove(ev); else actionMove(e);
@@ -597,11 +717,16 @@ export async function mountEditor(root, docId) {
   }
 
   function onUp(e) {
+    if (e.pointerType === 'pen') lastPenT = performance.now();
+    if (dbg) dbgEv(e);
     const p = ptrs.get(e.pointerId);
     if (!p) return;
     ptrs.delete(e.pointerId);
     if (action && action.pid === e.pointerId) {
-      if (e.type === 'pointercancel') cancelAction(); else endAction(e);
+      if (e.type !== 'pointercancel') endAction(e);
+      // A cancelled pen or mouse stroke is still what was written, so it is kept; a cancelled finger stroke is not.
+      else if (action.ptype !== 'touch' && (action.tool === 'pen' || action.tool === 'hl')) endAction(null);
+      else cancelAction();
     } else if (pinch && (pinch.a === e.pointerId || pinch.b === e.pointerId)) {
       pinch = null;
       zooming = false;
@@ -609,6 +734,19 @@ export async function mountEditor(root, docId) {
       const rest = [...ptrs.values()].find(q => q.type === 'touch' && !q.ignored);
       if (rest) { startPan(rest); pan.moved = 99; }
     } else if (pan && pan.pid === e.pointerId) endPan(p, e);
+    if (multiTap && ![...ptrs.values()].some(q => q.type === 'touch' && !q.ignored)) {
+      const m = multiTap;
+      multiTap = null;
+      pan = null;
+      if (!m.moved && e.type !== 'pointercancel' && performance.now() - m.t0 < 350) {
+        // Two-finger tap = undo, three-finger tap = redo. Put back any slight zoom the tap caused.
+        scale = m.scale; tx = m.tx; ty = m.ty;
+        applyView();
+        const can = m.n === 2 ? undoStack.length : redoStack.length;
+        if (m.n === 2) undo(); else redo();
+        toast(can ? (m.n === 2 ? 'Undo' : 'Redo') : (m.n === 2 ? 'Nothing to undo' : 'Nothing to redo'), 900);
+      }
+    }
   }
 
   function hover(e) {
@@ -715,6 +853,14 @@ export async function mountEditor(root, docId) {
       const it = topItemAt(pv.page, x, y);
       clearSel();
       if (it) setSel(pv, [it]);
+    } else {
+      // Double tap: zoom in on that spot, or back out to the full page width.
+      const now = performance.now();
+      if (lastTap && now - lastTap.t < 320 && Math.hypot(cx - lastTap.x, cy - lastTap.y) < 40) {
+        lastTap = null;
+        const fit = clamp((vpRect.width - 24) / worldW, MIN_S, 2.5);
+        zoomAt(cx, cy, Math.abs(scale - fit) / fit > 0.15 ? fit / scale : 2);
+      } else lastTap = { t: now, x: cx, y: cy };
     }
   }
 
@@ -775,6 +921,7 @@ export async function mountEditor(root, docId) {
     const a = action;
     action = null;
     if (!a) return;
+    if (dbg && (a.tool === 'pen' || a.tool === 'hl')) dbgCount('strokes discarded');
     if (a.tool === 'eraser') endErase(a, null);
     else if (a.tool === 'lasso' && a.mode !== 'draw') endLasso(a);
     else clearLive();
@@ -838,12 +985,16 @@ export async function mountEditor(root, docId) {
     }
   }
 
+  // e is null when the stroke is closed without a proper pen-up (the system cancelled or lost it).
   function endStroke(a, e) {
     const page = a.pv.page;
-    // Smoothing trails slightly behind the tip, so finish exactly where the pen lifted.
-    const [ex, ey] = toPage(a.pv, e.clientX, e.clientY);
-    const n = a.pts.length;
-    if (Math.hypot(ex - a.pts[n - 3], ey - a.pts[n - 2]) > 0.5 / scale) a.pts.push(ex, ey, a.sp);
+    if (e) {
+      // Smoothing trails slightly behind the tip, so finish exactly where the pen lifted.
+      const [ex, ey] = toPage(a.pv, e.clientX, e.clientY);
+      const n = a.pts.length;
+      if (Math.hypot(ex - a.pts[n - 3], ey - a.pts[n - 2]) > 0.5 / scale) a.pts.push(ex, ey, a.sp);
+    }
+    if (dbg) dbgCount('strokes saved');
     const it = {
       id: uid(), t: 's', tool: a.tool, c: a.color, w: a.size,
       p: a.pts.map(v => Math.round(v * 100) / 100), z: nextZ(), m: Date.now()
@@ -851,7 +1002,7 @@ export async function mountEditor(root, docId) {
     addItems(page, [it]);
     if (a.pv.rs) {
       const c = a.pv.ink.getContext('2d');
-      c.setTransform(a.pv.rs, 0, 0, a.pv.rs, 0, 0);
+      xf(c, a.pv);
       if (a.tool === 'hl') c.globalCompositeOperation = 'destination-over'; // highlighter goes under ink
       R.drawItem(c, it);
       c.globalCompositeOperation = 'source-over';
@@ -994,9 +1145,10 @@ export async function mountEditor(root, docId) {
     const pv = sel.pv, b = sel.b, k = sel.k;
     const c = useLive(pv);
     clearLive();
-    c.setTransform(pv.rs * k, 0, 0, pv.rs * k, pv.rs * (b.x * (1 - k) + sel.dx), pv.rs * (b.y * (1 - k) + sel.dy));
+    const ox = pv.clip ? pv.clip.x : 0, oy = pv.clip ? pv.clip.y : 0;
+    c.setTransform(pv.rs * k, 0, 0, pv.rs * k, pv.rs * (b.x * (1 - k) + sel.dx - ox), pv.rs * (b.y * (1 - k) + sel.dy - oy));
     R.drawItems(c, sel.items);
-    c.setTransform(pv.rs, 0, 0, pv.rs, 0, 0);
+    xf(c, pv);
   }
 
   function commitSelTransform() {
@@ -1136,7 +1288,7 @@ export async function mountEditor(root, docId) {
     addItems(page, [it]);
     if (a.pv.rs) {
       const c = a.pv.ink.getContext('2d');
-      c.setTransform(a.pv.rs, 0, 0, a.pv.rs, 0, 0);
+      xf(c, a.pv);
       R.drawItem(c, it);
     }
     pushUndo({ pageId: page.id, add: [it], remove: [] });
@@ -1328,7 +1480,7 @@ export async function mountEditor(root, docId) {
             doc.template = st.template;
             doc.paper = st.paper;
             docDirty = true;
-            for (const v of pvs) { stylePv(v); if (v.rs) renderPv(v); }
+            for (const v of pvs) { stylePv(v); if (v.rs) renderPv(v, true); }
             if (panelOpen) buildPanel();
           }
         }
@@ -1475,6 +1627,23 @@ export async function mountEditor(root, docId) {
     flush().catch(saveFailed);
   }
 
+  function gestureHelp() {
+    const rows = [
+      ['Two-finger tap', 'Undo'],
+      ['Three-finger tap', 'Redo'],
+      ['Pinch', 'Zoom in and out'],
+      ['Two-finger drag', 'Move around the page'],
+      ['Double tap (when fingers scroll)', 'Zoom in on that spot, or back to full width'],
+      ['Stylus side button', 'Erase while held'],
+      ['Resting hand', 'Ignored while the stylus is writing or hovering']
+    ];
+    modal({
+      title: 'Gestures',
+      body: h('div', { class: 'gest' }, rows.map(([a, b]) => h('div', { class: 'gest-row' }, h('b', null, a), h('span', null, b)))),
+      actions: [{ label: 'OK', primary: true }]
+    });
+  }
+
   function moreMenu(anchor) {
     const fd = prefs.fingerDraw;
     const label = fd === true ? 'Finger drawing: on' : fd === false ? 'Finger drawing: off' : `Finger drawing: auto (${fingerDraws() ? 'on' : 'off'})`;
@@ -1482,6 +1651,9 @@ export async function mountEditor(root, docId) {
       { label: 'Export as PDF', icon: I.share, onClick: async () => { commitText(); await flush().catch(saveFailed); exportFlow(doc.id); } },
       { label: 'Page template', icon: I.template, onClick: templateDialog },
       { label: 'Fit page width', icon: I.fit, onClick: fitWidth },
+      { label: full ? 'Leave full screen' : 'Full screen', icon: full ? I.fullExit : I.full, onClick: () => setFull(!full) },
+      { label: 'Gestures', icon: I.finger, onClick: gestureHelp },
+      { label: dbg ? 'Close input test' : 'Input test', icon: I.pen, onClick: toggleDebug },
       {
         label, icon: I.finger, onClick: () => {
           prefs.fingerDraw = fd == null ? !fingerDraws() : fd === true ? false : null;
@@ -1502,15 +1674,72 @@ export async function mountEditor(root, docId) {
     else if (mod && key === 'y') { e.preventDefault(); redo(); }
     else if (e.key === ' ') { e.preventDefault(); spaceDown = true; vp.classList.add('grab'); }
     else if ((e.key === 'Delete' || e.key === 'Backspace') && sel) { e.preventDefault(); deleteSel(); }
-    else if (e.key === 'Escape') clearSel();
+    else if (e.key === 'Escape') { if (sel) clearSel(); else setFull(false); }
     else if (!mod && !e.altKey) {
       const t = { p: 'pen', h: 'hl', e: 'eraser', l: 'lasso', s: 'shape', t: 'text' }[key];
       if (t) setTool(t);
+      else if (key === 'f') setFull(!full);
     }
   }
 
   function onKeyUp(e) {
     if (e.key === ' ') { spaceDown = false; vp.classList.remove('grab'); }
+  }
+
+  // --- full screen: hides the title bar and, where the browser allows it, the browser's own bars too
+  const nativeFull = () => document.fullscreenElement || document.webkitFullscreenElement;
+
+  function leaveNativeFull() {
+    try {
+      const exit = document.exitFullscreen || document.webkitExitFullscreen;
+      if (nativeFull() && exit) { const r = exit.call(document); if (r && r.catch) r.catch(() => {}); }
+    } catch { /* not supported */ }
+  }
+
+  function setFull(on) {
+    if (full === on) return;
+    full = on;
+    el.classList.toggle('full', on);
+    if (on) {
+      try {
+        const de = document.documentElement, req = de.requestFullscreen || de.webkitRequestFullscreen;
+        if (req && !nativeFull()) { const r = req.call(de); if (r && r.catch) r.catch(() => {}); }
+      } catch { /* not supported (iPhone): hiding the title bar still gives more room */ }
+    } else leaveNativeFull();
+  }
+
+  // The browser left full screen by itself (Esc, back gesture): bring the title bar back.
+  function onFsChange() {
+    if (!nativeFull() && full) setFull(false);
+  }
+
+  // --- input test: an on-screen record of what the pen, fingers and mouse are sending
+  function toggleDebug() {
+    if (dbg) { dbg.el.remove(); dbg = null; return; }
+    dbg = { el: h('pre', { class: 'dbg' }), n: {}, last: [], raf: 0 };
+    overlay.append(dbg.el);
+    dbgShow();
+  }
+
+  function dbgCount(k) {
+    dbg.n[k] = (dbg.n[k] || 0) + 1;
+    if (!dbg.raf) dbg.raf = requestAnimationFrame(dbgShow);
+  }
+
+  function dbgEv(e, note) {
+    const kind = e.type.replace('pointer', '');
+    if (kind === 'move') { if (!ptrs.has(e.pointerId)) dbgCount(e.pointerType + ' hover'); return; }
+    if (!note && kind === 'down') return; // logged once the press has been classified
+    dbgCount(e.pointerType + ' ' + kind);
+    dbg.last.push(`${String(Math.round(e.timeStamp) % 100000).padStart(5)} ${e.pointerType} ${kind}${note ? ' -> ' + note : ''}  id ${e.pointerId} pr ${(e.pressure || 0).toFixed(2)} btn ${e.buttons}`);
+    if (dbg.last.length > 12) dbg.last.shift();
+  }
+
+  function dbgShow() {
+    if (!dbg) return;
+    dbg.raf = 0;
+    const counts = Object.keys(dbg.n).sort().map(k => `${k}: ${dbg.n[k]}`).join('\n');
+    dbg.el.textContent = `INPUT TEST (More menu to close)\n${counts || 'write something...'}\n\n${dbg.last.join('\n')}`;
   }
 
   function onVisibility() {
@@ -1535,6 +1764,9 @@ export async function mountEditor(root, docId) {
     window.removeEventListener('keydown', onKey);
     window.removeEventListener('keyup', onKeyUp);
     document.removeEventListener('visibilitychange', onVisibility);
+    document.removeEventListener('fullscreenchange', onFsChange);
+    document.removeEventListener('webkitfullscreenchange', onFsChange);
+    if (full) leaveNativeFull();
     offs.forEach(off => off());
     R.onImageLoaded(null);
     try {
@@ -1561,9 +1793,15 @@ export async function mountEditor(root, docId) {
   vp.addEventListener('pointerleave', () => { if (!action) eraserCur.hidden = true; });
   vp.addEventListener('wheel', onWheel, { passive: false });
   vp.addEventListener('contextmenu', e => e.preventDefault());
+  // Keep the browser's own touch gestures (double-tap zoom, magnifier, page pinch) away from the paper:
+  // on iPad they can swallow the start of quick pen strokes.
+  const stopNative = e => { if (e.cancelable) e.preventDefault(); };
+  for (const t of ['touchstart', 'touchmove', 'gesturestart', 'gesturechange', 'dblclick']) vp.addEventListener(t, stopNative, { passive: false });
   window.addEventListener('keydown', onKey);
   window.addEventListener('keyup', onKeyUp);
   document.addEventListener('visibilitychange', onVisibility);
+  document.addEventListener('fullscreenchange', onFsChange);
+  document.addEventListener('webkitfullscreenchange', onFsChange);
   R.onImageLoaded(id => { for (const pv of pvs) if (pv.rs && pv.page.items.some(it => it.t === 'im' && it.a === id)) queueInk(pv); });
 
   // ------------------------------------------------------------------ start

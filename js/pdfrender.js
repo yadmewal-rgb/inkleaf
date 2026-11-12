@@ -43,16 +43,24 @@ export function pdfDoc(assetId) {
 // Renders are queued one at a time so scrolling stays responsive. isStale lets callers drop outdated jobs.
 let chain = Promise.resolve();
 
-export function renderPdfPage(assetId, index, rs, isStale) {
+// region ({x, y, w, h} in page units) renders just that part of the page, for sharp zoomed-in views.
+export function renderPdfPage(assetId, index, rs, isStale, region) {
   const job = chain.then(async () => {
     if (isStale && isStale()) return null;
     const doc = await pdfDoc(assetId);
     const page = await doc.getPage(index + 1);
     const vp = page.getViewport({ scale: rs });
     const c = document.createElement('canvas');
-    c.width = Math.max(1, Math.ceil(vp.width));
-    c.height = Math.max(1, Math.ceil(vp.height));
-    await page.render({ canvasContext: c.getContext('2d'), viewport: vp }).promise;
+    const opts = { canvasContext: c.getContext('2d'), viewport: vp };
+    if (region) {
+      c.width = Math.max(1, Math.round(region.w * rs));
+      c.height = Math.max(1, Math.round(region.h * rs));
+      opts.transform = [1, 0, 0, 1, -region.x * rs, -region.y * rs];
+    } else {
+      c.width = Math.max(1, Math.ceil(vp.width));
+      c.height = Math.max(1, Math.ceil(vp.height));
+    }
+    await page.render(opts).promise;
     return c;
   });
   chain = job.catch(() => {});

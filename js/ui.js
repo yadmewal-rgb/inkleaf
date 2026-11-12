@@ -112,10 +112,16 @@ export function popMenu(anchor, items, opts) {
 }
 
 export const TEMPLATE_OPTS = [
-  { v: 'blank', label: 'Blank' }, { v: 'ruled', label: 'Ruled' }, { v: 'grid', label: 'Grid' }, { v: 'dots', label: 'Dotted' }
+  { v: 'blank', label: 'Blank' }, { v: 'ruled', label: 'Ruled' }, { v: 'narrow', label: 'Narrow ruled' }, { v: 'wide', label: 'Wide ruled' },
+  { v: 'margin', label: 'Ruled with margin' }, { v: 'cornell', label: 'Cornell notes' }, { v: 'todo', label: 'Checklist' },
+  { v: 'grid', label: 'Grid' }, { v: 'gridsmall', label: 'Small grid' }, { v: 'dots', label: 'Dotted' },
+  { v: 'iso', label: 'Isometric dots' }, { v: 'music', label: 'Music staves' }
 ];
 export const PAPER_OPTS = [
-  { v: 'white', label: 'White', swatch: '#ffffff' }, { v: 'cream', label: 'Cream', swatch: '#fbf5e4' }, { v: 'dark', label: 'Dark', swatch: '#1e1f22' }
+  { v: 'white', label: 'White', swatch: '#ffffff' }, { v: 'cream', label: 'Cream', swatch: '#fbf5e4' },
+  { v: 'yellow', label: 'Yellow', swatch: '#fdf7c4' }, { v: 'blue', label: 'Blue', swatch: '#eaf3fb' },
+  { v: 'green', label: 'Green', swatch: '#e9f4e6' }, { v: 'gray', label: 'Grey', swatch: '#ececec' },
+  { v: 'dark', label: 'Dark', swatch: '#1e1f22' }
 ];
 
 // A labelled row of single-choice chips. opts: [{v, label, swatch}]

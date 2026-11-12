@@ -185,8 +185,26 @@ h2, h3, p { margin: 0; }
 .seg button + button { border-left: 1px solid var(--line); }
 .seg button.on { background: var(--accent-soft); color: var(--accent); font-weight: 600; }
 
+/* Full screen: the title bar goes, the tool bar gains undo / redo / add page / leave buttons. */
+.fullonly { display: none; flex: none; gap: 2px; position: sticky; right: 0; background: var(--surface); padding-left: 6px; }
+.ed.full > .bar:first-child { display: none; }
+.ed.full > .bar.tools { padding-top: calc(4px + env(safe-area-inset-top)); }
+.ed.full .fullonly { display: flex; }
+
+.gest-row { display: flex; justify-content: space-between; gap: 16px; padding: 8px 0; border-bottom: 1px solid var(--line); }
+.gest-row:last-child { border-bottom: 0; }
+.gest-row b { font-weight: 600; }
+.gest-row span { color: var(--muted); text-align: right; }
+
+.dbg {
+  left: 8px; bottom: 8px; margin: 0; padding: 8px 10px; max-width: calc(100% - 16px); overflow: hidden;
+  font: 11px/1.35 ui-monospace, Consolas, monospace; white-space: pre;
+  background: rgba(20, 20, 20, .82); color: #fff; border-radius: 8px;
+}
+
 .stage { position: relative; flex: 1; min-height: 0; overflow: hidden; }
 .vp { position: absolute; inset: 0; overflow: hidden; touch-action: none; cursor: crosshair; }
+.vp * { touch-action: none; }
 .vp[data-tool="text"] { cursor: text; }
 .vp[data-tool="lasso"] { cursor: default; }
 .vp[data-tool="eraser"] { cursor: none; }

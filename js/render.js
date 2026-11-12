@@ -9,28 +9,60 @@ export const LH = 1.3;
 export const HL_ALPHA = 0.5;
 
 export const PAPERS = {
-  white: { bg: '#ffffff', line: '#c5d0de', dark: false },
-  cream: { bg: '#fbf5e4', line: '#d6cba9', dark: false },
-  dark: { bg: '#1e1f22', line: '#3b3d44', dark: true }
+  white: { bg: '#ffffff', line: '#c5d0de', accent: '#e9a3a3', dark: false },
+  cream: { bg: '#fbf5e4', line: '#d6cba9', accent: '#e0a58f', dark: false },
+  yellow: { bg: '#fdf7c4', line: '#b9c7d6', accent: '#e59a9a', dark: false },
+  blue: { bg: '#eaf3fb', line: '#b5cbe2', accent: '#e3a0a8', dark: false },
+  green: { bg: '#e9f4e6', line: '#b7d0b3', accent: '#dfa39a', dark: false },
+  gray: { bg: '#ececec', line: '#c4c6ca', accent: '#dba0a0', dark: false },
+  dark: { bg: '#1e1f22', line: '#3b3d44', accent: '#6e4046', dark: true }
 };
 export const paperOf = pg => PAPERS[pg.paper] || PAPERS.white;
 
 // ---------- paper ----------
 
+// lines: [x1, y1, x2, y2] in the paper's line colour; accent: the same in its margin colour; dots: [x, y].
 export function templateGeometry(pg) {
-  const lines = [], dots = [];
-  const { w, h } = pg;
-  if (pg.template === 'ruled') {
-    for (let y = 72; y < h - 24; y += 26) lines.push([0, y, w, y]);
-  } else if (pg.template === 'grid') {
-    const s = 21, ox = (w % s) / 2, oy = (h % s) / 2;
+  const lines = [], dots = [], accent = [];
+  const { w, h } = pg, t = pg.template;
+  const rule = (step, from = 72) => { for (let y = from; y < h - 24; y += step) lines.push([0, y, w, y]); };
+  const grid = s => {
+    const ox = (w % s) / 2, oy = (h % s) / 2;
     for (let x = ox; x <= w; x += s) lines.push([x, 0, x, h]);
     for (let y = oy; y <= h; y += s) lines.push([0, y, w, y]);
-  } else if (pg.template === 'dots') {
+  };
+  if (t === 'ruled') rule(26);
+  else if (t === 'narrow') rule(19, 60);
+  else if (t === 'wide') rule(34, 78);
+  else if (t === 'margin') {
+    rule(26);
+    accent.push([64, 0, 64, h]);
+  } else if (t === 'cornell') {
+    const cue = Math.round(w * 0.28), foot = h - 132;
+    for (let y = 98; y < foot - 8; y += 26) lines.push([cue, y, w, y]);
+    for (let y = foot + 26; y < h - 20; y += 26) lines.push([0, y, w, y]);
+    accent.push([0, 72, w, 72], [cue, 72, cue, foot], [0, foot, w, foot]);
+  } else if (t === 'grid') grid(21);
+  else if (t === 'gridsmall') grid(12);
+  else if (t === 'dots') {
     const s = 21, ox = (w % s) / 2, oy = (h % s) / 2;
     for (let y = oy; y <= h; y += s) for (let x = ox; x <= w; x += s) dots.push([x, y]);
+  } else if (t === 'iso') {
+    const s = 22, rowH = s * 0.866;
+    let row = 0;
+    for (let y = rowH / 2; y <= h; y += rowH, row++) for (let x = (row % 2 ? s / 2 : 0) + s / 2; x <= w; x += s) dots.push([x, y]);
+  } else if (t === 'music') {
+    const gap = 7, block = 78;
+    for (let y = 70; y + gap * 4 < h - 30; y += block) for (let i = 0; i < 5; i++) lines.push([36, y + i * gap, w - 36, y + i * gap]);
+  } else if (t === 'todo') {
+    const b = 11;
+    for (let y = 72; y < h - 24; y += 26) {
+      lines.push([0, y, w, y]);
+      const x = 40, top = y - 19;
+      lines.push([x, top, x + b, top], [x + b, top, x + b, top + b], [x + b, top + b, x, top + b], [x, top + b, x, top]);
+    }
   }
-  return { lines, dots };
+  return { lines, dots, accent };
 }
 
 export function drawPaper(ctx, pg) {
@@ -44,6 +76,13 @@ export function drawPaper(ctx, pg) {
     ctx.lineWidth = 0.6;
     ctx.beginPath();
     for (const [x1, y1, x2, y2] of g.lines) { ctx.moveTo(x1, y1); ctx.lineTo(x2, y2); }
+    ctx.stroke();
+  }
+  if (g.accent.length) {
+    ctx.strokeStyle = pap.accent;
+    ctx.lineWidth = 0.8;
+    ctx.beginPath();
+    for (const [x1, y1, x2, y2] of g.accent) { ctx.moveTo(x1, y1); ctx.lineTo(x2, y2); }
     ctx.stroke();
   }
   if (g.dots.length) {
@@ -344,16 +383,24 @@ export function drawItem(ctx, it) {
 
 const isHl = it => it.t === 's' && it.tool === 'hl';
 
-export function drawImages(ctx, items, skip) {
-  for (const it of items) if (it.t === 'im' && !(skip && skip.has(it.id))) drawItem(ctx, it);
+// clip ({x, y, w, h} in page units) lets callers that only show part of a page skip everything outside it.
+function outside(it, clip) {
+  if (!clip) return false;
+  const b = bounds(it);
+  return b.x > clip.x + clip.w || b.x + b.w < clip.x || b.y > clip.y + clip.h || b.y + b.h < clip.y;
+}
+
+export function drawImages(ctx, items, skip, clip) {
+  for (const it of items) if (it.t === 'im' && !(skip && skip.has(it.id)) && !outside(it, clip)) drawItem(ctx, it);
 }
 
 // Layer order: pictures at the bottom, then highlighter, then writing, so nothing washes out the ink.
 // The editor keeps pictures on their own opaque layer and passes images = false here.
-export function drawItems(ctx, items, skip, images = true) {
-  if (images) drawImages(ctx, items, skip);
-  for (const it of items) if (isHl(it) && !(skip && skip.has(it.id))) drawItem(ctx, it);
-  for (const it of items) if (!isHl(it) && it.t !== 'im' && !(skip && skip.has(it.id))) drawItem(ctx, it);
+export function drawItems(ctx, items, skip, images = true, clip = null) {
+  if (images) drawImages(ctx, items, skip, clip);
+  const vis = clip ? items.filter(it => !outside(it, clip)) : items;
+  for (const it of vis) if (isHl(it) && !(skip && skip.has(it.id))) drawItem(ctx, it);
+  for (const it of vis) if (!isHl(it) && it.t !== 'im' && !(skip && skip.has(it.id))) drawItem(ctx, it);
 }
 
 const bcache = new WeakMap();
