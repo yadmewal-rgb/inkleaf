@@ -1,0 +1,36 @@
+const s = d =>
+  `<svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${d}</svg>`;
+
+export const I = {
+  back: s('<path d="M15 5l-7 7 7 7"/>'),
+  close: s('<path d="M6 6l12 12M18 6L6 18"/>'),
+  undo: s('<path d="M8 6l-4 4 4 4"/><path d="M4 10h11a5 5 0 010 10h-4"/>'),
+  redo: s('<path d="M16 6l4 4-4 4"/><path d="M20 10H9a5 5 0 000 10h4"/>'),
+  pen: s('<path d="M4 20l1.2-4.8L16.5 3.9a1.5 1.5 0 012.1 0l1.5 1.5a1.5 1.5 0 010 2.1L8.8 18.8z"/><path d="M14.5 6l3.5 3.5"/>'),
+  hl: s('<path d="M14 4l6 6-8 8H8l-2-2v-4z"/><path d="M6 16l-3 4h5"/><path d="M11 7l6 6"/>'),
+  eraser: s('<path d="M14 4.5l5.5 5.5a1.5 1.5 0 010 2.1L13 19H8.5l-4-4a1.5 1.5 0 010-2.1l7.4-8.4a1.5 1.5 0 012.1 0z"/><path d="M8 9.5l6.5 6.5"/><path d="M13 19h7"/>'),
+  lasso: s('<ellipse cx="12" cy="10" rx="8.5" ry="5.5" stroke-dasharray="3 2.6"/><path d="M7.5 14.5c-1.2 2-.4 4.2 1.8 5.2"/>'),
+  shape: s('<rect x="3" y="10.5" width="10.5" height="10.5" rx="1.5"/><circle cx="15.5" cy="8.5" r="5.5"/>'),
+  text: s('<path d="M5 7V4h14v3"/><path d="M12 4v16"/><path d="M9 20h6"/>'),
+  image: s('<rect x="3" y="5" width="18" height="14" rx="2"/><circle cx="8.5" cy="10" r="1.5"/><path d="M21 16l-5-5-8 8"/>'),
+  pages: s('<rect x="4" y="3" width="12" height="16" rx="1.5"/><path d="M8 21h10a2 2 0 002-2V8"/>'),
+  plus: s('<path d="M12 5v14M5 12h14"/>'),
+  more: s('<circle cx="5" cy="12" r="1.2" fill="currentColor"/><circle cx="12" cy="12" r="1.2" fill="currentColor"/><circle cx="19" cy="12" r="1.2" fill="currentColor"/>'),
+  folder: s('<path d="M3 7a2 2 0 012-2h4l2 2.5h8a2 2 0 012 2V18a2 2 0 01-2 2H5a2 2 0 01-2-2z"/>'),
+  book: s('<path d="M6 3h11a2 2 0 012 2v16H7a2 2 0 01-2-2V4a1 1 0 011-1z"/><path d="M9 3v18"/>'),
+  pdf: s('<path d="M7 3h7l5 5v11a2 2 0 01-2 2H7a2 2 0 01-2-2V5a2 2 0 012-2z"/><path d="M14 3v5h5"/><path d="M9 14h6M9 17h4"/>'),
+  trash: s('<path d="M4 7h16"/><path d="M9 7V4h6v3"/><path d="M6 7l1 13h10l1-13"/>'),
+  search: s('<circle cx="11" cy="11" r="6.5"/><path d="M16 16l4.5 4.5"/>'),
+  sync: s('<path d="M20 11a8 8 0 00-14.5-4.5L4 8"/><path d="M4 4v4h4"/><path d="M4 13a8 8 0 0014.5 4.5L20 16"/><path d="M20 20v-4h-4"/>'),
+  settings: s('<circle cx="12" cy="12" r="3"/><path d="M12 3v2.5M12 18.5V21M3 12h2.5M18.5 12H21M5.6 5.6l1.8 1.8M16.6 16.6l1.8 1.8M5.6 18.4l1.8-1.8M16.6 7.4l1.8-1.8"/>'),
+  edit: s('<path d="M4 20h4L19 9l-4-4L4 16z"/>'),
+  copy: s('<rect x="8" y="8" width="12" height="12" rx="2"/><path d="M16 8V6a2 2 0 00-2-2H6a2 2 0 00-2 2v8a2 2 0 002 2h2"/>'),
+  move: s('<path d="M3 7a2 2 0 012-2h4l2 2.5h8a2 2 0 012 2V18a2 2 0 01-2 2H5a2 2 0 01-2-2z"/><path d="M10 14h6M13.5 11.5L16 14l-2.5 2.5"/>'),
+  share: s('<path d="M12 15V4"/><path d="M8 8l4-4 4 4"/><path d="M5 12v6a2 2 0 002 2h10a2 2 0 002-2v-6"/>'),
+  up: s('<path d="M12 19V5M6 11l6-6 6 6"/>'),
+  down: s('<path d="M12 5v14M6 13l6 6 6-6"/>'),
+  palette: s('<path d="M12 3a9 9 0 100 18c1.5 0 2-1 2-2s-.5-1.5-.5-2.5S14.5 15 16 15h1.5A3.5 3.5 0 0021 11.500C21 6.800 17 3 12 3z"/><circle cx="7.500" cy="11.500" r="1" fill="currentColor"/><circle cx="10.500" cy="7.500" r="1" fill="currentColor"/><circle cx="15" cy="8" r="1" fill="currentColor"/>'),
+  fit: s('<path d="M4 9V5h4M20 9V5h-4M4 15v4h4M20 15v4h-4"/>'),
+  finger: s('<path d="M9 11V5.500a1.500 1.500 0 013 0V11"/><path d="M12 10.500a1.500 1.500 0 013 0V12"/><path d="M15 11.500a1.500 1.500 0 013 0V15a6 6 0 01-6 6h-.5a6 6 0 01-5-2.700L4 14.500a1.500 1.500 0 012.500-1.600L9 15"/>'),
+  template: s('<rect x="4" y="3" width="16" height="18" rx="2"/><path d="M8 8h8M8 12h8M8 16h8"/>')
+};
