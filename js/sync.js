@@ -26,7 +26,8 @@ export const _setHttp = fn => { http = fn; }; // lets tests swap in a fake Drive
 
 // Built-in Google OAuth client, so devices do not need one pasted in. A client ID is public by design.
 const DEFAULT_CLIENT_ID = '473809010149-3hhf0nu5aisisgvu3gnaee49lfgdlga2.apps.googleusercontent.com';
-const effectiveId = cfg => (cfg.off ? '' : (cfg.clientId || DEFAULT_CLIENT_ID));
+// An ID typed into an older version's Settings is ignored: a mistyped one blocked sign-in ("invalid_client").
+const effectiveId = cfg => (cfg.off ? '' : DEFAULT_CLIENT_ID);
 
 let clientId = '';
 let token = null, tokenExp = 0;
@@ -566,19 +567,15 @@ export async function importBackup(file) {
 export async function openSettings() {
   const cfg = (await db.getMeta('sync')) || {};
   const last = await db.getMeta('lastSync');
-  const idInp = h('input', { class: 'inp', placeholder: 'xxxxxxxx.apps.googleusercontent.com', value: cfg.clientId || DEFAULT_CLIENT_ID, spellcheck: false, autocapitalize: 'off' });
   const fileInp = h('input', {
     type: 'file', accept: '.inkleaf,application/json', hidden: true,
     onchange: () => { const f = fileInp.files[0]; fileInp.value = ''; if (f) importBackup(f); }
   });
-  const save = async () => {
-    const id = idInp.value.trim();
-    if (id !== effectiveId(cfg)) {
-      await db.setMeta('sync', id ? { clientId: id } : { off: true });
-      await db.setMeta('syncToken', null);
+  const turnOn = async () => {
+    if (cfg.off) {
+      await db.setMeta('sync', {});
       await initSync();
     }
-    return id;
   };
   const m = modal({
     title: 'Settings',
@@ -589,13 +586,12 @@ export async function openSettings() {
         'Notes are always kept on this device, so they open instantly and work offline. With sync on, changes are also ',
         'sent to a private app folder in your own Google Drive within a few seconds and merged into your other devices.'),
       h('p', { class: 'modal-text small' },
-        'A Google client ID is already filled in. Tap "Save and sync now" and sign in with a Google account that has been added as a test user.'),
-      h('div', { class: 'field' }, h('label', null, 'Client ID'), idInp),
+        'Tap "Sync now" and sign in with a Google account that has been added as a test user. Nothing else needs setting up.'),
       h('div', { class: 'row' },
         h('button', {
           class: 'btn primary', type: 'button',
-          onclick: async () => { const id = await save(); if (!id) { toast('Paste a client ID first.'); return; } m.close(); syncNow(true); }
-        }, 'Save and sync now'),
+          onclick: async () => { await turnOn(); m.close(); syncNow(true); }
+        }, 'Sync now'),
         effectiveId(cfg) ? h('button', {
           class: 'btn', type: 'button',
           onclick: async () => {

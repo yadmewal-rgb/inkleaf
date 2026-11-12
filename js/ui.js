@@ -1,5 +1,6 @@
 import { h, clamp } from './util.js';
 import { I } from './icons.js';
+import { drawPaper } from './render.js';
 
 export function toast(msg, ms = 2800) {
   const t = h('div', { class: 'toast' }, msg);
@@ -112,10 +113,10 @@ export function popMenu(anchor, items, opts) {
 }
 
 export const TEMPLATE_OPTS = [
-  { v: 'blank', label: 'Blank' }, { v: 'ruled', label: 'Ruled' }, { v: 'narrow', label: 'Narrow ruled' }, { v: 'wide', label: 'Wide ruled' },
-  { v: 'margin', label: 'Ruled with margin' }, { v: 'cornell', label: 'Cornell notes' }, { v: 'todo', label: 'Checklist' },
+  { v: 'blank', label: 'Blank' }, { v: 'ruled', label: 'Ruled' }, { v: 'narrow', label: 'Narrow' }, { v: 'wide', label: 'Wide' },
+  { v: 'margin', label: 'Margin' }, { v: 'cornell', label: 'Cornell' }, { v: 'todo', label: 'Checklist' },
   { v: 'grid', label: 'Grid' }, { v: 'gridsmall', label: 'Small grid' }, { v: 'dots', label: 'Dotted' },
-  { v: 'iso', label: 'Isometric dots' }, { v: 'music', label: 'Music staves' }
+  { v: 'iso', label: 'Isometric' }, { v: 'music', label: 'Music' }
 ];
 export const PAPER_OPTS = [
   { v: 'white', label: 'White', swatch: '#ffffff' }, { v: 'cream', label: 'Cream', swatch: '#fbf5e4' },
@@ -135,6 +136,25 @@ export function chipGroup(label, opts, value, onChange) {
     }, o.swatch ? h('span', { class: 'chip-sw', style: { background: o.swatch } }) : null, o.label)));
   draw();
   return h('div', { class: 'field' }, h('label', null, label), row);
+}
+
+// Page pattern chooser: each choice is shown as a small drawn page instead of a name.
+// getPaper() returns the paper colour currently chosen; call redraw() after it changes.
+export function templatePicker(value, getPaper, onChange) {
+  const row = h('div', { class: 'tpls' });
+  let cur = value;
+  const draw = () => row.replaceChildren(...TEMPLATE_OPTS.map(o => {
+    const c = h('canvas', { class: 'tpl-c', width: 132, height: 176 });
+    const ctx = c.getContext('2d');
+    ctx.scale(0.55, 0.55);
+    drawPaper(ctx, { w: 240, h: 320, template: o.v, paper: getPaper() }, 2.2);
+    return h('button', {
+      class: 'tpl' + (cur === o.v ? ' on' : ''), type: 'button', title: o.label,
+      onclick: () => { cur = o.v; onChange(o.v); draw(); }
+    }, c, h('span', null, o.label));
+  }));
+  draw();
+  return { el: h('div', { class: 'field' }, h('label', null, 'Page pattern'), row), redraw: draw };
 }
 
 export function busy(text) {

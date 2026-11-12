@@ -65,7 +65,8 @@ export function templateGeometry(pg) {
   return { lines, dots, accent };
 }
 
-export function drawPaper(ctx, pg) {
+// bold thickens the pattern (used for the small previews in the pattern chooser).
+export function drawPaper(ctx, pg, bold = 1) {
   const pap = paperOf(pg);
   ctx.fillStyle = pap.bg;
   ctx.fillRect(0, 0, pg.w, pg.h);
@@ -73,14 +74,14 @@ export function drawPaper(ctx, pg) {
   const g = templateGeometry(pg);
   if (g.lines.length) {
     ctx.strokeStyle = pap.line;
-    ctx.lineWidth = 0.6;
+    ctx.lineWidth = 0.6 * bold;
     ctx.beginPath();
     for (const [x1, y1, x2, y2] of g.lines) { ctx.moveTo(x1, y1); ctx.lineTo(x2, y2); }
     ctx.stroke();
   }
   if (g.accent.length) {
     ctx.strokeStyle = pap.accent;
-    ctx.lineWidth = 0.8;
+    ctx.lineWidth = 0.8 * bold;
     ctx.beginPath();
     for (const [x1, y1, x2, y2] of g.accent) { ctx.moveTo(x1, y1); ctx.lineTo(x2, y2); }
     ctx.stroke();
@@ -88,7 +89,8 @@ export function drawPaper(ctx, pg) {
   if (g.dots.length) {
     ctx.fillStyle = pap.line;
     ctx.beginPath();
-    for (const [x, y] of g.dots) { ctx.moveTo(x + 0.9, y); ctx.arc(x, y, 0.9, 0, 6.2832); }
+    const r = bold > 1 ? 1.4 : 0.9;
+    for (const [x, y] of g.dots) { ctx.moveTo(x + r, y); ctx.arc(x, y, r, 0, 6.2832); }
     ctx.fill();
   }
 }
@@ -374,8 +376,13 @@ export function drawItem(ctx, it) {
     case 'tx': drawText(ctx, it); break;
     case 'im': {
       const img = getImage(it.a);
-      if (img) ctx.drawImage(img, it.x, it.y, it.w, it.h);
-      else { ctx.fillStyle = 'rgba(128,128,128,.22)'; ctx.fillRect(it.x, it.y, it.w, it.h); }
+      if (img) {
+        ctx.imageSmoothingQuality = 'high';
+        // it.cr = [left, top, width, height] of the kept part, as fractions of the picture (set by cropping)
+        const cr = it.cr, nw = img.naturalWidth, nh = img.naturalHeight;
+        if (cr) ctx.drawImage(img, cr[0] * nw, cr[1] * nh, cr[2] * nw, cr[3] * nh, it.x, it.y, it.w, it.h);
+        else ctx.drawImage(img, it.x, it.y, it.w, it.h);
+      } else { ctx.fillStyle = 'rgba(128,128,128,.22)'; ctx.fillRect(it.x, it.y, it.w, it.h); }
       break;
     }
   }

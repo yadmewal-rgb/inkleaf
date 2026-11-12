@@ -2,7 +2,7 @@
 import { db, newPage, createDoc, createFolder, deleteDoc, deleteFolder, duplicateDoc, COVERS } from './db.js';
 import { h, uid, bus, fmtDate } from './util.js';
 import { I } from './icons.js';
-import { modal, promptText, confirmBox, popMenu, toast, busy, chipGroup, TEMPLATE_OPTS, PAPER_OPTS } from './ui.js';
+import { modal, promptText, confirmBox, popMenu, toast, busy, chipGroup, templatePicker, PAPER_OPTS } from './ui.js';
 import { openPdf } from './pdfrender.js';
 import { exportFlow } from './export.js';
 import { openSettings, syncNow, syncStatus } from './sync.js';
@@ -89,14 +89,15 @@ export async function mountLibrary(root, folderId) {
       const doc = await createDoc({ ...st, title: title.value.trim() || 'Untitled notebook', folderId });
       location.hash = '#/d/' + doc.id;
     };
+    const tp = templatePicker(st.template, () => st.paper, v => { st.template = v; });
     const m = modal({
       title: 'New notebook',
       body: h('div', null,
         h('div', { class: 'field' }, h('label', null, 'Name'), title),
         chipGroup('Cover', COVERS.map(c => ({ v: c, label: '', swatch: c })), st.cover, v => { st.cover = v; }),
         chipGroup('Page size', SIZE_OPTS, st.size, v => { st.size = v; }),
-        chipGroup('Lines', TEMPLATE_OPTS, st.template, v => { st.template = v; }),
-        chipGroup('Paper', PAPER_OPTS, st.paper, v => { st.paper = v; })),
+        tp.el,
+        chipGroup('Paper', PAPER_OPTS, st.paper, v => { st.paper = v; tp.redraw(); })),
       actions: [{ label: 'Cancel' }, { label: 'Create', primary: true, onClick: create }]
     });
     title.addEventListener('keydown', e => { if (e.key === 'Enter') { m.close(); create(); } });

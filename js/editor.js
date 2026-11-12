@@ -4,7 +4,7 @@ import { h, uid, nextZ, clamp, bus } from './util.js';
 import * as R from './render.js';
 import { renderPdfPage } from './pdfrender.js';
 import { I } from './icons.js';
-import { popMenu, popover, confirmBox, promptText, toast, modal, chipGroup, TEMPLATE_OPTS, PAPER_OPTS } from './ui.js';
+import { popMenu, popover, confirmBox, promptText, toast, modal, chipGroup, templatePicker, PAPER_OPTS } from './ui.js';
 import { exportFlow } from './export.js';
 import { syncNow, syncStatus, mergePage, mergeDoc } from './sync.js';
 
@@ -13,7 +13,8 @@ const COARSE = matchMedia('(pointer: coarse)').matches;
 const MAXPX = COARSE ? 5.5e6 : 9e6; // cap on pixels per whole-page canvas (memory on tablets)
 const REGION_PX = COARSE ? 6e6 : 12e6; // cap when only the visible part of a page is drawn (zoomed in)
 const REGION_PAD = 0.15;               // extra drawn around the visible part, as a fraction of the screen
-const PALM_MS = 350;                   // touches this soon after the stylus was seen are treated as the palm
+const PULL_PX = 90;                    // how far to drag up past the last page to add a new one
+const PALM_MS = 350;                  // touches this soon after the stylus was seen are treated as the palm
 const INK = '#1c1d21', INK_ON_DARK = '#f1f3f5';
 
 const PEN_COLORS = [INK, '#e03131', '#1971c2', '#2f9e44', '#f08c00', '#9c36b5', '#ffffff'];
@@ -22,7 +23,8 @@ const SHAPES = [['rect', 'Rectangle'], ['ellipse', 'Ellipse'], ['line', 'Line'],
 
 const DEFAULTS = {
   tool: 'pen',
-  pen: { color: INK, size: 2.2 },
+  pen: { color: INK, size: 2.2, style: 'fountain' },
+  scribble: true, // a zigzag over ink erases it
   hl: { color: '#ffd43b', size: 16 },
   eraser: { size: 16, mode: 'stroke' },
   shape: { kind: 'rect', color: '#1971c2', size: 2.2 },
@@ -85,7 +87,8 @@ export async function mountEditor(root, docId) {
   };
 
   vp.append(world);
-  overlay.append(eraserCur, selBox, selBar);
+  const pullHint = h('div', { class: 'pullhint', hidden: true });
+  overlay.append(eraserCur, selBox, selBar, pullHint);
   const el = h('div', { class: 'ed' },
     h('div', { class: 'bar' },
       h('button', { class: 'ic', type: 'button', title: 'Back to library', onclick: exit, html: I.back }),
@@ -102,7 +105,7 @@ export async function mountEditor(root, docId) {
   root.append(el);
 
   // ------------------------------------------------------------------ view state
-  let scale = 1, tx = 0, ty = 0, vpRect = vp.getBoundingClientRect(), worldW = 0, worldH = 0;
+  let scale = 1, ls = 1, tx = 0, ty = 0, vpRect = vp.getBoundingClientRect(), worldW = 0, worldH = 0;
   let zooming = false, zoomT = 0, rafView = 0;
   const pvs = []; // one "page view" per page: {page, el, bg, hi, ink, x, y, rs, clip, bgRs, bgTok, hiTok}
 
@@ -152,6 +155,9 @@ export async function mountEditor(root, docId) {
     layout();
   }
 
+  // Round a CSS length to whole device pixels.
+  const snap = v => { const d = window.devicePixelRatio || 1; return Math.round(v * d) / d; };
+
   function layout() {
     worldW = Math.max(...pages.map(p => p.w));
     let y = GAP;
@@ -159,9 +165,24 @@ export async function mountEditor(root, docId) {
       pv.x = (worldW - pv.page.w) / 2;
       pv.y = y;
       y += pv.page.h + GAP;
-      Object.assign(pv.el.style, { left: pv.x + 'px', top: pv.y + 'px', width: pv.page.w + 'px', height: pv.page.h + 'px' });
+      Object.assign(pv.el.style, { left: snap(pv.x * ls) + 'px', top: snap(pv.y * ls) + 'px', width: pv.page.w * ls + 'px', height: pv.page.h * ls + 'px' });
     }
     worldH = y;
+  }
+
+  // Pages are laid out at their real on-screen size ("ls" = the zoom they were laid out for) and only
+  // moved with CSS, never enlarged with it: iPad browsers blur anything that is scaled up by a transform.
+  // A CSS scale is used just while a zoom gesture is in progress.
+  function relayout() {
+    ls = scale;
+    layout();
+    for (const pv of pvs) {
+      if (!pv.rs) continue;
+      place(pv.ink, pv);
+      if (pv.img) place(pv.img, pv);
+      placeHi(pv);
+    }
+    if (livePv) place(live, livePv);
   }
 
   function measure() { vpRect = vp.getBoundingClientRect(); }
@@ -175,7 +196,11 @@ export async function mountEditor(root, docId) {
 
   function applyView() {
     clampView();
-    world.style.transform = `translate(${tx}px,${ty}px) scale(${scale})`;
+    if (!zooming && ls !== scale) relayout();
+    if (ls === scale) {
+      const d = window.devicePixelRatio || 1; // whole device pixels keep the ink crisp
+      world.style.transform = `translate(${Math.round(tx * d) / d}px,${Math.round(ty * d) / d}px)`;
+    } else world.style.transform = `translate(${tx}px,${ty}px) scale(${scale / ls})`;
     if (!rafView) {
       rafView = requestAnimationFrame(() => {
         rafView = 0;
@@ -246,8 +271,13 @@ export async function mountEditor(root, docId) {
   function place(c, pv) {
     const k = pv.clip;
     Object.assign(c.style, k
-      ? { left: k.x + 'px', top: k.y + 'px', width: k.w + 'px', height: k.h + 'px' }
+      ? { left: k.x * ls + 'px', top: k.y * ls + 'px', width: k.w * ls + 'px', height: k.h * ls + 'px' }
       : { left: '', top: '', width: '', height: '' });
+  }
+
+  function placeHi(pv) {
+    const k = pv.hiClip;
+    if (pv.hi && k) Object.assign(pv.hi.style, { left: k.x * ls + 'px', top: k.y * ls + 'px', width: k.w * ls + 'px', height: k.h * ls + 'px' });
   }
 
   // Page units -> canvas pixels for a page's ink layers.
@@ -288,7 +318,8 @@ export async function mountEditor(root, docId) {
       const c = pv.hi;
       c.width = k.W;
       c.height = k.H;
-      Object.assign(c.style, { left: k.x + 'px', top: k.y + 'px', width: k.w + 'px', height: k.h + 'px' });
+      pv.hiClip = k;
+      placeHi(pv);
       const x = c.getContext('2d');
       if (pdfCanvas) x.drawImage(pdfCanvas, 0, 0);
       else { x.setTransform(rs, 0, 0, rs, -k.x * rs, -k.y * rs); R.drawPaper(x, pg); }
@@ -333,7 +364,7 @@ export async function mountEditor(root, docId) {
     pv.ink.width = pv.ink.height = 0;
     place(pv.ink, pv);
     if (pv.img) { pv.img.remove(); pv.img = null; }
-    if (pv.hi) { pv.hi.remove(); pv.hi = null; }
+    if (pv.hi) { pv.hi.remove(); pv.hi = null; pv.hiClip = null; }
     if (livePv === pv) { live.remove(); live.width = live.height = 0; livePv = null; }
   }
 
@@ -462,7 +493,7 @@ export async function mountEditor(root, docId) {
     scale = ns;
     zooming = true;
     clearTimeout(zoomT);
-    zoomT = setTimeout(() => { zooming = false; if (!destroyed) updateVisible(); }, 180);
+    zoomT = setTimeout(() => { zooming = false; if (!destroyed) applyView(); }, 180);
     applyView();
   }
 
@@ -651,6 +682,7 @@ export async function mountEditor(root, docId) {
   function onDown(e) {
     if (e.pointerType === 'mouse' && e.button === 2) return;
     measure();
+    pullHint.hidden = true;
     if (textEd) { commitText(); return; } // this press just closes the text box
     try { vp.setPointerCapture(e.pointerId); } catch { /* synthetic pointer */ }
     const p = { id: e.pointerId, type: e.pointerType, x: e.clientX, y: e.clientY, x0: e.clientX, y0: e.clientY, ignored: false };
@@ -667,7 +699,7 @@ export async function mountEditor(root, docId) {
         endAction(null);
       } else if (action) cancelAction();
       pan = null;
-      pinch = null;
+      if (pinch) { pinch = null; zooming = false; applyView(); }
       multiTap = null;
       const erasing = e.button === 5 || (e.buttons & 32) || e.button === 2 || (e.buttons & 2);
       if (dbg) dbgEv(e, erasing ? 'erase' : 'draw');
@@ -730,7 +762,7 @@ export async function mountEditor(root, docId) {
     } else if (pinch && (pinch.a === e.pointerId || pinch.b === e.pointerId)) {
       pinch = null;
       zooming = false;
-      updateVisible();
+      applyView();
       const rest = [...ptrs.values()].find(q => q.type === 'touch' && !q.ignored);
       if (rest) { startPan(rest); pan.moved = 99; }
     } else if (pan && pan.pid === e.pointerId) endPan(p, e);
@@ -780,7 +812,7 @@ export async function mountEditor(root, docId) {
   }
 
   function startPan(p) {
-    pan = { pid: p.id, x: p.x, y: p.y, vx: 0, vy: 0, t: performance.now(), t0: performance.now(), moved: 0 };
+    pan = { pid: p.id, x: p.x, y: p.y, vx: 0, vy: 0, t: performance.now(), t0: performance.now(), moved: 0, pull: 0 };
   }
 
   function movePan(e) {
@@ -793,13 +825,21 @@ export async function mountEditor(root, docId) {
     pan.t = t;
     pan.moved += Math.abs(dx) + Math.abs(dy);
     tx += dx;
-    ty += dy;
+    const want = ty + dy;
+    ty = want;
     applyView();
+    // Dragging up past the end of the last page: keep count of how far, to offer a new page.
+    if (ty - want > 0.5) pan.pull += ty - want; else if (dy > 0) pan.pull = 0;
+    pullHint.hidden = pan.pull < 14;
+    pullHint.textContent = pan.pull >= PULL_PX ? 'Release to add a page' : 'Pull up to add a page';
+    pullHint.classList.toggle('go', pan.pull >= PULL_PX);
   }
 
   function endPan(p, e) {
     const pn = pan;
     pan = null;
+    pullHint.hidden = true;
+    if (pn.pull >= PULL_PX) { addPageAfter(pvs[pvs.length - 1]); return; }
     const now = performance.now();
     if (p.type === 'touch' && pn.moved < 8 && now - pn.t0 < 350) { tapAt(e.clientX, e.clientY); return; }
     if (p.type !== 'touch' || now - pn.t > 90) return;
@@ -921,6 +961,7 @@ export async function mountEditor(root, docId) {
     const a = action;
     action = null;
     if (!a) return;
+    clearTimeout(a.holdT);
     if (dbg && (a.tool === 'pen' || a.tool === 'hl')) dbgCount('strokes discarded');
     if (a.tool === 'eraser') endErase(a, null);
     else if (a.tool === 'lasso' && a.mode !== 'draw') endLasso(a);
@@ -931,13 +972,97 @@ export async function mountEditor(root, docId) {
   // --- pen & highlighter
   const pressureOf = e => (e.pointerType === 'pen' && e.pressure > 0 ? e.pressure : 0.5);
 
+  // Pen styles only change how pressure is recorded, so every device draws the result the same way:
+  // ballpoint = even line, fountain = follows pressure, brush = exaggerates it.
+  function inkPressure(a, e) {
+    const p = pressureOf(e);
+    if (a.style === 'ball') return 0.5;
+    if (a.style === 'brush') return clamp(0.05 + p * 1.6, 0.05, 1.4);
+    return p;
+  }
+
+  // Hold the pen still at the end of a line and it snaps straight.
+  function holdCheck(a, e) {
+    if (a.line) return;
+    if (a.holdT && Math.hypot(e.clientX - a.hx, e.clientY - a.hy) < 6) return;
+    a.hx = e.clientX;
+    a.hy = e.clientY;
+    clearTimeout(a.holdT);
+    a.holdT = setTimeout(() => straighten(a), 550);
+  }
+
+  function straighten(a) {
+    if (action !== a || a.line) return;
+    const P = a.pts, n = P.length / 3;
+    if (n < 4) return;
+    const x0 = P[0], y0 = P[1], x1 = P[P.length - 3], y1 = P[P.length - 2];
+    const len = Math.hypot(x1 - x0, y1 - y0);
+    if (len < 24 / scale) return;
+    let dev = 0, sum = 0;
+    for (let i = 0; i < P.length; i += 3) {
+      dev = Math.max(dev, Math.abs((P[i] - x0) * (y1 - y0) - (P[i + 1] - y0) * (x1 - x0)) / len);
+      sum += P[i + 2];
+    }
+    if (dev > Math.max(3 / scale, len * 0.09)) return; // not a line: leave the handwriting alone
+    a.line = true;
+    const p = Math.round(sum / n * 100) / 100;
+    a.pts = [x0, y0, p, x1, y1, p];
+    drawLine(a);
+  }
+
+  function drawLine(a) {
+    nextLive(() => {
+      clearLive();
+      R.drawItem(a.c, { t: 's', tool: a.tool, c: a.color, w: a.size, p: a.pts });
+    });
+  }
+
+  // A zigzag drawn over existing ink erases it instead of adding more ink. Returns the items to erase, or null.
+  function scribbleTargets(a) {
+    const P = a.pts, n = P.length / 3;
+    if (n < 12) return null;
+    let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity, len = 0;
+    for (let i = 0; i < P.length; i += 3) {
+      x0 = Math.min(x0, P[i]); x1 = Math.max(x1, P[i]); y0 = Math.min(y0, P[i + 1]); y1 = Math.max(y1, P[i + 1]);
+      if (i) len += Math.hypot(P[i] - P[i - 3], P[i + 1] - P[i - 2]);
+    }
+    const bw = x1 - x0, bh = y1 - y0;
+    if (len < 2.6 * (bw + bh)) return null;
+    // Count the times the line turns back on itself along one axis (small wobbles do not count).
+    const turns = (o, span) => {
+      const hyst = Math.max(4, span * 0.3);
+      let dir = 0, ext = P[o], count = 0;
+      for (let i = 3; i < P.length; i += 3) {
+        const v = P[i + o];
+        if (dir >= 0 && v > ext) { ext = v; if (!dir && v - P[o] > hyst) dir = 1; }
+        else if (dir <= 0 && v < ext) { ext = v; if (!dir && P[o] - v > hyst) dir = -1; }
+        else if (dir && Math.abs(v - ext) > hyst) { dir = -dir; ext = v; count++; }
+      }
+      return count;
+    };
+    if (Math.max(turns(0, bw), turns(1, bh)) < 4) return null;
+    // Only ink lying mostly inside the scribbled area goes, so writing that merely touches a neighbour is safe.
+    const r = Math.max(2, a.size), pad = 4, out = [];
+    for (const it of a.pv.page.items) {
+      if (it.t !== 's' && it.t !== 'sh') continue;
+      const b = R.bounds(it);
+      if (b.x > x1 || b.x + b.w < x0 || b.y > y1 || b.y + b.h < y0) continue;
+      const ix = Math.min(b.x + b.w, x1 + pad) - Math.max(b.x, x0 - pad), iy = Math.min(b.y + b.h, y1 + pad) - Math.max(b.y, y0 - pad);
+      if (ix * iy < 0.65 * b.w * b.h) continue;
+      for (let i = 0; i < P.length; i += 3) if (R.hitsCircle(it, P[i], P[i + 1], r)) { out.push(it); break; }
+    }
+    return out.length ? out : null;
+  }
+
   function beginStroke(e, x, y) {
     const a = action, t = prefs[a.tool];
     a.c = useLive(a.pv);
     a.color = inkFor(a.pv, t.color);
     a.size = t.size;
-    a.sp = pressureOf(e);
+    a.style = a.tool === 'pen' ? (t.style || 'fountain') : null;
+    a.sp = inkPressure(a, e);
     a.pts = [x, y, a.sp];
+    holdCheck(a, e);
     a.lx = x;
     a.ly = y;
     const c = a.c;
@@ -955,13 +1080,20 @@ export async function mountEditor(root, docId) {
   function moveStroke(e) {
     const a = action, P = a.pts, n = P.length;
     let [x, y] = toPage(a.pv, e.clientX, e.clientY);
+    if (a.line) { // snapped straight: the far end follows the pen
+      P[3] = x;
+      P[4] = y;
+      drawLine(a);
+      return;
+    }
+    holdCheck(a, e);
     const px = P[n - 3], py = P[n - 2];
     if (Math.hypot(x - px, y - py) < 0.7 / scale) return;
     // light smoothing: steadier lines without visible lag
     const k = a.ptype === 'pen' ? 0.78 : 0.6;
     x = px + (x - px) * k;
     y = py + (y - py) * k;
-    a.sp += (pressureOf(e) - a.sp) * 0.5;
+    a.sp += (inkPressure(a, e) - a.sp) * 0.5;
     P.push(x, y, a.sp);
     if (a.tool === 'hl') {
       nextLive(() => {
@@ -988,11 +1120,22 @@ export async function mountEditor(root, docId) {
   // e is null when the stroke is closed without a proper pen-up (the system cancelled or lost it).
   function endStroke(a, e) {
     const page = a.pv.page;
-    if (e) {
+    clearTimeout(a.holdT);
+    if (e && !a.line) {
       // Smoothing trails slightly behind the tip, so finish exactly where the pen lifted.
       const [ex, ey] = toPage(a.pv, e.clientX, e.clientY);
       const n = a.pts.length;
       if (Math.hypot(ex - a.pts[n - 3], ey - a.pts[n - 2]) > 0.5 / scale) a.pts.push(ex, ey, a.sp);
+    }
+    const gone = a.tool === 'pen' && !a.line && prefs.scribble !== false ? scribbleTargets(a) : null;
+    if (gone) {
+      removeItems(page, gone);
+      clearLive();
+      queueInk(a.pv);
+      pushUndo({ pageId: page.id, add: [], remove: gone });
+      dirty(page);
+      if (dbg) dbgCount('scribble erases');
+      return;
     }
     if (dbg) dbgCount('strokes saved');
     const it = {
@@ -1207,6 +1350,62 @@ export async function mountEditor(root, docId) {
     replaceSel(old, old.map(it => (it.t === 'im' ? it : { ...it, c: color, m: Date.now() })));
   }
 
+  // Crop a picture: drag the corners of the frame over the whole original image.
+  async function cropDialog(it) {
+    const src = await R.loadImage(it.a);
+    if (!src) { toast('That picture has not finished downloading yet.'); return; }
+    const old = it.cr || [0, 0, 1, 1];
+    let [l, t, w, hh] = old;
+    const box = h('div', { class: 'crop-box' }, ['nw', 'ne', 'sw', 'se'].map(c => h('div', { class: 'crop-h ' + c, 'data-c': c })));
+    const stage = h('div', { class: 'crop-stage' }, h('img', { class: 'crop-img', src: src.src, draggable: false }), box);
+    const show = () => Object.assign(box.style, { left: l * 100 + '%', top: t * 100 + '%', width: w * 100 + '%', height: hh * 100 + '%' });
+    show();
+    let drag = null;
+    stage.addEventListener('pointerdown', e => {
+      const c = e.target.getAttribute('data-c');
+      if (!c && e.target !== box) return;
+      e.preventDefault();
+      try { stage.setPointerCapture(e.pointerId); } catch { /* synthetic pointer */ }
+      const r = stage.getBoundingClientRect();
+      drag = { c: c || 'move', x: e.clientX, y: e.clientY, l, t, w, hh, rw: r.width, rh: r.height };
+    });
+    stage.addEventListener('pointermove', e => {
+      if (!drag) return;
+      const dx = (e.clientX - drag.x) / drag.rw, dy = (e.clientY - drag.y) / drag.rh, min = 0.05;
+      let x0 = drag.l, y0 = drag.t, x1 = drag.l + drag.w, y1 = drag.t + drag.hh;
+      if (drag.c === 'move') {
+        const mx = clamp(dx, -x0, 1 - x1), my = clamp(dy, -y0, 1 - y1);
+        x0 += mx; x1 += mx; y0 += my; y1 += my;
+      } else {
+        if (drag.c[1] === 'w') x0 = clamp(x0 + dx, 0, x1 - min); else x1 = clamp(x1 + dx, x0 + min, 1);
+        if (drag.c[0] === 'n') y0 = clamp(y0 + dy, 0, y1 - min); else y1 = clamp(y1 + dy, y0 + min, 1);
+      }
+      l = x0; t = y0; w = x1 - x0; hh = y1 - y0;
+      show();
+    });
+    const drop = () => { drag = null; };
+    stage.addEventListener('pointerup', drop);
+    stage.addEventListener('pointercancel', drop);
+    const apply = () => {
+      if (!sel || sel.items.length !== 1 || sel.items[0] !== it) return;
+      const r2 = v => Math.round(v * 100) / 100, r4 = v => Math.round(v * 1e4) / 1e4;
+      const ux = it.w / old[2], uy = it.h / old[3]; // page units per whole picture: the picture keeps its size on the page
+      const nu = { ...it, x: r2(it.x + (l - old[0]) * ux), y: r2(it.y + (t - old[1]) * uy), w: r2(w * ux), h: r2(hh * uy), m: Date.now() };
+      if (l < 0.002 && t < 0.002 && w > 0.998 && hh > 0.998) delete nu.cr; else nu.cr = [r4(l), r4(t), r4(w), r4(hh)];
+      replaceSel([it], [nu]);
+    };
+    modal({
+      title: 'Crop picture',
+      wide: true,
+      body: h('div', { class: 'crop-wrap' }, stage),
+      actions: [
+        { label: 'Whole picture', onClick: () => { l = 0; t = 0; w = 1; hh = 1; show(); return false; } },
+        { label: 'Cancel' },
+        { label: 'Crop', primary: true, onClick: apply }
+      ]
+    });
+  }
+
   function buildSelBar() {
     const one = sel.items.length === 1 ? sel.items[0] : null;
     const kids = [];
@@ -1225,6 +1424,9 @@ export async function mountEditor(root, docId) {
         class: 'ic', type: 'button', title: 'Edit text', html: I.edit,
         onclick: () => { const pv = sel.pv; clearSel(); startText(pv, one); }
       }));
+    }
+    if (one && one.t === 'im') {
+      kids.push(h('button', { class: 'ic', type: 'button', title: 'Crop', html: I.crop, onclick: () => cropDialog(one) }));
     }
     kids.push(
       h('button', { class: 'ic', type: 'button', title: 'Duplicate', html: I.copy, onclick: duplicateSel }),
@@ -1354,7 +1556,7 @@ export async function mountEditor(root, docId) {
     if (!file) return;
     try {
       const src = await loadBitmap(file);
-      const MAXD = 2000;
+      const MAXD = 3200;
       const k = Math.min(1, MAXD / Math.max(src.w, src.h));
       let data, mime;
       if (k === 1 && (file.type === 'image/jpeg' || file.type === 'image/png')) {
@@ -1372,7 +1574,7 @@ export async function mountEditor(root, docId) {
       const asset = { id: uid(), mime, name: file.name, data, modified: Date.now() };
       await db.put('assets', asset);
       const pv = currentPv(), pg = pv.page;
-      const f = Math.min(1, pg.w * 0.6 / src.w, pg.h * 0.5 / src.h);
+      const f = Math.min(1, pg.w * 0.9 / src.w, pg.h * 0.8 / src.h);
       const iw = src.w * f, ih = src.h * f;
       measure();
       const [cx, cy] = toPage(pv, vpRect.left + vpRect.width / 2, vpRect.top + vpRect.height / 2);
@@ -1462,11 +1664,12 @@ export async function mountEditor(root, docId) {
     if (pg.pdf) { toast('PDF pages keep their own background.'); return; }
     const st = { template: pg.template, paper: pg.paper, all: false };
     const all = h('input', { type: 'checkbox', onchange: e => { st.all = e.target.checked; } });
+    const tp = templatePicker(st.template, () => st.paper, v => { st.template = v; });
     modal({
       title: 'Page template',
       body: h('div', null,
-        chipGroup('Lines', TEMPLATE_OPTS, st.template, v => { st.template = v; }),
-        chipGroup('Paper', PAPER_OPTS, st.paper, v => { st.paper = v; }),
+        tp.el,
+        chipGroup('Paper', PAPER_OPTS, st.paper, v => { st.paper = v; tp.redraw(); }),
         h('label', { class: 'check' }, all, 'Apply to every page in this notebook')),
       actions: [
         { label: 'Cancel' },
@@ -1595,7 +1798,13 @@ export async function mountEditor(root, docId) {
   function renderOpts() {
     const t = prefs.tool;
     let kids = [];
-    if (t === 'pen') kids = [...swatches('pen', PEN_COLORS), h('div', { class: 'vsep' }), ...sizes('pen', [1.2, 2.2, 4], [5, 8, 12])];
+    if (t === 'pen') {
+      kids = [
+        ...swatches('pen', PEN_COLORS), h('div', { class: 'vsep' }),
+        ...sizes('pen', [0.8, 1.4, 2.2, 3.5, 6], [3, 5, 8, 11, 15]), h('div', { class: 'vsep' }),
+        seg([['ball', 'Ballpoint'], ['fountain', 'Fountain'], ['brush', 'Brush']], prefs.pen.style || 'fountain', v => { prefs.pen.style = v; savePrefs(); renderOpts(); })
+      ];
+    }
     else if (t === 'hl') kids = [...swatches('hl', HL_COLORS), h('div', { class: 'vsep' }), ...sizes('hl', [10, 16, 24], [7, 11, 15])];
     else if (t === 'eraser') {
       kids = [
@@ -1629,6 +1838,9 @@ export async function mountEditor(root, docId) {
 
   function gestureHelp() {
     const rows = [
+      ['Scribble over writing', 'Erase it'],
+      ['Hold the pen still at the end of a line', 'Make it straight'],
+      ['Pull up past the last page', 'Add a new page'],
       ['Two-finger tap', 'Undo'],
       ['Three-finger tap', 'Redo'],
       ['Pinch', 'Zoom in and out'],
@@ -1652,6 +1864,13 @@ export async function mountEditor(root, docId) {
       { label: 'Page template', icon: I.template, onClick: templateDialog },
       { label: 'Fit page width', icon: I.fit, onClick: fitWidth },
       { label: full ? 'Leave full screen' : 'Full screen', icon: full ? I.fullExit : I.full, onClick: () => setFull(!full) },
+      {
+        label: 'Scribble to erase: ' + (prefs.scribble !== false ? 'on' : 'off'), icon: I.eraser, onClick: () => {
+          prefs.scribble = prefs.scribble === false;
+          savePrefs();
+          toast(prefs.scribble ? 'Scribble over writing with the pen to erase it' : 'Scribble to erase is off');
+        }
+      },
       { label: 'Gestures', icon: I.finger, onClick: gestureHelp },
       { label: dbg ? 'Close input test' : 'Input test', icon: I.pen, onClick: toggleDebug },
       {

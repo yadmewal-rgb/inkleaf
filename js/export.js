@@ -133,7 +133,13 @@ export async function buildPdf(doc, pages, progress) {
         page.drawImage(png, { x: it.x, y: H - it.y - bm.h, width: it.w, height: bm.h });
       } else if (it.t === 'im') {
         const im = await embedAsset(it.a);
-        if (im) page.drawImage(im, { x: it.x, y: H - it.y - it.h, width: it.w, height: it.h });
+        if (im && it.cr) {
+          // Cropped picture: draw the whole image enlarged so the kept part fills the box, clipped to the box.
+          const [cx, cy, cw, ch] = it.cr, fw = it.w / cw, fh = it.h / ch;
+          page.pushOperators(L.pushGraphicsState(), L.rectangle(it.x, H - it.y - it.h, it.w, it.h), L.clip(), L.endPath());
+          page.drawImage(im, { x: it.x - cx * fw, y: H - it.y - it.h - (1 - cy - ch) * fh, width: fw, height: fh });
+          page.pushOperators(L.popGraphicsState());
+        } else if (im) page.drawImage(im, { x: it.x, y: H - it.y - it.h, width: it.w, height: it.h });
       }
     }
   }
