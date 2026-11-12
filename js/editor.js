@@ -1351,6 +1351,7 @@ export async function mountEditor(root, docId) {
     if (a.rule) [x, y] = onRule(a.rule, x, y);
     a.pts = [x, y, a.sp];
     holdCheck(a, e);
+    a.lw = R.pw({ w: a.size }, a.sp);
     a.lx = x;
     a.ly = y;
     for (const c of ctxs(a)) {
@@ -1387,7 +1388,7 @@ export async function mountEditor(root, docId) {
     const k = a.ptype === 'pen' ? 0.78 : 0.6;
     x = px + (x - px) * k;
     y = py + (y - py) * k;
-    a.sp += (inkPressure(a, e) - a.sp) * 0.5;
+    a.sp += (inkPressure(a, e) - a.sp) * 0.35; // pressure is eased in, so the line swells and thins gradually
     P.push(x, y, a.sp);
     if (a.tool === 'hl') {
       liveItem(a, { t: 's', tool: 'hl', c: a.color, w: a.size, p: P });
@@ -1397,16 +1398,24 @@ export async function mountEditor(root, docId) {
     if (m >= 9) {
       const cx = P[m - 6], cy = P[m - 5];
       const mx = (cx + x) / 2, my = (cy + y) / 2;
-      for (const c of ctxs(a)) {
-        c.beginPath();
-        c.moveTo(a.lx, a.ly);
-        c.quadraticCurveTo(cx, cy, mx, my);
-        c.lineWidth = R.pw({ w: a.size }, P[m - 4]);
-        c.stroke();
-      }
+      const w1 = R.pw({ w: a.size }, (P[m - 4] + P[m - 1]) / 2);
+      for (const c of ctxs(a)) R.inkSeg(c, a.lx, a.ly, cx, cy, mx, my, a.lw, w1);
+      a.lw = w1;
       a.lx = mx;
       a.ly = my;
     }
+  }
+
+  // When the pen lifts, the line is evened out a little: each point moves a quarter of the way towards its
+  // neighbours (twice for pressure), which takes out hand tremor and sensor jitter but keeps the letter shapes.
+  function settle(P) {
+    const n = P.length / 3;
+    if (n < 5) return P;
+    const o = P.slice();
+    for (let i = 1; i < n - 1; i++) for (let k = 0; k < 3; k++) o[i * 3 + k] = (P[i * 3 - 3 + k] + 2 * P[i * 3 + k] + P[i * 3 + 3 + k]) / 4;
+    for (let i = 1; i < n - 1; i++) P[i * 3 + 2] = (o[i * 3 - 1] + 2 * o[i * 3 + 2] + o[i * 3 + 5]) / 4;
+    for (let i = 1; i < n - 1; i++) o[i * 3 + 2] = P[i * 3 + 2];
+    return o;
   }
 
   // e is null when the stroke is closed without a proper pen-up (the system cancelled or lost it).
@@ -1432,6 +1441,7 @@ export async function mountEditor(root, docId) {
       return;
     }
     if (dbg) dbgCount('strokes saved');
+    if (!a.line && !a.snap && !a.rule) a.pts = settle(a.pts);
     const it = a.snap ? { ...a.snap, id: uid(), z: nextZ(), m: Date.now() } : {
       id: uid(), t: 's', tool: a.tool, c: a.color, w: a.size,
       p: a.pts.map(v => Math.round(v * 100) / 100), z: nextZ(), m: Date.now()

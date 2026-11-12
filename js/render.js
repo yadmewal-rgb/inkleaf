@@ -153,23 +153,42 @@ function drawStroke(ctx, s) {
     ctx.stroke();
     return;
   }
-  // Pressure-sensitive: each curve piece gets its own width.
-  let px = P[0], py = P[1];
+  // Pressure-sensitive: the width glides from one point to the next instead of changing in steps.
+  let px = P[0], py = P[1], w0 = pw(s, P[2]);
   for (let i = 1; i < n - 1; i++) {
     const x = P[i * 3], y = P[i * 3 + 1];
     const mx = (x + P[i * 3 + 3]) / 2, my = (y + P[i * 3 + 4]) / 2;
-    ctx.beginPath();
-    ctx.moveTo(px, py);
-    ctx.quadraticCurveTo(x, y, mx, my);
-    ctx.lineWidth = pw(s, P[i * 3 + 2]);
-    ctx.stroke();
-    px = mx; py = my;
+    const w1 = pw(s, (P[i * 3 + 2] + P[i * 3 + 5]) / 2);
+    inkSeg(ctx, px, py, x, y, mx, my, w0, w1);
+    px = mx; py = my; w0 = w1;
   }
-  ctx.beginPath();
-  ctx.moveTo(px, py);
-  ctx.lineTo(P[(n - 1) * 3], P[(n - 1) * 3 + 1]);
-  ctx.lineWidth = pw(s, P[(n - 1) * 3 + 2]);
-  ctx.stroke();
+  const ex = P[(n - 1) * 3], ey = P[(n - 1) * 3 + 1];
+  inkSeg(ctx, px, py, (px + ex) / 2, (py + ey) / 2, ex, ey, w0, pw(s, P[(n - 1) * 3 + 2]));
+}
+
+// One curved piece of a stroke whose width changes from w0 to w1 along it. The curve is cut into as many
+// short pieces as the change in width needs, so no step is visible.
+export function inkSeg(ctx, x0, y0, cx, cy, x1, y1, w0, w1) {
+  const k = Math.min(6, Math.max(1, Math.ceil(Math.abs(w1 - w0) / (Math.min(w0, w1) * 0.06 + 0.02))));
+  if (k === 1) {
+    ctx.beginPath();
+    ctx.moveTo(x0, y0);
+    ctx.quadraticCurveTo(cx, cy, x1, y1);
+    ctx.lineWidth = (w0 + w1) / 2;
+    ctx.stroke();
+    return;
+  }
+  let ax = x0, ay = y0;
+  for (let j = 1; j <= k; j++) {
+    const t = j / k, u = 1 - t;
+    const bx = u * u * x0 + 2 * u * t * cx + t * t * x1, by = u * u * y0 + 2 * u * t * cy + t * t * y1;
+    ctx.beginPath();
+    ctx.moveTo(ax, ay);
+    ctx.lineTo(bx, by);
+    ctx.lineWidth = w0 + (w1 - w0) * (j - 0.5) / k;
+    ctx.stroke();
+    ax = bx; ay = by;
+  }
 }
 
 // The same stroke as SVG path runs of constant width, for PDF export.
