@@ -56,7 +56,6 @@ const DEFAULTS = {
   scribble: true, // a zigzag over ink erases it
   favs: [],       // favourite pens: [{color, size, style}]
   hl: { color: '#ffd43b', size: mmToPt(5.5), mode: 'free' }, // mode: free, or follow PDF text as hl / ul / st
-  holdErase: false, // show the hold-to-erase button
   eraser: { size: mmToPt(5.5), mode: 'stroke', only: 'all' },
   shape: { kind: 'rect', color: '#1971c2', size: mmToPt(0.8), fill: null },
   text: { color: INK, size: 16, b: false, i: false, u: false, ff: 'sans', al: 'l' },
@@ -234,22 +233,6 @@ export async function mountEditor(root, docId, opts = {}) {
   const histLast = new Map();   // page id -> when its last history snapshot was taken this session
 
   let oneShot = null;     // 'excerpt' while the next drag marks out a part of the page to copy
-  let holdErase = false;  // the hold-to-erase button is being held: the pen erases meanwhile
-  // Layers. Layer 0 is "Base"; doc.layers lists the others as {id, n: name, h: hidden, k: locked}.
-  let curLayer = 0, lyOff = new Set(), lyNo = new Set();
-  try { curLayer = parseInt(localStorage.getItem('inkleaf.ly.' + doc.id) || '0', 10) || 0; } catch { /* private mode */ }
-  const layers = () => { const L = doc.layers || [], b = L.find(x => !x.id) || {}; return [{ id: 0, n: 'Base', h: b.h, k: b.k }, ...L.filter(x => x.id)]; };
-  const lyOf = () => ({ ly: curLayer || undefined });                       // what a newly made item carries
-  const lyHidden = it => lyOff.size > 0 && lyOff.has(it.ly || 0);
-  const lyBlocked = it => lyNo.size > 0 && lyNo.has(it.ly || 0);            // hidden or locked: cannot be erased or selected
-  const holdBtn = h('button', { class: 'hold-erase', type: 'button', hidden: true, html: I.eraser }); // hold-to-erase was removed as a feature: the button stays hidden
-  {
-    const set = on => { holdErase = on; holdBtn.classList.toggle('on', on); };
-    holdBtn.addEventListener('pointerdown', e => { e.preventDefault(); try { holdBtn.setPointerCapture(e.pointerId); } catch { /* synthetic pointer */ } set(true); });
-    for (const ev of ['pointerup', 'pointercancel', 'lostpointercapture']) holdBtn.addEventListener(ev, () => set(false));
-    holdBtn.addEventListener('contextmenu', e => e.preventDefault());
-    overlay.append(holdBtn);
-  }
   let readOnly = false; // read-only view: nothing that touches the page draws on it
   try { readOnly = localStorage.getItem('inkleaf.ro.' + doc.id) === '1'; } catch { /* private mode */ }
   const fingerDraws = () => !readOnly && (prefs.fingerDraw === true || (prefs.fingerDraw == null && !penSeen));
@@ -562,7 +545,7 @@ export async function mountEditor(root, docId, opts = {}) {
     // Tagged items carry a small coloured badge at their top left corner (also on screen only).
     for (const it of pv.page.items) {
       const tg = it.tg && TAGS[it.tg];
-      if (!tg || lyHidden(it)) continue;
+      if (!tg) continue;
       const b = R.bounds(it), px = (window.devicePixelRatio || 1) / pv.rs, r = Math.max(5, 6.5 * px * Math.min(2, Math.max(1, scale)));
       c.save();
       c.globalAlpha = it.tg === 'done' ? 0.55 : 1;
@@ -1324,8 +1307,8 @@ export async function mountEditor(root, docId, opts = {}) {
   // ------------------------------------------------------------------ tool actions
   // map is given when the press is in the zoom window: it turns screen positions there into page positions.
   function startAction(e, forceTool, map) {
-    // oneShot: the next drag marks out an excerpt. holdErase: the on-screen button is being held down.
-    const tool = (!map && oneShot) || forceTool || (holdErase && !map ? 'eraser' : null) || prefs.tool;
+    // oneShot: the next drag marks out an excerpt.
+    const tool = (!map && oneShot) || forceTool || prefs.tool;
     const pv = map ? zw.pv : (tool === 'lasso' && sel && touchOnSelPoint(e)) ? sel.pv : pvAt(e.clientX, e.clientY);
     const [x, y] = map ? map(e.clientX, e.clientY) : toPage(pv, e.clientX, e.clientY);
     if (tool !== 'lasso' && sel) clearSel();
@@ -1553,7 +1536,7 @@ export async function mountEditor(root, docId, opts = {}) {
     // Only ink lying mostly inside the scribbled area goes, so writing that merely touches a neighbour is safe.
     const r = Math.max(2, a.size), pad = 4, out = [];
     for (const it of a.pv.page.items) {
-      if ((it.t !== 's' && it.t !== 'sh') || lyBlocked(it)) continue;
+      if ((it.t !== 's' && it.t !== 'sh')) continue;
       const b = R.bounds(it);
       if (b.x > x1 || b.x + b.w < x0 || b.y > y1 || b.y + b.h < y0) continue;
       const ix = Math.min(b.x + b.w, x1 + pad) - Math.max(b.x, x0 - pad), iy = Math.min(b.y + b.h, y1 + pad) - Math.max(b.y, y0 - pad);
@@ -1666,9 +1649,9 @@ export async function mountEditor(root, docId, opts = {}) {
     }
     if (dbg) dbgCount('strokes saved');
     if (!a.line && !a.snap && !a.rule) a.pts = settle(a.pts);
-    const it = a.snap ? { ...a.snap, id: uid(), z: nextZ(), ...lyOf(), m: Date.now() } : {
+    const it = a.snap ? { ...a.snap, id: uid(), z: nextZ(), m: Date.now() } : {
       id: uid(), t: 's', tool: a.tool, c: a.color, w: a.size,
-      p: a.pts.map(v => Math.round(v * 100) / 100), z: nextZ(), ...lyOf(), m: Date.now(),
+      p: a.pts.map(v => Math.round(v * 100) / 100), z: nextZ(), m: Date.now(),
       ...(a.style === 'pencil' ? { st: 'pencil' } : {})
     };
     // Highlighter set to follow PDF text: the freehand stroke is swapped for neat marks on the lines it crossed.
@@ -1732,7 +1715,7 @@ export async function mountEditor(root, docId, opts = {}) {
       let xa = hit.length === 1 ? Math.max(l.x, x0) : i === 0 ? Math.max(l.x, sx) : l.x;
       let xb = hit.length === 1 ? Math.min(l.x + l.w, x1) : i === hit.length - 1 ? Math.min(l.x + l.w, ex) : l.x + l.w;
       if (xb - xa < 2) return;
-      const base = { id: uid(), t: 's', z: nextZ(), ...lyOf(), m: t0 };
+      const base = { id: uid(), t: 's', z: nextZ(), m: t0 };
       if (mode === 'hl') {
         const w = l.h * 1.05, cut = Math.min(w * 0.35, (xb - xa) / 3); // round ends reach past the line's ends
         out.push({ ...base, tool: 'hl', c: a.color, w: r2(w), p: [r2(xa + cut), r2(l.y + l.h / 2), 0.5, r2(xb - cut), r2(l.y + l.h / 2), 0.5] });
@@ -1772,7 +1755,7 @@ export async function mountEditor(root, docId, opts = {}) {
     let hit = false;
     const out = [];
     const only = prefs.eraser.only || 'all';
-    const skip = it => (it.t !== 's' && it.t !== 'sh' && it.t !== 'tp') || lyBlocked(it)
+    const skip = it => (it.t !== 's' && it.t !== 'sh' && it.t !== 'tp')
       || (only === 'hl' && !(it.t === 's' && it.tool === 'hl'))   // highlighter only
       || (only === 'pen' && it.t === 's' && it.tool === 'hl');    // everything but highlighter
     for (const it of page.items) {
@@ -1798,7 +1781,7 @@ export async function mountEditor(root, docId, opts = {}) {
   function topItemAt(page, x, y, type) {
     for (let i = page.items.length - 1; i >= 0; i--) {
       const it = page.items[i];
-      if ((type && it.t !== type) || lyBlocked(it)) continue;
+      if ((type && it.t !== type)) continue;
       if (it.t === 'tx' || it.t === 'im' || it.t === 'nt' || it.t === 'tb') {
         const b = R.bounds(it);
         if (x >= b.x && x <= b.x + b.w && y >= b.y && y <= b.y + b.h) return it;
@@ -1857,7 +1840,7 @@ export async function mountEditor(root, docId, opts = {}) {
       else { const ln = linkAt(a.pv, a.x0, a.y0); if (ln) followLink(a.pv, ln); }
       return;
     }
-    const items = page.items.filter(it => !lyBlocked(it) && R.inLasso(it, a.poly));
+    const items = page.items.filter(it => R.inLasso(it, a.poly));
     if (items.length) setSel(a.pv, items);
   }
 
@@ -1931,7 +1914,7 @@ export async function mountEditor(root, docId, opts = {}) {
   function duplicateSel() {
     if (!sel) return;
     const pv = sel.pv;
-    const copies = sel.items.map(it => ({ ...R.transformItem(it, 1, 0, 0, 14, 14), id: uid(), z: nextZ(), ...lyOf() }));
+    const copies = sel.items.map(it => ({ ...R.transformItem(it, 1, 0, 0, 14, 14), id: uid(), z: nextZ() }));
     clearSel();
     addItems(pv.page, copies);
     pushUndo({ pageId: pv.page.id, add: copies, remove: [] });
@@ -1966,7 +1949,7 @@ export async function mountEditor(root, docId, opts = {}) {
     const [vx, vy] = viewCentre(pv);
     const dx = clamp(vx - u.w / 2, 4, Math.max(4, pg.w - u.w - 4)) - u.x, dy = clamp(vy - u.h / 2, 4, Math.max(4, pg.h - u.h - 4)) - u.y;
     await Promise.all(src.filter(it => it.t === 'im').map(it => R.loadImage(it.a)));
-    const items = src.map(it => ({ ...R.transformItem(it, 1, 0, 0, dx, dy), id: uid(), z: nextZ(), ...lyOf() }));
+    const items = src.map(it => ({ ...R.transformItem(it, 1, 0, 0, dx, dy), id: uid(), z: nextZ() }));
     addItems(pg, items);
     pushUndo({ pageId: pg.id, add: items, remove: [] });
     dirty(pg);
@@ -2220,7 +2203,7 @@ export async function mountEditor(root, docId, opts = {}) {
     }
     const r2 = v => Math.round(v * 100) / 100;
     const s = tempTape(a);
-    const it = { ...s, x1: r2(s.x1), y1: r2(s.y1), x2: r2(s.x2), y2: r2(s.y2), id: uid(), z: nextZ(), ...lyOf(), m: Date.now() };
+    const it = { ...s, x1: r2(s.x1), y1: r2(s.y1), x2: r2(s.x2), y2: r2(s.y2), id: uid(), z: nextZ(), m: Date.now() };
     addItems(page, [it]);
     queueInk(pv);
     pushUndo({ pageId: page.id, add: [it], remove: [] });
@@ -2796,7 +2779,7 @@ export async function mountEditor(root, docId, opts = {}) {
     if (!a.far || Math.hypot(a.x1 - a.x0, a.y1 - a.y0) < 3) return;
     const r2 = v => Math.round(v * 100) / 100;
     const s = tempShape(a);
-    const it = { ...s, x1: r2(s.x1), y1: r2(s.y1), x2: r2(s.x2), y2: r2(s.y2), id: uid(), z: nextZ(), ...lyOf(), m: Date.now() };
+    const it = { ...s, x1: r2(s.x1), y1: r2(s.y1), x2: r2(s.x2), y2: r2(s.y2), id: uid(), z: nextZ(), m: Date.now() };
     const page = a.pv.page;
     addItems(page, [it]);
     if (a.pv.rs) {
@@ -2989,7 +2972,7 @@ export async function mountEditor(root, docId, opts = {}) {
     const pv = currentPv(), pg = pv.page, [cx, cy] = viewCentre(pv), w = 150;
     const it = {
       id: uid(), t: 'nt', x: Math.round(clamp(cx - w / 2, 4, pg.w - w - 4)), y: Math.round(clamp(cy - 60, 4, pg.h - 110)),
-      w, s: '', fs: 13, c: prefs.noteColor || NOTE_COLORS[0], z: nextZ(), ...lyOf(), m: Date.now()
+      w, s: '', fs: 13, c: prefs.noteColor || NOTE_COLORS[0], z: nextZ(), m: Date.now()
     };
     addItems(pg, [it]);
     pushUndo({ pageId: pg.id, add: [it], remove: [] });
@@ -3018,7 +3001,7 @@ export async function mountEditor(root, docId, opts = {}) {
             const w = Math.min(pg.w - 40, cl * 110), hh = r * 28;
             const it = {
               id: uid(), t: 'tb', x: Math.round(clamp(cx - w / 2, 8, pg.w - w - 8)), y: Math.round(clamp(cy - hh / 2, 8, Math.max(8, pg.h - hh - 8))),
-              w, h: hh, r, cl, cells: [], fs: 12, c: '#5c606a', z: nextZ(), ...lyOf(), m: Date.now(), ...(hd.checked ? { hd: 1 } : {})
+              w, h: hh, r, cl, cells: [], fs: 12, c: '#5c606a', z: nextZ(), m: Date.now(), ...(hd.checked ? { hd: 1 } : {})
             };
             addItems(pg, [it]);
             pushUndo({ pageId: pg.id, add: [it], remove: [] });
@@ -3455,7 +3438,7 @@ export async function mountEditor(root, docId, opts = {}) {
       pushUndo({ pageId: page.id, remove: [old], add });
     } else if (s) {
       const r2 = v => Math.round(v * 100) / 100;
-      const it = { id: uid(), t: 'tx', x: r2(te.x), y: r2(te.y), w: r2(te.w), s, ...sty, z: nextZ(), ...lyOf(), m: Date.now() };
+      const it = { id: uid(), t: 'tx', x: r2(te.x), y: r2(te.y), w: r2(te.w), s, ...sty, z: nextZ(), m: Date.now() };
       addItems(page, [it]);
       pushUndo({ pageId: page.id, add: [it], remove: [] });
     } else return;
@@ -3479,7 +3462,7 @@ export async function mountEditor(root, docId, opts = {}) {
         id: uid(), t: 'im', a: asset.id,
         x: Math.round(clamp(cx - iw / 2, 8, Math.max(8, pg.w - iw - 8))),
         y: Math.round(clamp(cy - ih / 2, 8, Math.max(8, pg.h - ih - 8))),
-        w: Math.round(iw), h: Math.round(ih), z: nextZ(), ...lyOf(), m: Date.now()
+        w: Math.round(iw), h: Math.round(ih), z: nextZ(), m: Date.now()
       };
       await R.loadImage(asset.id);
       addItems(pg, [it]);
@@ -4228,7 +4211,7 @@ export async function mountEditor(root, docId, opts = {}) {
     pages.forEach((pg, i) => {
       const by = new Map();
       for (const it of pg.items) {
-        if (!it.tg || !TAGS[it.tg] || lyHidden(it)) continue;
+        if (!it.tg || !TAGS[it.tg]) continue;
         const key = it.tg + ':' + (it.t === 's' ? 's' + it.m : it.id); // strokes tagged in one go share a time stamp
         if (!by.has(key)) by.set(key, { tg: it.tg, pg, i, items: [] });
         by.get(key).items.push(it);
@@ -4347,7 +4330,7 @@ export async function mountEditor(root, docId, opts = {}) {
     commitText();
     const rows = [];
     for (let i = 0; i < pages.length; i++) {
-      const pg = pages[i], hls = pg.items.filter(it => it.t === 's' && it.tool === 'hl' && !lyHidden(it));
+      const pg = pages[i], hls = pg.items.filter(it => it.t === 's' && it.tool === 'hl');
       if (!hls.length) continue;
       // Strokes that touch (a highlight over several lines, or done in two passes) are one entry.
       const groups = [];
@@ -4520,7 +4503,7 @@ export async function mountEditor(root, docId, opts = {}) {
   async function replayDialog() {
     commitText();
     const pg = currentPv().page;
-    const items = pg.items.filter(it => !lyHidden(it)).slice().sort((a, b) => a.z - b.z);
+    const items = pg.items.slice().sort((a, b) => a.z - b.z);
     if (!items.length) { toast('There is nothing on this page to replay.'); return; }
     const k = Math.min(2.5, 1600 / pg.w);
     const base = document.createElement('canvas'), acc = document.createElement('canvas'), view = h('canvas', { class: 'big-c replay-c' });
@@ -4645,81 +4628,6 @@ export async function mountEditor(root, docId, opts = {}) {
     }
     const old = sel.items;
     replaceSel(old, old.map(it => { const [dx, dy] = move.get(it) || [0, 0]; return dx || dy ? R.transformItem(it, 1, 0, 0, dx, dy) : it; }));
-  }
-
-  // --- layers: every item belongs to one; a layer can be hidden or locked. Layer 0 ("Base") always exists.
-  function setLayers(list) {
-    doc.layers = list;
-    docDirty = true;
-    changed = true;
-    clearTimeout(saveT);
-    saveT = setTimeout(() => flush().catch(saveFailed), 250);
-    applyLayers();
-  }
-
-  function applyLayers() {
-    lyOff = new Set(); // layers were removed as a feature: nothing is ever hidden or locked
-    lyNo = new Set();
-    R.setHiddenLayers(lyOff);
-    if (!layers().some(l => l.id === curLayer)) curLayer = 0;
-    for (const pv of pvs) if (pv.rs) paintInk(pv);
-    if (panelOpen) fillPanel();
-  }
-
-  function layersDialog() {
-    let m = null;
-    const body = h('div');
-    const draw = () => fill(body,
-      h('p', { class: 'modal-text small' }, 'New writing goes on the layer with the dot. A hidden layer is not shown or exported; a locked one cannot be erased or selected.'),
-      layers().map(l => h('div', { class: 'ly-row' + (l.id === curLayer ? ' on' : '') },
-        h('button', { class: 'ly-pick', type: 'button', title: 'Write on this layer', onclick: () => { curLayer = l.id; try { localStorage.setItem('inkleaf.ly.' + doc.id, String(curLayer)); } catch { /* private mode */ } if (l.h || l.k) patch(l.id, { h: 0, k: 0 }); draw(); } },
-          h('span', { class: 'ly-dot' }), l.n),
-        h('span', { class: 'bk-sub' }, `${pages.reduce((t, p) => t + p.items.filter(it => (it.ly || 0) === l.id).length, 0)} items`),
-        h('button', { class: 'chip sm' + (l.h ? ' on' : ''), type: 'button', onclick: () => patch(l.id, { h: l.h ? 0 : 1 }) }, l.h ? 'Hidden' : 'Shown'),
-        h('button', { class: 'chip sm' + (l.k ? ' on' : ''), type: 'button', onclick: () => patch(l.id, { k: l.k ? 0 : 1 }) }, l.k ? 'Locked' : 'Unlocked'),
-        l.id ? h('button', { class: 'ic sm', type: 'button', title: 'Rename', html: I.edit, onclick: async () => { const n = await promptText('Rename the layer', l.n); if (n) patch(l.id, { n }); } }) : null,
-        l.id ? h('button', { class: 'ic sm danger', type: 'button', title: 'Remove this layer (its items move to Base)', html: I.trash, onclick: () => dropLayer(l.id) }) : null)),
-      h('div', { class: 'row' }, h('button', {
-        class: 'btn', type: 'button', onclick: async () => {
-          const n = await promptText('Name of the new layer', '', 'For example: Labels, Diagram, Teacher\'s corrections');
-          if (!n) return;
-          const id = Math.max(0, ...layers().map(x => x.id)) + 1;
-          curLayer = id;
-          setLayers([...(doc.layers || []), { id, n }]);
-          draw();
-        }
-      }, 'Add a layer')));
-    const patch = (id, o) => {
-      const list = layers().map(x => (x.id === id ? { ...x, ...o } : x));
-      if (list.find(x => x.id === curLayer && (x.h || x.k)) && !o.n) toast('You are writing on that layer: new writing will ' + (o.h ? 'not show' : 'be locked') + ' until you change it back.', 3500);
-      setLayers(list.filter(x => x.id || x.h || x.k)); // Base is stored only when it is hidden or locked
-      draw();
-    };
-    const dropLayer = id => {
-      clearSel();
-      for (const pg of pages) {
-        const mine = pg.items.filter(it => (it.ly || 0) === id);
-        if (!mine.length) continue;
-        const nu = mine.map(it => { const o = { ...it, m: Date.now() }; delete o.ly; return o; });
-        removeItems(pg, mine); addItems(pg, nu);
-        dirty(pg);
-      }
-      setLayers((doc.layers || []).filter(x => x.id !== id));
-      draw();
-    };
-    draw();
-    m = modal({ title: 'Layers', wide: true, body, actions: [{ label: 'Done', primary: true }] });
-  }
-
-  function moveSelToLayer() {
-    if (!sel) return;
-    popMenu(selBar, layers().map(l => ({
-      label: l.n, icon: I.layers, onClick: () => {
-        const old = sel.items;
-        replaceSel(old, old.map(it => { const o = { ...it, m: Date.now() }; if (l.id) o.ly = l.id; else delete o.ly; return o; }));
-        if (l.h || l.k) clearSel();
-      }
-    })));
   }
 
   // --- PDF pages: add margins to write in, or trim the white borders so the text is larger
@@ -5433,7 +5341,6 @@ export async function mountEditor(root, docId, opts = {}) {
     keepAwake(false);
     offs.forEach(off => off());
     offImg();
-    R.setHiddenLayers(null);
     if (activeEd === me) activeEd = null;
     try {
       if (changed || !doc.thumb) {
@@ -5452,7 +5359,6 @@ export async function mountEditor(root, docId, opts = {}) {
   showSync(syncStatus());
   bus.emit('editor-open', doc.id);
   bmBtn.classList.add('wide'); // on a phone the bookmark star lives in the pages panel only
-  applyLayers();
   drawTabs();
   setReadOnly(readOnly, true);
   if (TM.open && !split) toggleTimer(true);

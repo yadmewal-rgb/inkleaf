@@ -39,7 +39,6 @@ export async function buildPdf(doc, pages, progress) {
     return L.rgb((n >> 16 & 255) / 255, (n >> 8 & 255) / 255, (n & 255) / 255);
   };
 
-  const hideLy = new Set((doc.layers || []).filter(l => l.h).map(l => l.id));
   const out = await PDFDocument.create();
   out.setTitle(doc.title);
   out.setCreator('Inkleaf');
@@ -154,7 +153,6 @@ export async function buildPdf(doc, pages, progress) {
       ...pg.items.filter(it => it.t === 'tp' || it.t === 'nt')
     ];
     for (const it of ordered) {
-      if (hideLy && hideLy.has(it.ly || 0)) continue; // layers that are switched off stay out of the PDF
       if (it.t === 'nt' || it.t === 'tb') {
         // Sticky notes and tables go in as pictures of themselves.
         const bm = R.itemBitmap(it, 3);

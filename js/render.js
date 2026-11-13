@@ -583,7 +583,6 @@ const isHl = it => it.t === 's' && it.tool === 'hl';
 
 // clip ({x, y, w, h} in page units) lets callers that only show part of a page skip everything outside it.
 function outside(it, clip) {
-  if (layerOff(it)) return true; // every drawing loop asks this, so hidden layers drop out here
   if (!clip) return false;
   const b = bounds(it);
   return b.x > clip.x + clip.w || b.x + b.w < clip.x || b.y > clip.y + clip.h || b.y + b.h < clip.y;
@@ -597,7 +596,7 @@ export function drawImages(ctx, items, skip, clip) {
 // The editor keeps pictures on their own opaque layer and passes images = false here.
 export function drawItems(ctx, items, skip, images = true, clip = null) {
   if (images) drawImages(ctx, items, skip, clip);
-  const vis = clip || hiddenLayers.size ? items.filter(it => !outside(it, clip)) : items;
+  const vis = clip ? items.filter(it => !outside(it, clip)) : items;
   for (const it of vis) if (isHl(it) && !(skip && skip.has(it.id))) drawItem(ctx, it);
   for (const it of vis) if (!isHl(it) && it.t !== 'im' && !onTop(it) && !(skip && skip.has(it.id))) drawItem(ctx, it);
 }
@@ -761,11 +760,6 @@ export function pdfBox(pg) {
   const m = pg.pm;
   return m ? { x: m.l, y: m.t, w: pg.w - m.l - m.r, h: pg.h - m.t - m.b } : { x: 0, y: 0, w: pg.w, h: pg.h };
 }
-
-// Layers that are switched off are skipped by every drawing routine (set by the notebook that is open).
-let hiddenLayers = new Set();
-export const setHiddenLayers = s => { hiddenLayers = s || new Set(); };
-const layerOff = it => hiddenLayers.size > 0 && hiddenLayers.has(it.ly || 0);
 
 // Whole page (paper, PDF, ink) into a canvas pxW pixels wide. Used for thumbnails.
 export async function renderPageTo(page, canvas, pxW) {
