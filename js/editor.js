@@ -795,6 +795,7 @@ export async function mountEditor(root, docId, opts = {}) {
       throw e;
     }
     for (const p of ps) snapshot(p).catch(e => console.warn('Page history not saved', e));
+    verRecord(ps);
   }
 
   // ------------------------------------------------------------------ page history (kept on this device only)
@@ -892,7 +893,8 @@ export async function mountEditor(root, docId, opts = {}) {
       return;
     }
     if (sel && sel.pv.page === P) clearSel();
-    const restyle = P.template !== m.template || P.paper !== m.paper || JSON.stringify([P.bg || null, P.pdf || null]) !== JSON.stringify([m.bg || null, m.pdf || null]);
+    verRecord([P]); // writing arriving from another device also counts as a change in this session
+    const restyle =P.template !== m.template || P.paper !== m.paper || JSON.stringify([P.bg || null, P.pdf || null]) !== JSON.stringify([m.bg || null, m.pdf || null]);
     const resize = P.w !== m.w || P.h !== m.h;
     P.items = m.items;
     P.dels = m.dels;
@@ -3364,6 +3366,7 @@ export async function mountEditor(root, docId, opts = {}) {
     pages.splice(i, 1);
     dirtyPages.delete(pg);
     gonePages.add(pg.id);
+    verRecord([pg]);
     await trashPage(pg, doc, i);
     structureChanged(Math.min(i, pages.length - 1));
     toast(`Page ${i + 1} is in the bin for ${TRASH_DAYS} days`);
@@ -3825,6 +3828,196 @@ export async function mountEditor(root, docId, opts = {}) {
     } catch { /* no sound available */ }
   }
 
+  // --- notebook versions: how the notebook stood at the start of each writing session (kept on this device).
+  // A session is one stretch of work; opening the notebook again within 20 minutes continues the same one.
+  // Only pages that a session changes are stored, each as it was before the session touched it.
+  const VER_GAP = 20 * 60e3, VER_MAX = 25, VER_DAYS = 60;
+  const clonePg = p => ({ ...p, items: p.items.slice(), dels: {} });
+  const sessNow = () => ({ order: pages.map(p => p.id), pages: new Map(pages.map(p => [p.id, clonePg(p)])) });
+  let sessOrig = sessNow(), ver = null, verEntry = null, verList = null, verFresh = false, verChain = Promise.resolve();
+  const verKey = t => `ver:${doc.id}:${t}`;
+  const fmtVer = t => new Date(t).toLocaleString([], { day: 'numeric', month: 'short', hour: 'numeric', minute: '2-digit' });
+
+  async function verOpen() {
+    if (ver) return false;
+    const list = (await db.getMeta('vers:' + doc.id)) || [];
+    const lastE = list[list.length - 1];
+    if (!verFresh && lastE && Date.now() - lastE.last < VER_GAP) {
+      const rec = await db.getMeta(verKey(lastE.t));
+      if (rec) { ver = rec; verEntry = lastE; verList = list; return false; }
+    }
+    const t = Date.now();
+    ver = { t, order: sessOrig.order, pre: {} };
+    verEntry = { t, last: t, n: 0 };
+    list.push(verEntry);
+    while (list.length > VER_MAX || (list.length > 1 && t - list[0].t > VER_DAYS * 864e5)) await db.setMeta(verKey(list.shift().t), null);
+    verList = list;
+    verFresh = false;
+    return true;
+  }
+
+  // Called after every save with the pages that were just written.
+  function verRecord(ps) {
+    verChain = verChain.then(async () => {
+      let write = await verOpen();
+      for (const p of ps) if (!(p.id in ver.pre)) { ver.pre[p.id] = sessOrig.pages.get(p.id) || null; write = true; } // null = the page did not exist yet
+      const now = Date.now(), stale = now - verEntry.last > 60e3;
+      verEntry.last = now;
+      verEntry.n = Object.keys(ver.pre).length;
+      if (write) await db.setMeta(verKey(ver.t), ver);
+      if (write || stale) await db.setMeta('vers:' + doc.id, verList);
+    }).catch(e => console.warn('Version not saved', e));
+    return verChain;
+  }
+
+  // Start a new version from the notebook as it is this moment (done before going back, so that can be undone too).
+  async function verCut() {
+    await verChain;
+    ver = null;
+    verFresh = true;
+    sessOrig = sessNow();
+  }
+
+  const pgLook = p => JSON.stringify([p.template, p.paper, p.bg || null, p.pdf || null, p.w, p.h]);
+  const samePg = (a, b) => sameList(a.items, b.items) && pgLook(a) === pgLook(b);
+
+  // The pages of the notebook as they were at the start of version k (recs: every version, oldest first).
+  async function verState(recs, k) {
+    const out = [];
+    for (const id of recs[k].order) {
+      let rec = null;
+      for (let j = k; j < recs.length && !rec; j++) rec = recs[j].pre[id] || null;
+      if (!rec) rec = pages.find(p => p.id === id) || null;                 // not changed since: as it is now
+      if (!rec) { const d = await db.get('pages', id); if (d && !d.deleted && d.docId === doc.id) rec = d; } // since moved to the bin
+      if (rec) out.push(rec);
+    }
+    return out;
+  }
+
+  async function versionsDialog() {
+    commitText();
+    await flush().catch(saveFailed);
+    await verChain;
+    const recs = [];
+    for (const e of (await db.getMeta('vers:' + doc.id)) || []) { const r = await db.getMeta(verKey(e.t)); if (r) recs.push(r); }
+    if (!recs.length) { toast('No earlier versions yet. One is kept each time you start working on this notebook.', 3800); return; }
+    let m = null;
+    m = modal({
+      title: 'Earlier versions', wide: true,
+      body: h('div', null,
+        h('p', { class: 'modal-text small' }, `The notebook as it stood at the start of each writing session on this device. The last ${VER_MAX} sessions are kept, for up to ${VER_DAYS} days.`),
+        h('div', { class: 'menu flat pick-list' }, recs.map((r, k) => {
+          const n = Object.keys(r.pre).length;
+          return h('button', { class: 'mi', type: 'button', onclick: async () => { m.close(); versionView(recs, k); } },
+            h('span', { class: 'mi-ic', html: I.history }), 'Before ' + fmtVer(r.t),
+            h('span', { class: 'bk-sub' }, k === recs.length - 1 && ver && ver.t === r.t ? 'start of this session' : `${n} page${n === 1 ? '' : 's'} changed after it`));
+        }).reverse()))
+    });
+  }
+
+  async function versionView(recs, k) {
+    const then = await verState(recs, k), when = fmtVer(recs[k].t);
+    const nowIds = new Set(pages.map(p => p.id)), thenIds = new Set(then.map(r => r.id));
+    const diff = then.map((r, i) => ({ r, i, cur: pages.find(p => p.id === r.id) })).filter(x => !x.cur || !samePg(x.r, x.cur));
+    const added = pages.filter(p => !thenIds.has(p.id)).length;
+    const moved = then.filter(r => nowIds.has(r.id)).map(r => r.id).join() !== pages.filter(p => thenIds.has(p.id)).map(p => p.id).join();
+    if (!diff.length && !added && !moved) { toast('Nothing has changed since that version.'); return; }
+    let m = null;
+    const cards = diff.map(x => {
+      const c = h('canvas', { class: 'hist-c' });
+      R.renderPageTo(x.r, c, 200).catch(() => {});
+      return h('div', { class: 'ver-card' }, c,
+        h('b', null, `Page ${x.i + 1}`),
+        h('span', { class: 'bk-sub' }, x.cur ? 'changed since' : 'removed since'),
+        h('button', { class: 'btn sm', type: 'button', onclick: () => { m.close(); verRestorePage(then, x.r); } }, 'Restore this page'));
+    });
+    const notes = [added && `${added} page${added === 1 ? ' was' : 's were'} added since (restoring the whole notebook moves ${added === 1 ? 'it' : 'them'} to the bin)`, moved && 'the page order was different'].filter(Boolean);
+    m = modal({
+      title: 'As it was before ' + when, wide: true,
+      body: h('div', null,
+        h('p', { class: 'modal-text small' }, diff.length ? 'These pages were different then. This is how they looked.' : 'No page had different writing then.', notes.length ? ' Also: ' + notes.join('; ') + '.' : ''),
+        h('div', { class: 'ver-grid' }, cards),
+        h('p', { class: 'modal-text small' }, 'Going back can itself be undone: the notebook as it is now is kept as a new version first.')),
+      actions: [
+        { label: 'Close' },
+        { label: 'Save as a copy', onClick: () => { verCopy(then, when); } },
+        { label: 'Restore whole notebook', primary: true, onClick: () => { verRestoreAll(then, when); } }
+      ]
+    });
+  }
+
+  function putBack(cur, rec) {
+    const old = cur.items.slice(), nu = rec.items.map(it => ({ ...it }));
+    removeItems(cur, old);
+    addItems(cur, nu);
+    Object.assign(cur, { template: rec.template, paper: rec.paper, bg: rec.bg || null, pdf: rec.pdf || null, w: rec.w, h: rec.h });
+    if (rec.tpl) cur.tpl = rec.tpl; else delete cur.tpl;
+    dirty(cur);
+  }
+
+  function revive(rec) {
+    const t = Date.now(), p = { ...rec, items: rec.items.map(it => ({ ...it, m: t })), dels: {}, modified: t };
+    delete p.trashed;
+    delete p.ti;
+    gonePages.delete(p.id);
+    dirtyPages.add(p);
+    return p;
+  }
+
+  async function verBegin() {
+    commitText();
+    clearSel();
+    await flush().catch(saveFailed);
+    await verCut();
+    undoStack.length = 0; // undo steps no longer match the pages
+    redoStack.length = 0;
+    updateUndoUi();
+  }
+
+  async function verRestoreAll(then, when) {
+    if (!then.length) return;
+    await verBegin();
+    const keep = new Set(then.map(r => r.id)), extra = pages.filter(p => !keep.has(p.id));
+    const next = then.map(rec => {
+      const cur = pages.find(p => p.id === rec.id);
+      if (!cur) return revive(rec);
+      if (!samePg(rec, cur)) putBack(cur, rec);
+      return cur;
+    });
+    if (extra.length) verRecord(extra);
+    for (const pg of extra) { dirtyPages.delete(pg); gonePages.add(pg.id); await trashPage(pg, doc, pages.indexOf(pg)); }
+    const at = clamp(pvs.indexOf(currentPv()), 0, next.length - 1);
+    pages.splice(0, pages.length, ...next);
+    structureChanged(at);
+    toast(`The notebook is back to how it was before ${when}`, 3500);
+  }
+
+  async function verRestorePage(then, rec) {
+    await verBegin();
+    const cur = pages.find(p => p.id === rec.id);
+    let at;
+    if (cur) { putBack(cur, rec); at = pages.indexOf(cur); }
+    else { at = clamp(then.indexOf(rec), 0, pages.length); pages.splice(at, 0, revive(rec)); }
+    structureChanged(at);
+    toast('That page is back to the earlier version');
+  }
+
+  async function verCopy(then, when) {
+    const t = Date.now(), id = uid();
+    const ps = then.map(r => {
+      const p = { ...r, id: uid(), docId: id, dels: {}, modified: t, items: r.items.map(it => ({ ...it, id: uid(), m: t })) };
+      delete p.trashed;
+      delete p.ti;
+      return p;
+    });
+    const copy = { ...doc, id, title: `${doc.title} (before ${when})`, pages: ps.map(p => p.id), created: t, modified: t, thumb: null };
+    delete copy.journal;
+    delete copy.fav;
+    await db.putMany('pages', ps);
+    await db.put('docs', copy);
+    toast(`"${copy.title}" is in your library`, 3500);
+  }
+
   // --- journal: a page per day, reached through a calendar
   function journalGo(key) {
     let i = pages.findIndex(p => p.day === key);
@@ -3981,6 +4174,7 @@ export async function mountEditor(root, docId, opts = {}) {
       pages.splice(pages.indexOf(pg), 1);
       dirtyPages.delete(pg);
       gonePages.add(pg.id);
+      verRecord([pg]);
       await trashPage(pg, doc, at.get(pg));
     }
     picked.clear();
@@ -4242,7 +4436,8 @@ export async function mountEditor(root, docId, opts = {}) {
       '-',
       { label: 'Find text', icon: I.search, onClick: openFind },
       pages.some(p => p.pdf && !p.tpl) ? { label: 'PDF contents', icon: I.list, onClick: outlineDialog } : null,
-      { label: 'Page history', icon: I.history, onClick: historyDialog },
+      { label: 'Earlier versions of this notebook', icon: I.history, onClick: versionsDialog },
+      { label: 'History of this page', icon: I.history, onClick: historyDialog },
       { label: 'Notebook details', icon: I.info, onClick: async () => { commitText(); await flush().catch(saveFailed); detailsDialog('d', doc.id); } },
       { label: split ? 'Show another notebook beside' : 'Open another notebook beside', icon: I.split, onClick: openBeside },
       split ? { label: 'Close the other notebook', icon: I.close, onClick: () => { location.hash = '#/d/' + doc.id; } } : null,

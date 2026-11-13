@@ -12,6 +12,7 @@
 import { db, assetIdsOf } from './db.js';
 import { h, uid, bus, loadScript, downloadBlob, bufToB64, b64ToBuf } from './util.js';
 import { modal, toast, confirmBox, busy } from './ui.js';
+import { I } from './icons.js';
 
 const SCOPE = 'https://www.googleapis.com/auth/drive.appdata';
 const API = 'https://www.googleapis.com';
@@ -695,7 +696,7 @@ export async function autoBackup(force) {
   bkBusy = true;
   try {
     const list = (await db.getMeta('autobk')) || []; // [{t, docs, bytes, drive}], oldest first
-    const last = list.length ? list[list.length - 1].t : 0;
+    const last = Math.max(list.length ? list[list.length - 1].t : 0, (await db.getMeta('autobkHold')) || 0);
     if (force || Date.now() - last >= BK_EVERY) {
       const [folders, docs, pages] = await Promise.all(['folders', 'docs', 'pages'].map(s => db.all(s)));
       const live = r => !r.deleted;
@@ -783,5 +784,33 @@ async function fillBk() {
       class: 'btn sm', type: 'button', onclick: async () => {
         try { downloadBlob(new Blob([await textOf(b)], { type: 'application/json' }), `inkleaf-snapshot-${new Date(b.t).toISOString().slice(0, 10)}.inkleaf`); } catch (e) { toast('Could not download it: ' + e.message); }
       }
-    }, 'Download'))) : [h('p', { class: 'modal-text small' }, 'No snapshots yet. The first one is made shortly after the app opens.')]));
+    }, 'Download'),
+    h('button', {
+      class: 'ic sm danger', type: 'button', title: 'Delete this snapshot', html: I.trash, onclick: async () => {
+        if (!await confirmBox('Delete snapshot', `Delete the snapshot from ${fmt(b.t)}${b.driveId ? ', here and in Google Drive' : ''}? Your notebooks are not affected.`, 'Delete', true)) return;
+        await dropBackups([b]);
+        fillBk();
+      }
+    }))) : [h('p', { class: 'modal-text small' }, 'No snapshots at the moment. One is made at the next weekly backup, or tap "Back up now".')]),
+    all.length > 1 ? h('button', {
+      class: 'btn sm bk-all', type: 'button', onclick: async () => {
+        if (!await confirmBox('Delete all snapshots', `Delete all ${all.length} snapshots, on this device and in Google Drive? Your notebooks are not affected. A new snapshot is made at the next weekly backup.`, 'Delete all', true)) return;
+        await dropBackups(all);
+        fillBk();
+      }
+    }, 'Delete all snapshots') : '');
+}
+
+// Remove snapshots from this device and, where they are there, from Drive. A fresh weekly one is not made at once.
+async function dropBackups(items) {
+  const gone = new Set(items.map(b => b.t));
+  let list = (await db.getMeta('autobk')) || [];
+  for (const b of items) {
+    if (b.local) await db.setMeta('autobk:' + b.t, null);
+    if (b.driveId) { try { await removeRemote(b.driveId); } catch (e) { if (e.status !== 404) toast('Could not delete the Drive copy: ' + e.message); } }
+  }
+  list = list.filter(b => !gone.has(b.t));
+  await db.setMeta('autobk', list);
+  // Keep the weekly rhythm: without this, deleting the newest snapshot would make a new one within the hour.
+  await db.setMeta('autobkHold', Math.max(...gone, (await db.getMeta('autobkHold')) || 0));
 }
