@@ -747,9 +747,14 @@ export async function mountEditor(root, docId, opts = {}) {
     if (zw && zw.pv.page === page) queueZoom();
   }
 
+  let failToastT = 0;
   function saveFailed(e) {
     console.error(e);
-    toast('Could not save. Device storage may be full.');
+    if (Date.now() - failToastT < 20000) return; // the save is retried every few seconds; say so only now and then
+    failToastT = Date.now();
+    toast(e && e.name === 'QuotaExceededError'
+      ? 'Could not save: this device\'s storage is full. Free some space; your writing is kept while this page stays open.'
+      : 'Could not save just now. Trying again; keep this page open.', 4500);
   }
 
   async function flush() {
@@ -761,10 +766,18 @@ export async function mountEditor(root, docId, opts = {}) {
     const writeDoc = docDirty || !touched;
     docDirty = false;
     touched = true;
-    await db.putMany('pages', ps);
-    if (writeDoc) {
-      doc.modified = Date.now();
-      await db.put('docs', doc);
+    try {
+      await db.putMany('pages', ps);
+      if (writeDoc) {
+        doc.modified = Date.now();
+        await db.put('docs', doc);
+      }
+    } catch (e) {
+      // Nothing is dropped: the same pages are saved again in a few seconds, for as long as it takes.
+      for (const p of ps) if (pages.includes(p)) dirtyPages.add(p);
+      if (writeDoc) docDirty = true;
+      if (!destroyed) { clearTimeout(saveT); saveT = setTimeout(() => flush().catch(saveFailed), 3000); }
+      throw e;
     }
     for (const p of ps) snapshot(p).catch(e => console.warn('Page history not saved', e));
   }

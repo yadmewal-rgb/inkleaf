@@ -18,7 +18,8 @@ let dbp = null;
 
 function open() {
   if (!dbp) {
-    dbp = new Promise((res, rej) => {
+    const p = dbp = new Promise((res, rej) => {
+      const drop = () => { if (dbp === p) dbp = null; }; // forget a connection that is no longer usable
       const r = indexedDB.open(NAME, VERSION);
       r.onupgradeneeded = () => {
         const d = r.result;
@@ -28,8 +29,15 @@ function open() {
         d.createObjectStore('assets', { keyPath: 'id' });
         d.createObjectStore('meta', { keyPath: 'k' });
       };
-      r.onsuccess = () => res(r.result);
-      r.onerror = () => rej(r.error);
+      r.onsuccess = () => {
+        const d = r.result;
+        // Phones and tablets close the storage connection when the app sits in the background or memory runs
+        // short. The next read or write then opens a fresh one instead of failing.
+        d.onclose = drop;
+        d.onversionchange = () => { d.close(); drop(); };
+        res(d);
+      };
+      r.onerror = () => { drop(); rej(r.error); };
     });
   }
   return dbp;
@@ -37,21 +45,36 @@ function open() {
 
 const req = r => new Promise((res, rej) => { r.onsuccess = () => res(r.result); r.onerror = () => rej(r.error); });
 
+// Run fn with the database. If the connection turns out to be dead ("the database connection is closing"),
+// open a new one and try once more. Every operation here is safe to repeat.
+const dead = e => !!e && e.name !== 'QuotaExceededError'
+  && (e.name === 'InvalidStateError' || e.name === 'AbortError' || e.name === 'TransactionInactiveError' || e.aborted || /clos(ing|ed)/i.test(e.message || ''));
+async function withDb(fn) {
+  try {
+    return await fn(await open());
+  } catch (e) {
+    if (!dead(e)) throw e;
+    dbp = null;
+    return fn(await open());
+  }
+}
+
 function write(store, fn) {
-  return open().then(d => new Promise((res, rej) => {
+  return withDb(d => new Promise((res, rej) => {
     const t = d.transaction(store, 'readwrite');
     t.oncomplete = () => res();
     t.onerror = () => rej(t.error);
-    t.onabort = () => rej(t.error || new Error('Storage write aborted'));
+    t.onabort = () => rej(t.error || Object.assign(new Error('Storage write aborted'), { aborted: true }));
     fn(t.objectStore(store));
   }));
 }
 
 export const db = {
-  get: (s, id) => open().then(d => req(d.transaction(s).objectStore(s).get(id))),
-  all: s => open().then(d => req(d.transaction(s).objectStore(s).getAll())),
-  keys: s => open().then(d => req(d.transaction(s).objectStore(s).getAllKeys())),
-  byDoc: docId => open().then(d => req(d.transaction('pages').objectStore('pages').index('docId').getAll(docId))),
+  _close: () => open().then(d => d.close()), // for tests: what a phone does to a backgrounded app
+  get: (s, id) => withDb(d => req(d.transaction(s).objectStore(s).get(id))),
+  all: s => withDb(d => req(d.transaction(s).objectStore(s).getAll())),
+  keys: s => withDb(d => req(d.transaction(s).objectStore(s).getAllKeys())),
+  byDoc: docId => withDb(d => req(d.transaction('pages').objectStore('pages').index('docId').getAll(docId))),
   // Saving announces "db-write" so sync can upload the change. Sync's own writes pass silent = true.
   put: (s, v, silent) => write(s, os => { os.put(v); }).then(() => { if (!silent && s !== 'meta') bus.emit('db-write', s); }),
   putMany: (s, arr, silent) => (arr.length
@@ -61,6 +84,7 @@ export const db = {
   putIf: (s, rec, expectModified) => {
     let ok = false;
     return write(s, os => {
+      ok = false;
       const g = os.get(rec.id);
       g.onsuccess = () => {
         const cur = g.result;
