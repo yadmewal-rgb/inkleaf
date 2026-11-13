@@ -177,8 +177,6 @@ export async function mountEditor(root, docId, opts = {}) {
         doc.journal ? h('button', { class: 'ic', type: 'button', title: 'Journal calendar', onclick: () => calendarDialog(), html: I.calendar }) : null,
         timerBtn, bmBtn,
         h('button', { class: 'ic wide', type: 'button', title: 'Full screen (F)', onclick: () => setFull(true), html: I.full }),
-        h('button', { class: 'ic', type: 'button', title: 'Add page', onclick: () => addPageAfter(currentPv()), html: I.addPage }),
-        h('button', { class: 'ic', type: 'button', title: 'Share and export', onclick: e => shareMenu(e.currentTarget), html: I.share }),
         h('button', { class: 'ic', type: 'button', title: 'More', onclick: e => moreMenu(e.currentTarget), html: I.more })),
       fullTools),
     h('div', { class: 'stage' }, vp, overlay, zwin, panel),
@@ -3732,16 +3730,6 @@ export async function mountEditor(root, docId, opts = {}) {
     updatePick();
   }
 
-  // --- the share button: everything that sends the notebook somewhere
-  function shareMenu(anchor) {
-    popMenu(anchor, [
-      { label: 'Export as PDF', icon: I.pdf, onClick: async () => { commitText(); await flush().catch(saveFailed); exportFlow(doc.id); } },
-      { label: 'Send a copy to a friend', icon: I.send, onClick: async () => { commitText(); await flush().catch(saveFailed); shareNotebook(doc.id); } },
-      { label: 'This page as a picture', icon: I.image, onClick: pagePicture },
-      { label: 'Print', icon: I.print, onClick: printDialog }
-    ], { align: 'right' });
-  }
-
   // --- tabs: the notebooks that are open, across the top
   const readTabs = () => { try { return JSON.parse(localStorage.getItem('inkleaf.tabs') || '[]').filter(x => typeof x === 'string'); } catch { return []; } };
   const saveTabs = ids => { try { localStorage.setItem('inkleaf.tabs', JSON.stringify(ids)); } catch { /* private mode */ } };
@@ -4465,6 +4453,13 @@ export async function mountEditor(root, docId, opts = {}) {
     const fd = prefs.fingerDraw;
     const label = fd === true ? 'Finger drawing: on' : fd === false ? 'Finger drawing: off' : `Finger drawing: auto (${fingerDraws() ? 'on' : 'off'})`;
     popMenu(anchor, [
+      { label: 'Add a page', icon: I.addPage, onClick: () => addPageAfter(currentPv()) },
+      '-',
+      { label: 'Export as PDF', icon: I.pdf, onClick: async () => { commitText(); await flush().catch(saveFailed); exportFlow(doc.id); } },
+      { label: 'Send a copy to a friend', icon: I.send, onClick: async () => { commitText(); await flush().catch(saveFailed); shareNotebook(doc.id); } },
+      { label: 'This page as a picture', icon: I.image, onClick: pagePicture },
+      { label: 'Print', icon: I.print, onClick: printDialog },
+      '-',
       // On a wide screen these three have their own buttons in the tool row; a phone has no room for them there.
       narrow ? { label: readOnly ? 'Read-only: on' : 'Read-only: off', icon: I.eye, onClick: () => setReadOnly(!readOnly) } : null,
       narrow ? { label: 'Timer', icon: I.timer, onClick: () => toggleTimer() } : null,
