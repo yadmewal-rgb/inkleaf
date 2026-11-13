@@ -421,10 +421,13 @@ export async function mountEditor(root, docId, opts = {}) {
   // Only pages near the viewport keep live canvases; the rest are released to save memory.
   function updateVisible() {
     const vh = hz ? vpRect.width : vpRect.height;
+    // Tablets and phones allow a web page only so much canvas memory, after which canvases silently go blank
+    // (writing "disappears"). So fewer pages are kept drawn there.
+    const near = COARSE ? 0.25 : 0.5, far = COARSE ? 0.7 : 1.5;
     for (const pv of pvs) {
-      if (inRange(pv, vh * 0.5)) {
+      if (inRange(pv, vh * near)) {
         if (!pv.rs || stale(pv)) renderPv(pv);
-      } else if (pv.rs && !inRange(pv, vh * 1.5) && !(sel && sel.pv === pv) && !(action && action.pv === pv) && !(textEd && textEd.pv === pv)) {
+      } else if (pv.rs && !inRange(pv, vh * far) && !(sel && sel.pv === pv) && !(action && action.pv === pv) && !(textEd && textEd.pv === pv)) {
         releasePv(pv);
       }
     }
@@ -485,7 +488,7 @@ export async function mountEditor(root, docId, opts = {}) {
       pv.hiClip = k;
       placeHi(pv);
       const x = c.getContext('2d');
-      if (pdfCanvas) x.drawImage(pdfCanvas, 0, 0);
+      if (pdfCanvas) { x.drawImage(pdfCanvas, 0, 0); pdfCanvas.width = pdfCanvas.height = 0; } // hand its memory back at once
       else { x.setTransform(rs, 0, 0, rs, -k.x * rs, -k.y * rs); R.drawPaper(x, pg); }
     };
     if (!pg.pdf) { put(null); return; }
@@ -507,7 +510,7 @@ export async function mountEditor(root, docId, opts = {}) {
       const c = pv.bg.getContext('2d');
       c.setTransform(rs, 0, 0, rs, 0, 0);
       R.drawPaper(c, pg);
-      if (pdfCanvas) { const b = R.pdfBox(pg); c.drawImage(pdfCanvas, b.x, b.y, b.w, b.h); }
+      if (pdfCanvas) { const b = R.pdfBox(pg); c.drawImage(pdfCanvas, b.x, b.y, b.w, b.h); pdfCanvas.width = pdfCanvas.height = 0; }
     };
     if (!pg.pdf) { draw(null); return; }
     if (!pv.bg.width) draw(null); // show paper immediately, the PDF arrives when rendered
@@ -2551,6 +2554,8 @@ export async function mountEditor(root, docId, opts = {}) {
   function toggleZoom(on = !zw) {
     if (!on) {
       if (action && action.map) cancelAction();
+      if (zw && zw.pdfC) zw.pdfC.width = zw.pdfC.height = 0;
+      zcv.width = zcv.height = zlive.width = zlive.height = 0; // give the window's canvas memory back
       zw = null;
       zpan = null;
       zwin.hidden = true;
@@ -2628,7 +2633,12 @@ export async function mountEditor(root, docId, opts = {}) {
         z.pdfAsk = key;
         const tok = ++z.tok;
         renderPdfPage(pg.pdf.a, pg.pdf.i, k, () => zw !== z || tok !== z.tok, { ...clip, x: clip.x - pb.x, y: clip.y - pb.y })
-          .then(cv => { if (cv && zw === z && tok === z.tok) { z.pdfC = cv; z.pdfKey = key; zoomPaint(); } })
+          .then(cv => {
+            if (!cv) return;
+            if (zw !== z || tok !== z.tok) { cv.width = cv.height = 0; return; }
+            if (z.pdfC) z.pdfC.width = z.pdfC.height = 0;
+            z.pdfC = cv; z.pdfKey = key; zoomPaint();
+          })
           .catch(err => console.warn('PDF render for the zoom window failed', err));
       }
     }
@@ -3367,6 +3377,7 @@ export async function mountEditor(root, docId, opts = {}) {
         const pg = list[n], c = document.createElement('canvas');
         await R.renderPageTo(pg, c, Math.min(1700, pg.w * 2.4));
         const blob = await new Promise(res => c.toBlob(res, 'image/jpeg', 0.92));
+        c.width = c.height = 0;
         const u = URL.createObjectURL(blob);
         urls.push(u);
         box.append(h('img', { src: u, alt: '' }));
@@ -3821,6 +3832,7 @@ export async function mountEditor(root, docId, opts = {}) {
     if (thumbObs) { thumbObs.disconnect(); thumbObs = null; }
     thumbs.clear();
     if (!panelOpen || !panelList) return;
+    for (const c of panelList.querySelectorAll('canvas')) c.width = c.height = 0; // free the old thumbnails' memory now
     panelList.replaceChildren();
     const ql = panelQ.trim().toLowerCase(), numeric = /^\d+$/.test(ql);
     if (ql && !numeric && pages.some(p => p.pdf)) warmText();
@@ -4277,6 +4289,7 @@ export async function mountEditor(root, docId, opts = {}) {
     const key = pg.id + ':' + pg.modified + ':' + k;
     if (!regionCache || regionCache.key !== key) {
       const whole = document.createElement('canvas');
+      if (regionCache) regionCache.p.then(c => { c.width = c.height = 0; }).catch(() => {});
       regionCache = { key, p: R.renderPageTo(pg, whole, pg.w * k).then(() => whole) };
     }
     const whole = await regionCache.p;
@@ -4558,7 +4571,7 @@ export async function mountEditor(root, docId, opts = {}) {
     const m = modal({
       title: 'Replay', wide: true,
       body: h('div', null, h('div', { class: 'big-box' }, view), h('div', { class: 'replay-bar' }, playBtn, bar, speeds)),
-      onClose: () => { open = false; cancelAnimationFrame(raf); }
+      onClose: () => { open = false; cancelAnimationFrame(raf); for (const c of [base, acc, view]) c.width = c.height = 0; }
     });
     m.el.classList.add('xl');
     raf = requestAnimationFrame(frame);
@@ -4775,6 +4788,7 @@ export async function mountEditor(root, docId, opts = {}) {
     try { c = await renderPdfPage(p.pdf.a, p.pdf.i, k); } catch { return null; }
     if (!c) return null;
     const W = c.width, H = c.height, d = c.getContext('2d').getImageData(0, 0, W, H).data;
+    c.width = c.height = 0;
     let x0 = W, y0 = H, x1 = -1, y1 = -1;
     for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) {
       const o = (y * W + x) * 4;

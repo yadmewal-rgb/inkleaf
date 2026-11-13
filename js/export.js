@@ -3,10 +3,31 @@ import { db, loadPages } from './db.js';
 import { loadScript, h, safeName, downloadBlob } from './util.js';
 import * as R from './render.js';
 import { renderPdfPage } from './pdfrender.js';
+import { annotPages } from './pdftools.js';
 import { busy, modal, toast } from './ui.js';
 
 const canvasBytes = (canvas, type, q) =>
   new Promise((res, rej) => canvas.toBlob(b => (b ? b.arrayBuffer().then(res, rej) : rej(new Error('Canvas export failed'))), type, q));
+
+// What a PDF page's own annotations add to it, as a transparent PNG (null if the page has none). The page is
+// drawn twice, with and without them, and the pixels that differ are kept.
+async function annotOverlay(pg) {
+  if (!(await annotPages(pg.pdf.a)).has(pg.pdf.i)) return null;
+  const k = 2.5;
+  const A = await renderPdfPage(pg.pdf.a, pg.pdf.i, k), B = await renderPdfPage(pg.pdf.a, pg.pdf.i, k, null, null, true);
+  const W = Math.min(A.width, B.width), H = Math.min(A.height, B.height);
+  const ca = A.getContext('2d'), a = ca.getImageData(0, 0, W, H), b = B.getContext('2d').getImageData(0, 0, W, H).data, d = a.data;
+  let any = false;
+  for (let i = 0; i < d.length; i += 4) {
+    if (Math.abs(d[i] - b[i]) + Math.abs(d[i + 1] - b[i + 1]) + Math.abs(d[i + 2] - b[i + 2]) > 10) any = true; else d[i + 3] = 0;
+  }
+  B.width = B.height = 0;
+  if (!any) { A.width = A.height = 0; return null; }
+  ca.putImageData(a, 0, 0);
+  const bytes = await canvasBytes(A, 'image/png');
+  A.width = A.height = 0;
+  return bytes;
+}
 
 export async function buildPdf(doc, pages, progress) {
   await loadScript('vendor/pdf-lib.min.js');
@@ -89,10 +110,18 @@ export async function buildPdf(doc, pages, progress) {
       const e = embedded.get(pg.id);
       const pb = R.pdfBox(pg), at = { x: pb.x, y: H - pb.y - pb.h, width: pb.w, height: pb.h }; // margins added or borders trimmed
       if (e && e !== 'blank') page.drawPage(e, at);
-      else if (!e) {
+      if (e) {
+        // Marks made on the PDF in another app (GoodNotes and the like) are not part of the page itself,
+        // so they are laid over it as a picture of exactly what they add.
+        try {
+          const ov = await annotOverlay(pg);
+          if (ov) page.drawImage(await out.embedPng(ov), at);
+        } catch (err) { console.warn('Annotations of the original PDF were skipped on a page', err); }
+      } else {
         try {
           const c = await renderPdfPage(pg.pdf.a, pg.pdf.i, 2);
           const jpg = await out.embedJpg(await canvasBytes(c, 'image/jpeg', 0.9));
+          c.width = c.height = 0;
           page.drawImage(jpg, at);
         } catch (err) { console.warn('PDF page skipped in export', err); }
       }

@@ -779,7 +779,7 @@ export async function renderPageTo(page, canvas, pxW) {
   if (page.pdf) {
     try {
       const c = await renderPdfPage(page.pdf.a, page.pdf.i, rs);
-      if (c) { const b = pdfBox(page); ctx.drawImage(c, b.x, b.y, b.w, b.h); }
+      if (c) { const b = pdfBox(page); ctx.drawImage(c, b.x, b.y, b.w, b.h); c.width = c.height = 0; }
     } catch (e) { /* PDF not available yet: leave the paper blank */ }
   }
   await Promise.all(page.items.filter(it => it.t === 'im').map(it => loadImage(it.a)));

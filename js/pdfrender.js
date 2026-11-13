@@ -44,7 +44,10 @@ export function pdfDoc(assetId) {
 let chain = Promise.resolve();
 
 // region ({x, y, w, h} in page units) renders just that part of the page, for sharp zoomed-in views.
-export function renderPdfPage(assetId, index, rs, isStale, region) {
+// noAnnots leaves out the PDF's own annotations (ink, highlights and notes made in other apps).
+// The caller owns the returned canvas and should set its width to 0 when done with it: iPads count every
+// canvas against a fixed memory allowance until it is emptied, and blank out new ones once that is used up.
+export function renderPdfPage(assetId, index, rs, isStale, region, noAnnots) {
   const job = chain.then(async () => {
     if (isStale && isStale()) return null;
     const doc = await pdfDoc(assetId);
@@ -52,6 +55,7 @@ export function renderPdfPage(assetId, index, rs, isStale, region) {
     const vp = page.getViewport({ scale: rs });
     const c = document.createElement('canvas');
     const opts = { canvasContext: c.getContext('2d'), viewport: vp };
+    if (noAnnots) opts.annotationMode = 0;
     if (region) {
       c.width = Math.max(1, Math.round(region.w * rs));
       c.height = Math.max(1, Math.round(region.h * rs));
@@ -61,6 +65,7 @@ export function renderPdfPage(assetId, index, rs, isStale, region) {
       c.height = Math.max(1, Math.ceil(vp.height));
     }
     await page.render(opts).promise;
+    try { page.cleanup(); } catch { /* still in use: it is cleaned up after a later render */ }
     return c;
   });
   chain = job.catch(() => {});

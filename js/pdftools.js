@@ -45,6 +45,24 @@ export function pageLinks(assetId, index) {
   return linkCache.get(key);
 }
 
+// Which pages of a PDF carry annotations made in other apps (GoodNotes ink, highlights, notes): a Set of page indexes.
+const annotCache = new Map();
+export function annotPages(assetId) {
+  if (!annotCache.has(assetId)) {
+    const p = (async () => {
+      const doc = await pdfDoc(assetId), out = new Set();
+      for (let i = 0; i < doc.numPages; i++) {
+        const an = await (await doc.getPage(i + 1)).getAnnotations();
+        if (an.some(a => a.subtype !== 'Link' && a.subtype !== 'Popup')) out.add(i);
+      }
+      return out;
+    })();
+    p.catch(() => annotCache.delete(assetId));
+    annotCache.set(assetId, p);
+  }
+  return annotCache.get(assetId);
+}
+
 // The PDF's own table of contents, flattened: [{title, depth, i (page index in the PDF, or -1)}]
 export async function pdfOutline(assetId) {
   const doc = await pdfDoc(assetId);
