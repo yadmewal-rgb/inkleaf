@@ -91,7 +91,16 @@ export async function mountEditor(root, docId, opts = {}) {
   const selBox = h('div', { class: 'selbox', hidden: true }, h('div', { class: 'handle' }));
   const selBar = h('div', { class: 'selbar', hidden: true });
   const panel = h('aside', { class: 'panel', hidden: true });
-  const titleBtn = h('button', { class: 'title', type: 'button', title: 'Rename', onclick: rename }, doc.title);
+  // The notebook's name in its tab: a plain tap does nothing, holding it (or a right-click) renames.
+  const titleBtn = h('button', { class: 'title', type: 'button', title: 'Hold to rename' }, doc.title);
+  {
+    let t = 0, x0 = 0, y0 = 0;
+    const off = () => clearTimeout(t);
+    titleBtn.addEventListener('pointerdown', e => { off(); x0 = e.clientX; y0 = e.clientY; t = setTimeout(() => rename(), 550); });
+    titleBtn.addEventListener('pointermove', e => { if (Math.hypot(e.clientX - x0, e.clientY - y0) > 8) off(); });
+    for (const ev of ['pointerup', 'pointercancel', 'pointerleave']) titleBtn.addEventListener(ev, off);
+    titleBtn.addEventListener('contextmenu', e => { e.preventDefault(); off(); rename(); });
+  }
   const pageInd = h('button', { class: 'pageind', type: 'button', title: 'Go to page', onclick: () => gotoPrompt() });
   const bmBtn = h('button', { class: 'ic', type: 'button', title: 'Bookmark this page', onclick: () => toggleBookmark(currentPv().page), html: I.star });
   const undoBtn = h('button', { class: 'ic', type: 'button', title: 'Undo (Ctrl+Z)', onclick: () => undo(), html: I.undo });
@@ -832,7 +841,7 @@ export async function mountEditor(root, docId, opts = {}) {
       body: h('div', { class: 'hist' },
         h('p', { class: 'modal-text small' }, `Kept on this device for ${HIST_DAYS} days. Restoring can be undone.`),
         arr.map(s => {
-          const c = h('canvas', { class: 'hist-c' });
+          const c = h('canvas', { class: 'hist-c zoomable', title: 'Tap to see it large', onclick: () => bigPreview({ ...pg, items: s.items }, new Date(s.t).toLocaleString([], { day: 'numeric', month: 'short', hour: 'numeric', minute: '2-digit' })) });
           R.renderPageTo({ ...pg, items: s.items }, c, 180).catch(() => {});
           return h('div', { class: 'hist-row' }, c,
             h('div', { class: 'hist-meta' },
@@ -841,6 +850,20 @@ export async function mountEditor(root, docId, opts = {}) {
               h('button', { class: 'btn sm', type: 'button', onclick: () => { m.close(); restoreVersion(pv, s); } }, 'Restore this version')));
         }))
     });
+  }
+
+  // An old version of a page, large enough to read. Tap the picture to magnify it further and scroll around.
+  function bigPreview(rec, title) {
+    const c = h('canvas', { class: 'big-c', title: 'Tap to magnify' });
+    const box = h('div', { class: 'big-box' }, c);
+    c.onclick = e => {
+      const r = c.getBoundingClientRect(), fx = (e.clientX - r.left) / r.width, fy = (e.clientY - r.top) / r.height;
+      const on = c.classList.toggle('x2');
+      if (on) requestAnimationFrame(() => { box.scrollLeft = c.offsetWidth * fx - box.clientWidth / 2; box.scrollTop = c.offsetHeight * fy - box.clientHeight / 2; });
+    };
+    R.renderPageTo(rec, c, Math.min(2000, rec.w * 3)).catch(() => {});
+    const m = modal({ title, wide: true, body: box, actions: [{ label: 'Close', primary: true }] });
+    m.el.classList.add('xl');
   }
 
   async function restoreVersion(pv, s) {
@@ -3924,7 +3947,7 @@ export async function mountEditor(root, docId, opts = {}) {
     if (!diff.length && !added && !moved) { toast('Nothing has changed since that version.'); return; }
     let m = null;
     const cards = diff.map(x => {
-      const c = h('canvas', { class: 'hist-c' });
+      const c = h('canvas', { class: 'hist-c zoomable', title: 'Tap to see it large', onclick: () => bigPreview(x.r, `Page ${x.i + 1} before ${when}`) });
       R.renderPageTo(x.r, c, 200).catch(() => {});
       return h('div', { class: 'ver-card' }, c,
         h('b', null, `Page ${x.i + 1}`),
@@ -4226,10 +4249,21 @@ export async function mountEditor(root, docId, opts = {}) {
   function renderTools() {
     toolsEl.replaceChildren(
       ...TOOLS.map(([id, icon, title]) => h('button', {
-        class: 'ic tool' + (prefs.tool === id ? ' on' : ''), type: 'button', title, html: icon,
-        onclick: () => setTool(id)
+        class: 'ic tool' + (prefs.tool === id ? ' on' : '') + (id === 'pen' ? ' more' : ''), type: 'button',
+        title: id === 'pen' ? title + '. Tap again to choose the pen type' : title, html: icon,
+        // Tapping the pen while it is already chosen opens the pen types.
+        onclick: e => { if (id === 'pen' && prefs.tool === 'pen' && !readOnly) penTypeMenu(e.currentTarget); else setTool(id); }
       })),
       h('button', { class: 'ic tool', type: 'button', title: 'Insert: picture, scan, sticky note, table, saved element', html: I.insert, onclick: e => insertMenu(e.currentTarget) }));
+  }
+
+  function penTypeMenu(anchor) {
+    const cur = prefs.pen.style || 'fountain';
+    const hint = { ball: 'even line', fountain: 'follows pressure', brush: 'strong thick and thin', pencil: 'grainy' };
+    popMenu(anchor, Object.keys(STYLE_NAMES).map(v => ({
+      label: `${v === cur ? '✓ ' : '    '}${STYLE_NAMES[v]} (${hint[v]})`, icon: I.pen,
+      onClick: () => { prefs.pen.style = v; savePrefs(); renderOpts(); }
+    })));
   }
 
   function setTool(t) {
@@ -4343,8 +4377,7 @@ export async function mountEditor(root, docId, opts = {}) {
       kids = [
         ...favPens(), h('div', { class: 'vsep' }),
         ...swatches('pen', PEN_COLORS), h('div', { class: 'vsep' }),
-        ...sizes('pen', [0.3, 0.5, 0.7, 1, 1.5], [3, 5, 7, 10, 14], 3), h('div', { class: 'vsep' }),
-        seg([['ball', 'Ballpoint'], ['fountain', 'Fountain'], ['brush', 'Brush'], ['pencil', 'Pencil']], prefs.pen.style || 'fountain', v => { prefs.pen.style = v; savePrefs(); renderOpts(); })
+        ...sizes('pen', [0.3, 0.5, 0.7, 1, 1.5], [3, 5, 7, 10, 14], 3)
       ];
     }
     else if (t === 'hl') kids = [...swatches('hl', HL_COLORS), h('div', { class: 'vsep' }), ...sizes('hl', [3.5, 5.5, 8.5], [7, 11, 15], 14)];
@@ -4428,13 +4461,15 @@ export async function mountEditor(root, docId, opts = {}) {
   }
 
   function moreMenu(anchor) {
+    const narrow = innerWidth <= 760 || full; // the tool row's own buttons are hidden on phones and in full screen
     const fd = prefs.fingerDraw;
     const label = fd === true ? 'Finger drawing: on' : fd === false ? 'Finger drawing: off' : `Finger drawing: auto (${fingerDraws() ? 'on' : 'off'})`;
     popMenu(anchor, [
-      { label: readOnly ? 'Read-only: on' : 'Read-only: off', icon: I.eye, onClick: () => setReadOnly(!readOnly) },
-      { label: 'Timer', icon: I.timer, onClick: () => toggleTimer() },
-      '-',
-      { label: 'Find text', icon: I.search, onClick: openFind },
+      // On a wide screen these three have their own buttons in the tool row; a phone has no room for them there.
+      narrow ? { label: readOnly ? 'Read-only: on' : 'Read-only: off', icon: I.eye, onClick: () => setReadOnly(!readOnly) } : null,
+      narrow ? { label: 'Timer', icon: I.timer, onClick: () => toggleTimer() } : null,
+      narrow ? { label: 'Find text', icon: I.search, onClick: openFind } : null,
+      narrow ? '-' : null,
       pages.some(p => p.pdf && !p.tpl) ? { label: 'PDF contents', icon: I.list, onClick: outlineDialog } : null,
       { label: 'Earlier versions of this notebook', icon: I.history, onClick: versionsDialog },
       { label: 'History of this page', icon: I.history, onClick: historyDialog },

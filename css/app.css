@@ -441,6 +441,18 @@ button.pageind:hover { background: var(--surface-2); }
 .bk-sub { color: var(--muted); font-size: 12.5px; margin-left: auto; }
 .bk-meta .bk-sub { margin-left: 0; }
 
+/* a large look at an old version of a page */
+.modal.wide.xl { width: min(980px, calc(100vw - 20px)); }
+.big-box { overflow: auto; max-height: calc(100dvh - 170px); border-radius: 6px; outline: 1px solid var(--line); background: var(--desk); -webkit-overflow-scrolling: touch; }
+.big-c { display: block; width: 100%; height: auto; cursor: zoom-in; }
+.big-c.x2 { width: 220%; cursor: zoom-out; }
+.zoomable { cursor: zoom-in; }
+.zoomable:hover { outline: 2px solid var(--accent); }
+
+/* the pen button opens the pen types when tapped a second time */
+.tool.more { position: relative; }
+.tool.more.on::after { content: ''; position: absolute; right: 4px; bottom: 4px; border: 4px solid transparent; border-right-color: currentColor; border-bottom-color: currentColor; border-radius: 1px; opacity: .8; }
+
 /* notebook versions */
 .ver-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(130px, 1fr)); gap: 14px; margin: 10px 0; }
 .ver-card { display: flex; flex-direction: column; align-items: flex-start; gap: 3px; font-size: 13px; }
