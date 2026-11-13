@@ -17,6 +17,15 @@ function append(el, kids) {
   }
 }
 
+// Wait for a picture to load. (Not img.decode(): on iPad that refuses large photos which display perfectly well.)
+export function imgReady(img) {
+  return new Promise((res, rej) => {
+    if (img.complete && img.naturalWidth) { res(img); return; }
+    img.onload = () => res(img);
+    img.onerror = () => rej(new Error('this picture format cannot be read here'));
+  });
+}
+
 // Replace an element's children; like h(), nested arrays are flattened and null / false are skipped.
 export function fill(el, ...kids) {
   el.replaceChildren();

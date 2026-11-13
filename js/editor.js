@@ -3,7 +3,7 @@ import { db, newPage, loadPages, trashPage, sysPages, addSysPage, removeSysPage,
 import { chooseNotebook, markOpened, detailsDialog } from './library.js';
 import { shareNotebook } from './sync.js';
 import { openPdf } from './pdfrender.js';
-import { h, uid, nextZ, clamp, bus, distSeg, downloadBlob, safeName, debounce, fill } from './util.js';
+import { h, uid, nextZ, clamp, bus, distSeg, downloadBlob, safeName, debounce, fill, imgReady } from './util.js';
 import * as R from './render.js';
 import { renderPdfPage } from './pdfrender.js';
 import { pageLinks, resolveDest, pdfOutline, pageText, textMatches } from './pdftools.js';
@@ -3000,7 +3000,7 @@ export async function mountEditor(root, docId, opts = {}) {
     scanInp.value = '';
     if (!file) return;
     let src;
-    try { src = await loadBitmap(file); } catch { toast('That picture could not be opened.'); return; }
+    try { src = await loadBitmap(file); } catch (e) { toast('That picture could not be opened: ' + ((e && e.message) || 'unknown reason'), 6000); return; }
     const url = URL.createObjectURL(file);
     const q = [[0.06, 0.06], [0.94, 0.06], [0.94, 0.94], [0.06, 0.94]]; // corners: top left, top right, bottom right, bottom left
     const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
@@ -3262,24 +3262,7 @@ export async function mountEditor(root, docId, opts = {}) {
     fileInp.value = '';
     if (!file) return;
     try {
-      const src = await loadBitmap(file);
-      const MAXD = 3200;
-      const k = Math.min(1, MAXD / Math.max(src.w, src.h));
-      let data, mime;
-      if (k === 1 && (file.type === 'image/jpeg' || file.type === 'image/png')) {
-        data = await file.arrayBuffer();
-        mime = file.type;
-      } else {
-        const c = document.createElement('canvas');
-        c.width = Math.round(src.w * k);
-        c.height = Math.round(src.h * k);
-        c.getContext('2d').drawImage(src.img, 0, 0, c.width, c.height);
-        mime = file.type === 'image/png' ? 'image/png' : 'image/jpeg';
-        const blob = await new Promise(res => c.toBlob(res, mime, 0.9));
-        data = await blob.arrayBuffer();
-      }
-      const asset = { id: uid(), mime, name: file.name, data, modified: Date.now() };
-      await db.put('assets', asset);
+      const asset = await imageAsset(file, 3200), src = asset; // src.w, src.h: the stored picture's size
       const pv = currentPv(), pg = pv.page;
       const f = Math.min(1, pg.w * 0.9 / src.w, pg.h * 0.8 / src.h);
       const iw = src.w * f, ih = src.h * f;
@@ -3299,7 +3282,7 @@ export async function mountEditor(root, docId, opts = {}) {
       setSel(pv, [it]);
     } catch (err) {
       console.error(err);
-      toast('That image could not be added.');
+      toast('That image could not be added: ' + ((err && err.message) || 'unknown reason'), 6000);
     }
   }
 
@@ -3308,10 +3291,10 @@ export async function mountEditor(root, docId, opts = {}) {
     try {
       const img = new Image();
       img.src = url;
-      await img.decode();
+      await imgReady(img);
       return { img, w: img.naturalWidth, h: img.naturalHeight };
     } finally {
-      setTimeout(() => URL.revokeObjectURL(url), 5000);
+      setTimeout(() => URL.revokeObjectURL(url), 300000); // the scan dialog may still be drawing from it
     }
   }
 
@@ -3555,7 +3538,9 @@ export async function mountEditor(root, docId, opts = {}) {
       c.height = Math.round(src.h * k);
       c.getContext('2d').drawImage(src.img, 0, 0, c.width, c.height);
       mime = file.type === 'image/png' ? 'image/png' : 'image/jpeg';
-      data = await (await new Promise(res => c.toBlob(res, mime, 0.9))).arrayBuffer();
+      const blob = await new Promise(res => c.toBlob(res, mime, 0.9));
+      if (!blob) throw new Error('the picture is too large for this device to process');
+      data = await blob.arrayBuffer();
     }
     const asset = { id: uid(), mime, name: file.name, data, modified: Date.now() };
     await db.put('assets', asset);

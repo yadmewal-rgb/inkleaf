@@ -1,7 +1,7 @@
 // Drawing of paper, ink, shapes, text and images, plus the geometry used for hit-testing and selection.
 // Everything works in page units (1 unit = 1 PDF point); callers scale the canvas context.
 import { db } from './db.js';
-import { uid, distSeg, inPoly } from './util.js';
+import { uid, distSeg, inPoly, imgReady } from './util.js';
 import { renderPdfPage } from './pdfrender.js';
 
 export const FONT = 'system-ui, -apple-system, "Segoe UI", Roboto, "Noto Sans", sans-serif';
@@ -524,7 +524,8 @@ async function loadAsset(id) {
   const url = URL.createObjectURL(new Blob([a.data], { type: a.mime }));
   const img = new Image();
   img.src = url;
-  await img.decode();
+  await imgReady(img);
+  try { await img.decode(); } catch { /* decoding ahead of time is only a nicety; it is drawn either way */ }
   return img;
 }
 
