@@ -1,7 +1,7 @@
 // The library: folders, notebooks, PDF import, search, favourites and tags, the recycle bin.
 import {
   db, newPage, createDoc, createFolder, duplicateDoc, loadPages, COVERS,
-  trashDoc, trashFolder, restoreItem, restorePage, erasePage, deleteDoc, deleteFolder, purgeTrash, TRASH_DAYS
+  trashDoc, trashFolder, restoreItem, restorePage, erasePage, deleteDoc, deleteFolder, purgeTrash, TRASH_DAYS, journalPage
 } from './db.js';
 import { h, uid, bus, fmtDate, debounce, fill } from './util.js';
 import { I } from './icons.js';
@@ -166,6 +166,10 @@ export async function mountLibrary(root, folderId, opts = {}) {
     h('header', { class: 'lib-head' },
       h('div', { class: 'brand' }, h('img', { src: 'icons/icon.svg', alt: '', width: 30, height: 30 }), h('span', null, 'Inkleaf')),
       bin ? h('div', { class: 'grow' }) : h('div', { class: 'search-wrap' }, h('span', { class: 'search-ic', html: I.search }), search),
+      bin ? null : h('button', {
+        class: 'ic', type: 'button', title: 'Journal: open today\'s page', html: I.calendar,
+        onclick: async () => { const i = await journalPage(); location.hash = '#/d/journal?p=' + (i + 1); }
+      }),
       syncBtn, bin ? null : binBtn,
       h('button', { class: 'ic', type: 'button', title: 'Settings', html: I.settings, onclick: () => openSettings() }),
       bin ? null : h('button', { class: 'btn primary new', type: 'button', onclick: e => newMenu(e.currentTarget) }, h('span', { class: 'btn-ic', html: I.plus }), 'New')),

@@ -10,7 +10,7 @@
 // - There is no server. The browser talks to Drive with a token that lasts about an hour, after which
 //   Drive needs one tap to sign in again.
 import { db, assetIdsOf } from './db.js';
-import { h, bus, loadScript, downloadBlob, bufToB64, b64ToBuf } from './util.js';
+import { h, uid, bus, loadScript, downloadBlob, bufToB64, b64ToBuf } from './util.js';
 import { modal, toast, confirmBox, busy } from './ui.js';
 
 const SCOPE = 'https://www.googleapis.com/auth/drive.appdata';
@@ -515,6 +515,8 @@ export async function initSync() {
     bus.on('editor-open', id => { openDocs.add(id); if (ready()) { run(pullChanges, false); } schedule(); });
     bus.on('editor-close', id => { openDocs.delete(id); schedule(); });
     window.addEventListener('online', () => { if (ready()) run(fullPass, false); });
+    setTimeout(() => autoBackup(), 8000);          // weekly snapshot, if one is due
+    setInterval(() => autoBackup(), 3600e3);
     document.addEventListener('visibilitychange', () => {
       if (document.visibilityState === 'hidden') pushSoon(0);                       // leaving: upload right away
       else if (ready()) { run(pullChanges, false); schedule(); }
@@ -661,6 +663,125 @@ export async function openSettings() {
       h('div', { class: 'row' },
         h('button', { class: 'btn', type: 'button', onclick: exportBackup }, 'Save backup'),
         h('button', { class: 'btn', type: 'button', onclick: () => fileInp.click() }, 'Restore backup'),
-        fileInp))
+        fileInp),
+      h('h3', null, 'Automatic backups'),
+      h('p', { class: 'modal-text' },
+        'Once a week Inkleaf keeps a snapshot of every notebook by itself: the last 3 on this device and, with sync on, the last 8 in your Google Drive. ',
+        'If something gets lost or damaged, you can bring a notebook back from a snapshot as a copy.'),
+      h('p', { class: 'modal-text small' }, 'Snapshots hold your pages and writing. Imported PDFs and pictures are not duplicated in them; they stay with the library.'),
+      bkList,
+      h('div', { class: 'row' },
+        h('button', { class: 'btn', type: 'button', onclick: async e => { const b = e.currentTarget; b.disabled = true; await autoBackup(true); b.disabled = false; fillBk(); } }, 'Back up now')))
   });
+  fillBk();
+}
+
+// ---------------------------------------------------------------- automatic backups
+const BK_EVERY = 7 * 864e5, BK_LOCAL = 3, BK_DRIVE = 8;
+let bkBusy = false;
+
+// Snapshots in Drive, newest first.
+async function driveBackups() {
+  const q = encodeURIComponent("name contains 'zbackup'");
+  const j = await (await api(`/drive/v3/files?spaces=appDataFolder&pageSize=100&q=${q}&fields=files(id,name,size,description)`)).json();
+  return (j.files || [])
+    .map(f => ({ id: f.id, t: Number((/^zbackup-(\d+)/.exec(f.name) || [])[1]) || 0, bytes: Number(f.size) || 0, docs: Number(f.description) || 0 }))
+    .filter(f => f.t).sort((a, b) => b.t - a.t);
+}
+
+// Takes a snapshot when a week has passed since the last one (or when forced), and copies the newest to Drive.
+export async function autoBackup(force) {
+  if (bkBusy) return;
+  bkBusy = true;
+  try {
+    const list = (await db.getMeta('autobk')) || []; // [{t, docs, bytes, drive}], oldest first
+    const last = list.length ? list[list.length - 1].t : 0;
+    if (force || Date.now() - last >= BK_EVERY) {
+      const [folders, docs, pages] = await Promise.all(['folders', 'docs', 'pages'].map(s => db.all(s)));
+      const live = r => !r.deleted;
+      const D = docs.filter(live);
+      if (D.some(d => !d.sys)) {
+        const t = Date.now();
+        const text = JSON.stringify({
+          app: 'inkleaf', version: 1, kind: 'auto', exported: t,
+          folders: folders.filter(live), docs: D.map(({ thumb, ...d }) => d), pages: pages.filter(live)
+        });
+        await db.setMeta('autobk:' + t, text);
+        list.push({ t, docs: D.filter(d => !d.sys && !d.trashed).length, bytes: text.length });
+        while (list.length > BK_LOCAL) { const old = list.shift(); await db.setMeta('autobk:' + old.t, null); }
+        await db.setMeta('autobk', list);
+      }
+    }
+    const latest = list[list.length - 1];
+    if (latest && !latest.drive && ready()) {
+      const text = await db.getMeta('autobk:' + latest.t);
+      await exclusive(async () => {
+        await upload(`zbackup-${latest.t}.json`, null, new Blob([text], { type: 'application/json' }), String(latest.docs));
+        for (const f of (await driveBackups()).slice(BK_DRIVE)) await removeRemote(f.id).catch(() => {});
+      });
+      latest.drive = true;
+      await db.setMeta('autobk', list);
+    }
+  } catch (e) {
+    console.warn('Automatic backup failed', e);
+  } finally {
+    bkBusy = false;
+  }
+}
+
+// Bring one notebook back from a snapshot, as a new notebook beside whatever is in the library now.
+async function restoreCopy(data, d) {
+  const t = Date.now(), id = uid();
+  const byId = new Map((data.pages || []).map(p => [p.id, p]));
+  const pages = (d.pages || []).map(pid => byId.get(pid)).filter(p => p && !p.trashed).map(p => ({
+    ...p, id: uid(), docId: id, dels: {}, modified: t, items: (p.items || []).map(it => ({ ...it, id: uid(), m: t }))
+  }));
+  if (!pages.length) { toast('That notebook had no pages in this snapshot.'); return; }
+  const copy = { ...d, id, title: d.title + ' (restored)', folderId: null, pages: pages.map(p => p.id), created: t, modified: t };
+  delete copy.trashed;
+  delete copy.journal;
+  await db.putMany('pages', pages);
+  await db.put('docs', copy);
+  bus.emit('synced');
+  toast(`"${copy.title}" is in your library`, 3200);
+}
+
+function snapshotDialog(text, when) {
+  let data;
+  try { data = JSON.parse(text); } catch { toast('That snapshot could not be read.'); return; }
+  const docs = (data.docs || []).filter(d => !d.sys).sort((a, b) => a.title.localeCompare(b.title));
+  modal({
+    title: 'Snapshot from ' + when,
+    body: h('div', null,
+      h('p', { class: 'modal-text small' }, 'Tap a notebook to bring it back as a copy. Nothing in your library is replaced.'),
+      h('div', { class: 'menu flat pick-list' }, docs.map(d => h('button', {
+        class: 'mi', type: 'button', onclick: e => { e.currentTarget.disabled = true; restoreCopy(data, d); }
+      }, d.title, h('span', { class: 'bk-sub' }, `${(d.pages || []).length} page${(d.pages || []).length === 1 ? '' : 's'}${d.trashed ? ' · was in the bin' : ''}`)))))
+  });
+}
+
+const bkList = h('div', { class: 'bk-list' });
+async function fillBk() {
+  const rows = new Map(); // t -> {t, docs, bytes, local, driveId}
+  for (const b of (await db.getMeta('autobk')) || []) rows.set(b.t, { ...b, local: true });
+  if (ready()) {
+    try { for (const f of await driveBackups()) rows.set(f.t, { ...(rows.get(f.t) || f), driveId: f.id }); } catch { /* offline: show what is on this device */ }
+  }
+  const all = [...rows.values()].sort((a, b) => b.t - a.t);
+  const textOf = async b => (b.local ? db.getMeta('autobk:' + b.t) : (await download(b.driveId)).text());
+  const fmt = t => new Date(t).toLocaleString([], { day: 'numeric', month: 'short', year: 'numeric', hour: 'numeric', minute: '2-digit' });
+  bkList.replaceChildren(...(all.length ? all.map(b => h('div', { class: 'bk-row' },
+    h('div', { class: 'bk-meta' },
+      h('b', null, fmt(b.t)),
+      h('span', { class: 'bk-sub' }, `${b.docs} notebook${b.docs === 1 ? '' : 's'} · ${b.local && b.driveId ? 'this device and Drive' : b.local ? 'this device' : 'Drive'}`)),
+    h('button', {
+      class: 'btn sm', type: 'button', onclick: async () => {
+        try { snapshotDialog(await textOf(b), fmt(b.t)); } catch (e) { toast('Could not open that snapshot: ' + e.message); }
+      }
+    }, 'Restore from it'),
+    h('button', {
+      class: 'btn sm', type: 'button', onclick: async () => {
+        try { downloadBlob(new Blob([await textOf(b)], { type: 'application/json' }), `inkleaf-snapshot-${new Date(b.t).toISOString().slice(0, 10)}.inkleaf`); } catch (e) { toast('Could not download it: ' + e.message); }
+      }
+    }, 'Download'))) : [h('p', { class: 'modal-text small' }, 'No snapshots yet. The first one is made shortly after the app opens.')]));
 }

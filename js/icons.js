@@ -62,5 +62,6 @@ export const I = {
   print: s('<path d="M7 9V3h10v6"/><rect x="3" y="9" width="18" height="8" rx="1.5"/><path d="M7 14h10v7H7z"/>'),
   split: s('<rect x="3" y="4" width="18" height="16" rx="1.5"/><path d="M12 4v16"/>'),
   insert: s('<rect x="3" y="3" width="18" height="18" rx="3"/><path d="M12 8v8M8 12h8"/>'),
+  calendar: s('<rect x="3" y="5" width="18" height="16" rx="2"/><path d="M3 10h18M8 3v4M16 3v4"/><rect x="7" y="13" width="3.5" height="3.5" rx=".5" fill="currentColor" stroke="none"/>'),
   template: s('<rect x="4" y="3" width="16" height="18" rx="2"/><path d="M8 8h8M8 12h8M8 16h8"/>')
 };

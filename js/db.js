@@ -165,6 +165,54 @@ export async function purgeTrash(all) {
   for (const f of folders) if (old(f)) await deleteFolder(f);
 }
 
+// ---------- daily journal ----------
+// One notebook (fixed id, so every device agrees on it) with a page per day: page.day = 'YYYY-MM-DD'.
+const p2 = n => String(n).padStart(2, '0');
+export const dayKey = (d = new Date()) => `${d.getFullYear()}-${p2(d.getMonth() + 1)}-${p2(d.getDate())}`;
+export const dayTitle = key => new Date(key + 'T12:00:00').toLocaleDateString([], { weekday: 'short', day: 'numeric', month: 'short', year: 'numeric' });
+
+// Where a new page for a day belongs: after every earlier day (and the extra pages that follow it).
+export function dayIndex(pages, key) {
+  let at = 0;
+  for (let k = 0; k < pages.length; k++) {
+    const p = pages[k];
+    if (p.day) { if (p.day <= key) at = k + 1; else break; } else if (at === k) at = k + 1;
+  }
+  return at;
+}
+
+export function newDayPage(doc, key) {
+  const pg = newPage(doc.id, { w: doc.w || 595, h: doc.h || 842, template: doc.template, paper: doc.paper });
+  pg.day = key;
+  pg.title = dayTitle(key);
+  return pg;
+}
+
+// Makes sure the journal and the page for that day exist. Returns the page's position in the notebook.
+export async function journalPage(key = dayKey()) {
+  let d = await db.get('docs', 'journal');
+  const t = Date.now();
+  if (!d || d.deleted) {
+    d = { id: 'journal', journal: true, title: 'Journal', folderId: null, cover: '#d98324', pages: [], template: 'ruled', paper: 'white', w: 595, h: 842, thumb: null, created: t, modified: t };
+    await db.put('docs', d);
+  } else if (d.trashed) {
+    d = { ...d, modified: t };
+    delete d.trashed;
+    await db.put('docs', d);
+  }
+  const pages = await loadPages(d);
+  let i = pages.findIndex(p => p.day === key);
+  if (i < 0) {
+    const pg = newDayPage(d, key);
+    i = dayIndex(pages, key);
+    const ids = pages.map(p => p.id);
+    ids.splice(i, 0, pg.id);
+    await db.put('pages', pg);
+    await db.put('docs', { ...d, pages: ids, modified: Date.now() });
+  }
+  return i;
+}
+
 // ---------- hidden notebooks that hold library-wide things (saved elements, own templates) ----------
 // They sync like any notebook but never show in the library. Each saved thing is one page.
 export const SYS = { elements: 'sys-elements', templates: 'sys-templates' };

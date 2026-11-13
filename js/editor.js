@@ -1,5 +1,5 @@
 // The notebook editor: page layout, pan/zoom, stylus/finger/mouse input, tools, selection, undo.
-import { db, newPage, loadPages, trashPage, sysPages, addSysPage, removeSysPage, TRASH_DAYS } from './db.js';
+import { db, newPage, loadPages, trashPage, sysPages, addSysPage, removeSysPage, TRASH_DAYS, dayKey, dayIndex, newDayPage } from './db.js';
 import { chooseNotebook, markOpened } from './library.js';
 import { shareNotebook } from './sync.js';
 import { openPdf } from './pdfrender.js';
@@ -151,7 +151,9 @@ export async function mountEditor(root, docId, opts = {}) {
       h('button', { class: 'ic', type: 'button', title: 'Back to library', onclick: exit, html: I.back }),
       titleBtn, pageInd,
       h('div', { class: 'grow' }),
-      syncBtn, undoBtn, redoBtn, bmBtn,
+      syncBtn, undoBtn, redoBtn,
+      doc.journal ? h('button', { class: 'ic', type: 'button', title: 'Journal calendar', onclick: () => calendarDialog(), html: I.calendar }) : null,
+      bmBtn,
       h('button', { class: 'ic', type: 'button', title: 'Full screen (F)', onclick: () => setFull(true), html: I.full }),
       h('button', { class: 'ic', type: 'button', title: 'Pages', onclick: togglePanel, html: I.pages }),
       h('button', { class: 'ic', type: 'button', title: 'Add page', onclick: () => addPageAfter(currentPv()), html: I.plus }),
@@ -3322,6 +3324,7 @@ export async function mountEditor(root, docId, opts = {}) {
         ? { w: src.w, h: src.h, template: doc.template, paper: doc.paper }
         : { w: src.w, h: src.h, template: src.template, paper: src.paper };
     const pg = newPage(doc.id, o);
+    if (src.day) pg.day = src.day; // journal: a second page for the same day
     const i = pages.indexOf(src);
     pages.splice(i + 1, 0, pg);
     dirtyPages.add(pg);
@@ -3682,6 +3685,47 @@ export async function mountEditor(root, docId, opts = {}) {
     const on = panelList.querySelector('.thumb.on');
     if (on && !ql && !pickMode) on.scrollIntoView({ block: 'center' });
     updatePick();
+  }
+
+  // --- journal: a page per day, reached through a calendar
+  function journalGo(key) {
+    let i = pages.findIndex(p => p.day === key);
+    if (i >= 0) { scrollToPage(i); return; }
+    const pg = newDayPage(doc, key);
+    i = dayIndex(pages, key);
+    pages.splice(i, 0, pg);
+    dirtyPages.add(pg);
+    structureChanged(i);
+  }
+
+  function calendarDialog() {
+    const today = dayKey(), cur = currentPv().page.day || today;
+    let y = +cur.slice(0, 4), mo = +cur.slice(5, 7) - 1, m = null;
+    const body = h('div', { class: 'cal' });
+    const step = d => { mo += d; if (mo < 0) { mo = 11; y--; } else if (mo > 11) { mo = 0; y++; } draw(); };
+    const draw = () => {
+      const made = new Map(); // day -> does it have anything written on it
+      for (const p of pages) if (p.day) made.set(p.day, made.get(p.day) || p.items.length > 0);
+      const lead = (new Date(y, mo, 1).getDay() + 6) % 7, n = new Date(y, mo + 1, 0).getDate(); // weeks start on Monday
+      const cells = [];
+      for (let i = 0; i < lead; i++) cells.push(h('span'));
+      for (let d = 1; d <= n; d++) {
+        const key = `${y}-${String(mo + 1).padStart(2, '0')}-${String(d).padStart(2, '0')}`;
+        cells.push(h('button', {
+          class: 'cal-d' + (made.get(key) ? ' has' : made.has(key) ? ' made' : '') + (key === today ? ' today' : '') + (key === cur ? ' cur' : ''), type: 'button',
+          onclick: () => { m.close(); journalGo(key); }
+        }, String(d)));
+      }
+      fill(body,
+        h('div', { class: 'cal-head' },
+          h('button', { class: 'ic sm', type: 'button', title: 'Earlier month', html: I.back, onclick: () => step(-1) }),
+          h('b', null, new Date(y, mo, 1).toLocaleDateString([], { month: 'long', year: 'numeric' })),
+          h('button', { class: 'ic sm', type: 'button', title: 'Later month', html: I.fwd, onclick: () => step(1) })),
+        h('div', { class: 'cal-grid' }, ['M', 'T', 'W', 'T', 'F', 'S', 'S'].map(w => h('span', { class: 'cal-w' }, w)), cells),
+        h('p', { class: 'modal-text small' }, 'Filled days have writing on them. Tap any day to open its page; a new page is made if there is none.'));
+    };
+    draw();
+    m = modal({ title: 'Journal', body, actions: [{ label: 'Close' }, { label: 'Today', primary: true, onClick: () => journalGo(today) }] });
   }
 
   // --- several pages at once (pages panel > Select pages)
