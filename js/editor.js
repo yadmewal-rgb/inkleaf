@@ -242,7 +242,7 @@ export async function mountEditor(root, docId, opts = {}) {
   const lyOf = () => ({ ly: curLayer || undefined });                       // what a newly made item carries
   const lyHidden = it => lyOff.size > 0 && lyOff.has(it.ly || 0);
   const lyBlocked = it => lyNo.size > 0 && lyNo.has(it.ly || 0);            // hidden or locked: cannot be erased or selected
-  const holdBtn = h('button', { class: 'hold-erase', type: 'button', hidden: true, // hold-to-erase was removed as a feature title: 'Hold with a finger: the pen erases while this is held', html: I.eraser });
+  const holdBtn = h('button', { class: 'hold-erase', type: 'button', hidden: true, html: I.eraser }); // hold-to-erase was removed as a feature: the button stays hidden
   {
     const set = on => { holdErase = on; holdBtn.classList.toggle('on', on); };
     holdBtn.addEventListener('pointerdown', e => { e.preventDefault(); try { holdBtn.setPointerCapture(e.pointerId); } catch { /* synthetic pointer */ } set(true); });
@@ -3383,8 +3383,27 @@ export async function mountEditor(root, docId, opts = {}) {
     b.done();
     const done = () => { box.remove(); urls.forEach(u => URL.revokeObjectURL(u)); window.removeEventListener('afterprint', done); };
     window.addEventListener('afterprint', done);
-    setTimeout(() => window.print(), 50);
-    setTimeout(() => { if (!document.hidden) done(); }, 120000); // in case "afterprint" never comes
+    setTimeout(done, 10 * 60e3); // in case "afterprint" never comes
+    // The print window has to be opened by a tap of its own: iPad and phone browsers ignore a print request
+    // that comes after the pages were prepared in the background.
+    let started = false;
+    modal({
+      title: 'Ready to print',
+      body: h('div', null,
+        h('p', { class: 'modal-text' }, `${list.length} page${list.length === 1 ? ' is' : 's are'} ready.`),
+        h('p', { class: 'modal-text small' }, 'If no print window opens on this device, use More > Export as PDF and print the PDF from the Files app or your PDF viewer.')),
+      onClose: () => { if (!started) done(); },
+      actions: [
+        { label: 'Cancel' },
+        {
+          label: 'Print', primary: true, onClick: () => {
+            started = true;
+            if (typeof window.print !== 'function') { toast('This browser cannot print. Use Export as PDF and print that.', 5000); done(); return; }
+            try { window.print(); } catch (e) { toast('Printing did not start: ' + e.message, 5000); done(); }
+          }
+        }
+      ]
+    });
   }
 
   // --- two notebooks side by side
