@@ -173,7 +173,7 @@ const sameItems = (items, other) => {
 };
 
 // The page's background and size (own templates and scans change these).
-const looks = X => JSON.stringify([X.bg || null, X.pdf || null, X.tpl || null, X.w, X.h]);
+const looks = X => JSON.stringify([X.bg || null, X.pdf || null, X.tpl || null, X.w, X.h, X.pm || null, X.sec || '']);
 
 export function mergePage(L, R) {
   if (L.deleted || R.deleted) return R.modified >= L.modified ? R : L;

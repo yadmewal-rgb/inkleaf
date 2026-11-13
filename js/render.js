@@ -583,6 +583,7 @@ const isHl = it => it.t === 's' && it.tool === 'hl';
 
 // clip ({x, y, w, h} in page units) lets callers that only show part of a page skip everything outside it.
 function outside(it, clip) {
+  if (layerOff(it)) return true; // every drawing loop asks this, so hidden layers drop out here
   if (!clip) return false;
   const b = bounds(it);
   return b.x > clip.x + clip.w || b.x + b.w < clip.x || b.y > clip.y + clip.h || b.y + b.h < clip.y;
@@ -596,7 +597,7 @@ export function drawImages(ctx, items, skip, clip) {
 // The editor keeps pictures on their own opaque layer and passes images = false here.
 export function drawItems(ctx, items, skip, images = true, clip = null) {
   if (images) drawImages(ctx, items, skip, clip);
-  const vis = clip ? items.filter(it => !outside(it, clip)) : items;
+  const vis = clip || hiddenLayers.size ? items.filter(it => !outside(it, clip)) : items;
   for (const it of vis) if (isHl(it) && !(skip && skip.has(it.id))) drawItem(ctx, it);
   for (const it of vis) if (!isHl(it) && it.t !== 'im' && !onTop(it) && !(skip && skip.has(it.id))) drawItem(ctx, it);
 }
@@ -736,6 +737,36 @@ export function rotateItem(it, cx, cy) {
   return o;
 }
 
+// Turn an item by any angle around (cx, cy). Only freehand strokes, lines, arrows and tape can turn freely;
+// everything else keeps its orientation and just moves with the rest.
+export function rotateBy(it, cx, cy, ang) {
+  const cos = Math.cos(ang), sin = Math.sin(ang), r2 = v => Math.round(v * 100) / 100;
+  const X = (x, y) => r2(cx + (x - cx) * cos - (y - cy) * sin), Y = (x, y) => r2(cy + (x - cx) * sin + (y - cy) * cos);
+  const o = { ...it, m: Date.now() };
+  if (it.t === 's') {
+    o.p = new Array(it.p.length);
+    for (let i = 0; i < it.p.length; i += 3) { o.p[i] = X(it.p[i], it.p[i + 1]); o.p[i + 1] = Y(it.p[i], it.p[i + 1]); o.p[i + 2] = it.p[i + 2]; }
+  } else if (it.t === 'tp' || (it.t === 'sh' && (it.k === 'line' || it.k === 'arrow'))) {
+    o.x1 = X(it.x1, it.y1); o.y1 = Y(it.x1, it.y1); o.x2 = X(it.x2, it.y2); o.y2 = Y(it.x2, it.y2);
+  } else {
+    const b = bounds(it), mx = b.x + b.w / 2, my = b.y + b.h / 2, dx = X(mx, my) - mx, dy = Y(mx, my) - my;
+    return transformItem(it, 1, 0, 0, dx, dy);
+  }
+  return o;
+}
+
+// A PDF page can have margins added around it (positive numbers) or its white borders trimmed (negative):
+// page.pm = {l, t, r, b} in page units. This is where the PDF itself sits on the page.
+export function pdfBox(pg) {
+  const m = pg.pm;
+  return m ? { x: m.l, y: m.t, w: pg.w - m.l - m.r, h: pg.h - m.t - m.b } : { x: 0, y: 0, w: pg.w, h: pg.h };
+}
+
+// Layers that are switched off are skipped by every drawing routine (set by the notebook that is open).
+let hiddenLayers = new Set();
+export const setHiddenLayers = s => { hiddenLayers = s || new Set(); };
+const layerOff = it => hiddenLayers.size > 0 && hiddenLayers.has(it.ly || 0);
+
 // Whole page (paper, PDF, ink) into a canvas pxW pixels wide. Used for thumbnails.
 export async function renderPageTo(page, canvas, pxW) {
   const rs = pxW / page.w;
@@ -748,11 +779,7 @@ export async function renderPageTo(page, canvas, pxW) {
   if (page.pdf) {
     try {
       const c = await renderPdfPage(page.pdf.a, page.pdf.i, rs);
-      if (c) {
-        ctx.setTransform(1, 0, 0, 1, 0, 0);
-        ctx.drawImage(c, 0, 0, canvas.width, canvas.height);
-        ctx.setTransform(rs, 0, 0, rs, 0, 0);
-      }
+      if (c) { const b = pdfBox(page); ctx.drawImage(c, b.x, b.y, b.w, b.h); }
     } catch (e) { /* PDF not available yet: leave the paper blank */ }
   }
   await Promise.all(page.items.filter(it => it.t === 'im').map(it => loadImage(it.a)));

@@ -18,6 +18,7 @@ export async function buildPdf(doc, pages, progress) {
     return L.rgb((n >> 16 & 255) / 255, (n >> 8 & 255) / 255, (n & 255) / 255);
   };
 
+  const hideLy = new Set((doc.layers || []).filter(l => l.h).map(l => l.id));
   const out = await PDFDocument.create();
   out.setTitle(doc.title);
   out.setCreator('Inkleaf');
@@ -86,12 +87,13 @@ export async function buildPdf(doc, pages, progress) {
 
     if (pg.pdf) {
       const e = embedded.get(pg.id);
-      if (e && e !== 'blank') page.drawPage(e, { x: 0, y: 0, width: pg.w, height: H });
+      const pb = R.pdfBox(pg), at = { x: pb.x, y: H - pb.y - pb.h, width: pb.w, height: pb.h }; // margins added or borders trimmed
+      if (e && e !== 'blank') page.drawPage(e, at);
       else if (!e) {
         try {
           const c = await renderPdfPage(pg.pdf.a, pg.pdf.i, 2);
           const jpg = await out.embedJpg(await canvasBytes(c, 'image/jpeg', 0.9));
-          page.drawImage(jpg, { x: 0, y: 0, width: pg.w, height: H });
+          page.drawImage(jpg, at);
         } catch (err) { console.warn('PDF page skipped in export', err); }
       }
     } else if (pg.bg) {
@@ -123,6 +125,7 @@ export async function buildPdf(doc, pages, progress) {
       ...pg.items.filter(it => it.t === 'tp' || it.t === 'nt')
     ];
     for (const it of ordered) {
+      if (hideLy && hideLy.has(it.ly || 0)) continue; // layers that are switched off stay out of the PDF
       if (it.t === 'nt' || it.t === 'tb') {
         // Sticky notes and tables go in as pictures of themselves.
         const bm = R.itemBitmap(it, 3);

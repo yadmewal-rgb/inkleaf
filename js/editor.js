@@ -37,6 +37,13 @@ const NOTE_COLORS = ['#ffe066', '#ffc9c9', '#b2f2bb', '#a5d8ff', '#d0bfff'];
 const FILL_COLORS = ['#ffe3e3', '#fff3bf', '#d3f9d8', '#d0ebff', '#e5dbff', '#dee2e6'];
 const HIST_GAP = 5 * 60e3, HIST_MAX = 25, HIST_DAYS = 14; // page history: one snapshot per 5 minutes of writing
 let activeEd = null; // with two notebooks side by side, the one last touched gets the keyboard
+// Tags that can be put on anything on a page: n = name, c = colour, s = the sign shown in the badge.
+const TAGS = {
+  imp: { n: 'Important', c: '#e03131', s: '!' }, q: { n: 'Question', c: '#1971c2', s: '?' },
+  todo: { n: 'To do', c: '#f08c00', s: '○' }, def: { n: 'Definition', c: '#2f9e44', s: 'D' },
+  done: { n: 'Done', c: '#868e96', s: '✓' }
+};
+const SEC_COLORS = ['#1971c2', '#e8590c', '#2f9e44', '#9c36b5', '#e03131', '#0c8599'];
 const TM = { open: false, running: false, t0: 0, acc: 0, dur: 0 }; // the timer, shared by every notebook (dur 0 = stopwatch)
 
 const DEFAULTS = {
@@ -48,7 +55,8 @@ const DEFAULTS = {
   pen: { color: INK, size: mmToPt(0.7), style: 'fountain' },
   scribble: true, // a zigzag over ink erases it
   favs: [],       // favourite pens: [{color, size, style}]
-  hl: { color: '#ffd43b', size: mmToPt(5.5) },
+  hl: { color: '#ffd43b', size: mmToPt(5.5), mode: 'free' }, // mode: free, or follow PDF text as hl / ul / st
+  holdErase: false, // show the hold-to-erase button
   eraser: { size: mmToPt(5.5), mode: 'stroke', only: 'all' },
   shape: { kind: 'rect', color: '#1971c2', size: mmToPt(0.8), fill: null },
   text: { color: INK, size: 16, b: false, i: false, u: false, ff: 'sans', al: 'l' },
@@ -159,7 +167,7 @@ export async function mountEditor(root, docId, opts = {}) {
   // Top row: home and the open notebooks as tabs. Second row: sidebar, search and read-only on the left, the
   // tools in the middle, and timer / bookmark / full screen / add page / share / more on the right.
   const tabsEl = h('div', { class: 'tabs' });
-  const roBtn = h('button', { class: 'ic wide', type: 'button', onclick: () => setReadOnly(!readOnly), html: I.eye });
+  const roBtn = h('button', { class: 'ic', type: 'button', onclick: () => setReadOnly(!readOnly), html: I.eye });
   const timerBtn = h('button', { class: 'ic wide', type: 'button', title: 'Timer', onclick: () => toggleTimer(), html: I.timer });
   const el = h('div', { class: 'ed' },
     h('div', { class: 'bar top' },
@@ -225,6 +233,23 @@ export async function mountEditor(root, docId, opts = {}) {
   const histOrig = new Map(pages.map(p => [p.id, { t: p.modified, items: p.items.slice() }])); // pages as they were when opened
   const histLast = new Map();   // page id -> when its last history snapshot was taken this session
 
+  let oneShot = null;     // 'excerpt' while the next drag marks out a part of the page to copy
+  let holdErase = false;  // the hold-to-erase button is being held: the pen erases meanwhile
+  // Layers. Layer 0 is "Base"; doc.layers lists the others as {id, n: name, h: hidden, k: locked}.
+  let curLayer = 0, lyOff = new Set(), lyNo = new Set();
+  try { curLayer = parseInt(localStorage.getItem('inkleaf.ly.' + doc.id) || '0', 10) || 0; } catch { /* private mode */ }
+  const layers = () => { const L = doc.layers || [], b = L.find(x => !x.id) || {}; return [{ id: 0, n: 'Base', h: b.h, k: b.k }, ...L.filter(x => x.id)]; };
+  const lyOf = () => ({ ly: curLayer || undefined });                       // what a newly made item carries
+  const lyHidden = it => lyOff.size > 0 && lyOff.has(it.ly || 0);
+  const lyBlocked = it => lyNo.size > 0 && lyNo.has(it.ly || 0);            // hidden or locked: cannot be erased or selected
+  const holdBtn = h('button', { class: 'hold-erase', type: 'button', hidden: !prefs.holdErase, title: 'Hold with a finger: the pen erases while this is held', html: I.eraser });
+  {
+    const set = on => { holdErase = on; holdBtn.classList.toggle('on', on); };
+    holdBtn.addEventListener('pointerdown', e => { e.preventDefault(); try { holdBtn.setPointerCapture(e.pointerId); } catch { /* synthetic pointer */ } set(true); });
+    for (const ev of ['pointerup', 'pointercancel', 'lostpointercapture']) holdBtn.addEventListener(ev, () => set(false));
+    holdBtn.addEventListener('contextmenu', e => e.preventDefault());
+    overlay.append(holdBtn);
+  }
   let readOnly = false; // read-only view: nothing that touches the page draws on it
   try { readOnly = localStorage.getItem('inkleaf.ro.' + doc.id) === '1'; } catch { /* private mode */ }
   const fingerDraws = () => !readOnly && (prefs.fingerDraw === true || (prefs.fingerDraw == null && !penSeen));
@@ -465,7 +490,8 @@ export async function mountEditor(root, docId, opts = {}) {
     };
     if (!pg.pdf) { put(null); return; }
     // The previous sharp piece stays in place until the new one is ready.
-    renderPdfPage(pg.pdf.a, pg.pdf.i, rs, () => tok !== pv.hiTok || !pv.rs, k)
+    const pb = R.pdfBox(pg);
+    renderPdfPage(pg.pdf.a, pg.pdf.i, rs, () => tok !== pv.hiTok || !pv.rs, { ...k, x: k.x - pb.x, y: k.y - pb.y })
       .then(c => { if (c && tok === pv.hiTok && pv.rs) put(c); })
       .catch(err => console.warn('PDF region render failed', err));
   }
@@ -481,10 +507,7 @@ export async function mountEditor(root, docId, opts = {}) {
       const c = pv.bg.getContext('2d');
       c.setTransform(rs, 0, 0, rs, 0, 0);
       R.drawPaper(c, pg);
-      if (pdfCanvas) {
-        c.setTransform(1, 0, 0, 1, 0, 0);
-        c.drawImage(pdfCanvas, 0, 0, W, H);
-      }
+      if (pdfCanvas) { const b = R.pdfBox(pg); c.drawImage(pdfCanvas, b.x, b.y, b.w, b.h); }
     };
     if (!pg.pdf) { draw(null); return; }
     if (!pv.bg.width) draw(null); // show paper immediately, the PDF arrives when rendered
@@ -531,6 +554,24 @@ export async function mountEditor(root, docId, opts = {}) {
       c.lineWidth = 1.2 * px;
       c.setLineDash([4 * px, 3 * px]);
       for (const it of linked) { const b = R.bounds(it); c.strokeRect(b.x - 2, b.y - 2, b.w + 4, b.h + 4); }
+      c.restore();
+    }
+    // Tagged items carry a small coloured badge at their top left corner (also on screen only).
+    for (const it of pv.page.items) {
+      const tg = it.tg && TAGS[it.tg];
+      if (!tg || lyHidden(it)) continue;
+      const b = R.bounds(it), px = (window.devicePixelRatio || 1) / pv.rs, r = Math.max(5, 6.5 * px * Math.min(2, Math.max(1, scale)));
+      c.save();
+      c.globalAlpha = it.tg === 'done' ? 0.55 : 1;
+      c.fillStyle = tg.c;
+      c.beginPath();
+      c.arc(b.x - r * 0.3, b.y - r * 0.3, r, 0, 6.2832);
+      c.fill();
+      c.fillStyle = '#fff';
+      c.font = `700 ${r * 1.35}px system-ui, sans-serif`;
+      c.textAlign = 'center';
+      c.textBaseline = 'middle';
+      c.fillText(tg.s, b.x - r * 0.3, b.y - r * 0.25);
       c.restore();
     }
     paintImg(pv);
@@ -922,6 +963,8 @@ export async function mountEditor(root, docId, opts = {}) {
     P.template = m.template;
     P.paper = m.paper;
     P.bg = m.bg || null;
+    if (JSON.stringify(P.pm || null) !== JSON.stringify(m.pm || null)) { if (m.pm) P.pm = m.pm; else delete P.pm; }
+    if ((P.sec || '') !== (m.sec || '')) { if (m.sec) P.sec = m.sec; else delete P.sec; if (panelOpen) setTimeout(() => fillPanel()); }
     P.pdf = m.pdf || null;
     if (m.tpl) P.tpl = m.tpl; else delete P.tpl;
     P.w = m.w;
@@ -1070,7 +1113,7 @@ export async function mountEditor(root, docId, opts = {}) {
         if (ts.length === 2) multiTap = { t0: performance.now(), n: 2, moved: false, scale, tx, ty };
       }
       if (multiTap) multiTap.n = Math.max(multiTap.n, ts.length);
-    } else if (fingerDraws() || touchOnSel(e)) startAction(e);
+    } else if (fingerDraws() || touchOnSel(e) || oneShot) startAction(e);
     else startPan(p);
   }
 
@@ -1278,7 +1321,8 @@ export async function mountEditor(root, docId, opts = {}) {
   // ------------------------------------------------------------------ tool actions
   // map is given when the press is in the zoom window: it turns screen positions there into page positions.
   function startAction(e, forceTool, map) {
-    const tool = forceTool || prefs.tool;
+    // oneShot: the next drag marks out an excerpt. holdErase: the on-screen button is being held down.
+    const tool = (!map && oneShot) || forceTool || (holdErase && !map ? 'eraser' : null) || prefs.tool;
     const pv = map ? zw.pv : (tool === 'lasso' && sel && touchOnSelPoint(e)) ? sel.pv : pvAt(e.clientX, e.clientY);
     const [x, y] = map ? map(e.clientX, e.clientY) : toPage(pv, e.clientX, e.clientY);
     if (tool !== 'lasso' && sel) clearSel();
@@ -1292,6 +1336,7 @@ export async function mountEditor(root, docId, opts = {}) {
     else if (tool === 'shape') { action.c = useLive(pv); action.x1 = x; action.y1 = y; }
     else if (tool === 'tape') { action.c = useLive(pv); live.classList.add('plain'); action.x1 = x; action.y1 = y; }
     else if (tool === 'laser') beginLaser(e);
+    else if (tool === 'excerpt') { action.c = useLive(pv); live.classList.add('plain'); action.x1 = x; action.y1 = y; }
   }
 
   // Where the pointer is on the page being worked on.
@@ -1316,6 +1361,20 @@ export async function mountEditor(root, docId, opts = {}) {
     else if (a.tool === 'shape') moveShape(e);
     else if (a.tool === 'tape') moveTape(e);
     else if (a.tool === 'laser') moveLaser(e);
+    else if (a.tool === 'excerpt') {
+      [a.x1, a.y1] = toPage(a.pv, e.clientX, e.clientY);
+      nextLive(() => {
+        clearLive();
+        const c = a.c;
+        c.fillStyle = 'rgba(47,111,94,.14)';
+        c.strokeStyle = '#2f6f5e';
+        c.lineWidth = 1.6 / scale;
+        c.setLineDash([6 / scale, 4 / scale]);
+        c.fillRect(a.x0, a.y0, a.x1 - a.x0, a.y1 - a.y0);
+        c.strokeRect(a.x0, a.y0, a.x1 - a.x0, a.y1 - a.y0);
+        c.setLineDash([]);
+      });
+    }
   }
 
   function endAction(e) {
@@ -1328,6 +1387,7 @@ export async function mountEditor(root, docId, opts = {}) {
     else if (a.tool === 'tape') endTape(a);
     else if (a.tool === 'laser') { a.ls.end = performance.now(); if (!a.far) tapThing(a.pv, a.x0, a.y0); }
     else if (a.tool === 'text' && !a.far) textTap(a.pv, a.x0, a.y0);
+    else if (a.tool === 'excerpt') endExcerpt(a);
     if (pendingRebuild) remoteRebuild();
   }
 
@@ -1342,7 +1402,8 @@ export async function mountEditor(root, docId, opts = {}) {
     else if (a.tool === 'lasso' && a.mode !== 'draw') endLasso(a);
     else if (a.tool === 'laser') a.ls.end = performance.now();
     else clearLive();
-    if (a.tool === 'tape') live.classList.remove('plain');
+    if (a.tool === 'tape' || a.tool === 'excerpt') live.classList.remove('plain');
+    if (a.tool === 'excerpt') setOneShot(null);
     if (a.rule && ruler) rulerLabel();
     if (pendingRebuild) remoteRebuild();
   }
@@ -1489,7 +1550,7 @@ export async function mountEditor(root, docId, opts = {}) {
     // Only ink lying mostly inside the scribbled area goes, so writing that merely touches a neighbour is safe.
     const r = Math.max(2, a.size), pad = 4, out = [];
     for (const it of a.pv.page.items) {
-      if (it.t !== 's' && it.t !== 'sh') continue;
+      if ((it.t !== 's' && it.t !== 'sh') || lyBlocked(it)) continue;
       const b = R.bounds(it);
       if (b.x > x1 || b.x + b.w < x0 || b.y > y1 || b.y + b.h < y0) continue;
       const ix = Math.min(b.x + b.w, x1 + pad) - Math.max(b.x, x0 - pad), iy = Math.min(b.y + b.h, y1 + pad) - Math.max(b.y, y0 - pad);
@@ -1602,23 +1663,82 @@ export async function mountEditor(root, docId, opts = {}) {
     }
     if (dbg) dbgCount('strokes saved');
     if (!a.line && !a.snap && !a.rule) a.pts = settle(a.pts);
-    const it = a.snap ? { ...a.snap, id: uid(), z: nextZ(), m: Date.now() } : {
+    const it = a.snap ? { ...a.snap, id: uid(), z: nextZ(), ...lyOf(), m: Date.now() } : {
       id: uid(), t: 's', tool: a.tool, c: a.color, w: a.size,
-      p: a.pts.map(v => Math.round(v * 100) / 100), z: nextZ(), m: Date.now(),
+      p: a.pts.map(v => Math.round(v * 100) / 100), z: nextZ(), ...lyOf(), m: Date.now(),
       ...(a.style === 'pencil' ? { st: 'pencil' } : {})
     };
-    addItems(page, [it]);
+    // Highlighter set to follow PDF text: the freehand stroke is swapped for neat marks on the lines it crossed.
+    const mode = prefs.hl.mode;
+    if (a.tool === 'hl' && mode && mode !== 'free' && page.pdf && !page.tpl && !a.map && !a.snap) { snapMarkup(a, mode, it); return; }
+    finishStroke(a, [it]);
+  }
+
+  function finishStroke(a, items) {
+    const page = a.pv.page;
+    if (!pages.includes(page)) return; // the page went away while PDF text was being read
+    addItems(page, items);
     if (a.pv.rs) {
       const c = a.pv.ink.getContext('2d');
       xf(c, a.pv);
-      if (a.tool === 'hl') c.globalCompositeOperation = 'destination-over'; // highlighter goes under ink
-      R.drawItem(c, it);
+      for (const it of items) {
+        c.globalCompositeOperation = it.tool === 'hl' ? 'destination-over' : 'source-over'; // highlighter goes under ink
+        R.drawItem(c, it);
+      }
       c.globalCompositeOperation = 'source-over';
     }
     if (a.map) zoomPaint(); // so the stroke does not blink in the zoom window when the live layer is wiped
-    clearLive();
-    pushUndo({ pageId: page.id, add: [it], remove: [] });
+    if (!action) clearLive();
+    pushUndo({ pageId: page.id, add: items, remove: [] });
     dirty(page);
+  }
+
+  async function snapMarkup(a, mode, freehand) {
+    const page = a.pv.page;
+    let items = [];
+    try { items = markupItems(page, await pageText(page.pdf.a, page.pdf.i), a, mode); } catch { /* no text to follow */ }
+    finishStroke(a, items.length ? items : [freehand]);
+  }
+
+  // Text runs of a PDF page grouped into lines (per column), as boxes in page units.
+  function textLines(page, t) {
+    const pb = R.pdfBox(page), lines = [];
+    const parts = t.parts.map(p => ({ x: p.x + pb.x, y: p.y + pb.y, w: p.w, h: p.h })).filter(p => p.w > 0.5 && p.h > 2).sort((m, n) => m.y - n.y || m.x - n.x);
+    for (const p of parts) {
+      const cy = p.y + p.h / 2;
+      const L = lines.find(l => cy > l.y && cy < l.y + l.h && p.x < l.x + l.w + 3 * l.h && p.x + p.w > l.x - 3 * l.h);
+      if (!L) { lines.push({ ...p }); continue; }
+      const x1 = Math.max(L.x + L.w, p.x + p.w), y1 = Math.max(L.y + L.h, p.y + p.h);
+      L.x = Math.min(L.x, p.x); L.y = Math.min(L.y, p.y); L.w = x1 - L.x; L.h = y1 - L.y;
+    }
+    return lines;
+  }
+
+  function markupItems(page, t, a, mode) {
+    const P = a.pts, n = P.length, r2 = v => Math.round(v * 100) / 100;
+    let sx = P[0], sy = P[1], ex = P[n - 3], ey = P[n - 2], x0 = Infinity, x1 = -Infinity;
+    for (let i = 0; i < n; i += 3) { x0 = Math.min(x0, P[i]); x1 = Math.max(x1, P[i]); }
+    if (sy > ey) { [sx, ex] = [ex, sx]; [sy, ey] = [ey, sy]; }
+    const hit = textLines(page, t).filter(l => {
+      const cy = l.y + l.h / 2;
+      return cy > sy - l.h * 0.65 && cy < ey + l.h * 0.65 && l.x < x1 && l.x + l.w > x0;
+    }).sort((m, q) => m.y - q.y || m.x - q.x);
+    const out = [], t0 = Date.now(), pen = inkFor(a.pv, prefs.pen.color);
+    hit.forEach((l, i) => {
+      // One line: just the part the stroke covered. Several: from the start, whole lines between, up to the end.
+      let xa = hit.length === 1 ? Math.max(l.x, x0) : i === 0 ? Math.max(l.x, sx) : l.x;
+      let xb = hit.length === 1 ? Math.min(l.x + l.w, x1) : i === hit.length - 1 ? Math.min(l.x + l.w, ex) : l.x + l.w;
+      if (xb - xa < 2) return;
+      const base = { id: uid(), t: 's', z: nextZ(), ...lyOf(), m: t0 };
+      if (mode === 'hl') {
+        const w = l.h * 1.05, cut = Math.min(w * 0.35, (xb - xa) / 3); // round ends reach past the line's ends
+        out.push({ ...base, tool: 'hl', c: a.color, w: r2(w), p: [r2(xa + cut), r2(l.y + l.h / 2), 0.5, r2(xb - cut), r2(l.y + l.h / 2), 0.5] });
+      } else {
+        const y = mode === 'ul' ? l.y + l.h * 0.97 : l.y + l.h * 0.56;
+        out.push({ ...base, tool: 'pen', c: pen, w: r2(Math.max(0.7, l.h * 0.07)), p: [r2(xa), r2(y), 0.5, r2(xb), r2(y), 0.5] });
+      }
+    });
+    return out;
   }
 
   // --- eraser
@@ -1649,7 +1769,7 @@ export async function mountEditor(root, docId, opts = {}) {
     let hit = false;
     const out = [];
     const only = prefs.eraser.only || 'all';
-    const skip = it => (it.t !== 's' && it.t !== 'sh' && it.t !== 'tp')
+    const skip = it => (it.t !== 's' && it.t !== 'sh' && it.t !== 'tp') || lyBlocked(it)
       || (only === 'hl' && !(it.t === 's' && it.tool === 'hl'))   // highlighter only
       || (only === 'pen' && it.t === 's' && it.tool === 'hl');    // everything but highlighter
     for (const it of page.items) {
@@ -1675,7 +1795,7 @@ export async function mountEditor(root, docId, opts = {}) {
   function topItemAt(page, x, y, type) {
     for (let i = page.items.length - 1; i >= 0; i--) {
       const it = page.items[i];
-      if (type && it.t !== type) continue;
+      if ((type && it.t !== type) || lyBlocked(it)) continue;
       if (it.t === 'tx' || it.t === 'im' || it.t === 'nt' || it.t === 'tb') {
         const b = R.bounds(it);
         if (x >= b.x && x <= b.x + b.w && y >= b.y && y <= b.y + b.h) return it;
@@ -1734,7 +1854,7 @@ export async function mountEditor(root, docId, opts = {}) {
       else { const ln = linkAt(a.pv, a.x0, a.y0); if (ln) followLink(a.pv, ln); }
       return;
     }
-    const items = page.items.filter(it => R.inLasso(it, a.poly));
+    const items = page.items.filter(it => !lyBlocked(it) && R.inLasso(it, a.poly));
     if (items.length) setSel(a.pv, items);
   }
 
@@ -1808,7 +1928,7 @@ export async function mountEditor(root, docId, opts = {}) {
   function duplicateSel() {
     if (!sel) return;
     const pv = sel.pv;
-    const copies = sel.items.map(it => ({ ...R.transformItem(it, 1, 0, 0, 14, 14), id: uid(), z: nextZ() }));
+    const copies = sel.items.map(it => ({ ...R.transformItem(it, 1, 0, 0, 14, 14), id: uid(), z: nextZ(), ...lyOf() }));
     clearSel();
     addItems(pv.page, copies);
     pushUndo({ pageId: pv.page.id, add: copies, remove: [] });
@@ -1828,7 +1948,7 @@ export async function mountEditor(root, docId, opts = {}) {
   }
 
   async function pasteClip() {
-    const src = clipItems || await db.getMeta('clip');
+    const src = (await db.getMeta('clip')) || clipItems; // the stored copy first: it may have been made in another tab or pane
     if (!src || !src.length) { toast('Nothing copied yet.'); return; }
     await placeItems(src);
   }
@@ -1843,7 +1963,7 @@ export async function mountEditor(root, docId, opts = {}) {
     const [vx, vy] = viewCentre(pv);
     const dx = clamp(vx - u.w / 2, 4, Math.max(4, pg.w - u.w - 4)) - u.x, dy = clamp(vy - u.h / 2, 4, Math.max(4, pg.h - u.h - 4)) - u.y;
     await Promise.all(src.filter(it => it.t === 'im').map(it => R.loadImage(it.a)));
-    const items = src.map(it => ({ ...R.transformItem(it, 1, 0, 0, dx, dy), id: uid(), z: nextZ() }));
+    const items = src.map(it => ({ ...R.transformItem(it, 1, 0, 0, dx, dy), id: uid(), z: nextZ(), ...lyOf() }));
     addItems(pg, items);
     pushUndo({ pageId: pg.id, add: items, remove: [] });
     dirty(pg);
@@ -1993,6 +2113,13 @@ export async function mountEditor(root, docId, opts = {}) {
       kids.push(h('button', { class: 'ic', type: 'button', title: 'Type in the cells', html: I.edit, onclick: () => { const pv = sel.pv; clearSel(); boxStart(pv, one, 'tb', 0, 0); } }));
     }
     kids.push(h('button', { class: 'ic' + (sel.items.some(it => it.lk) ? ' on-link' : ''), type: 'button', title: 'Link', html: I.link, onclick: linkDialog }));
+    kids.push(h('button', {
+      class: 'ic' + (sel.items.some(it => it.tg) ? ' on-link' : ''), type: 'button', title: 'Tag', html: I.tag,
+      onclick: e => popMenu(e.currentTarget, [
+        ...Object.keys(TAGS).map(k => ({ label: TAGS[k].n, icon: I.tag, onClick: () => tagSel(k) })),
+        '-', { label: 'No tag', icon: I.close, onClick: () => tagSel(null) }
+      ])
+    }));
     if (one && one.t === 'im') {
       kids.push(h('button', { class: 'ic', type: 'button', title: 'Crop', html: I.crop, onclick: () => cropDialog(one) }));
     }
@@ -2007,6 +2134,10 @@ export async function mountEditor(root, docId, opts = {}) {
           { label: 'Cut', icon: I.cut, onClick: () => copySel(true) },
           { label: 'Duplicate', icon: I.pages, onClick: duplicateSel },
           { label: 'Save as element', icon: I.element, onClick: saveElement },
+          { label: 'Make a flashcard', icon: I.cards, onClick: cardFromSel },
+          { label: 'Level the writing', icon: I.level, onClick: levelSel },
+          { label: 'Align and tidy', icon: I.align, onClick: () => alignMenu() },
+          layers().length > 1 ? { label: 'Move to a layer', icon: I.layers, onClick: () => moveSelToLayer() } : null,
           { label: 'Save as a picture', icon: I.image, onClick: selPicture },
           one && one.t === 'nt' ? { label: one.fo ? 'Open the note' : 'Fold the note away', icon: I.note, onClick: () => { const o = { ...one, m: Date.now() }; if (one.fo) delete o.fo; else o.fo = 1; replaceSel([one], [o]); } } : null,
           ...(one && one.t === 'tb' ? [
@@ -2087,7 +2218,7 @@ export async function mountEditor(root, docId, opts = {}) {
     }
     const r2 = v => Math.round(v * 100) / 100;
     const s = tempTape(a);
-    const it = { ...s, x1: r2(s.x1), y1: r2(s.y1), x2: r2(s.x2), y2: r2(s.y2), id: uid(), z: nextZ(), m: Date.now() };
+    const it = { ...s, x1: r2(s.x1), y1: r2(s.y1), x2: r2(s.x2), y2: r2(s.y2), id: uid(), z: nextZ(), ...lyOf(), m: Date.now() };
     addItems(page, [it]);
     queueInk(pv);
     pushUndo({ pageId: page.id, add: [it], remove: [] });
@@ -2179,7 +2310,8 @@ export async function mountEditor(root, docId, opts = {}) {
   function loadLinks(pv) {
     if (pv.links !== undefined || !pv.page.pdf || pv.page.tpl) return;
     pv.links = null;
-    pageLinks(pv.page.pdf.a, pv.page.pdf.i).then(l => { pv.links = l; }, () => { pv.links = undefined; });
+    const pb = R.pdfBox(pv.page);
+    pageLinks(pv.page.pdf.a, pv.page.pdf.i).then(l => { pv.links = l.map(k => ({ ...k, x: k.x + pb.x, y: k.y + pb.y })); }, () => { pv.links = undefined; });
   }
 
   function linkAt(pv, x, y) {
@@ -2251,7 +2383,8 @@ export async function mountEditor(root, docId, opts = {}) {
       try {
         const t = await pageText(pg.pdf.a, pg.pdf.i);
         if (tok !== findTok) return;
-        for (const rects of textMatches(t, q)) hits.push({ pg, rects });
+        const pb = R.pdfBox(pg);
+        for (const rects of textMatches(t, q)) hits.push({ pg, rects: rects.map(k => ({ ...k, x: k.x + pb.x, y: k.y + pb.y })) });
       } catch { /* that PDF is not on this device yet */ }
       if (n % 15 === 14) {
         findLbl.textContent = `Searching ${n + 1}/${list.length}`;
@@ -2487,7 +2620,7 @@ export async function mountEditor(root, docId, opts = {}) {
     zxf(c);
     R.drawPaper(c, pg);
     if (pg.pdf) {
-      const key = [pg.id, z.x, z.y, z.w, z.h, k].join();
+      const pb = R.pdfBox(pg), key = [pg.id, z.x, z.y, z.w, z.h, k, pb.x, pb.y].join();
       if (z.pdfKey === key && z.pdfC) {
         c.setTransform(1, 0, 0, 1, 0, 0);
         c.drawImage(z.pdfC, 0, 0);
@@ -2495,7 +2628,7 @@ export async function mountEditor(root, docId, opts = {}) {
       } else if (z.pdfAsk !== key) {
         z.pdfAsk = key;
         const tok = ++z.tok;
-        renderPdfPage(pg.pdf.a, pg.pdf.i, k, () => zw !== z || tok !== z.tok, clip)
+        renderPdfPage(pg.pdf.a, pg.pdf.i, k, () => zw !== z || tok !== z.tok, { ...clip, x: clip.x - pb.x, y: clip.y - pb.y })
           .then(cv => { if (cv && zw === z && tok === z.tok) { z.pdfC = cv; z.pdfKey = key; zoomPaint(); } })
           .catch(err => console.warn('PDF render for the zoom window failed', err));
       }
@@ -2654,7 +2787,7 @@ export async function mountEditor(root, docId, opts = {}) {
     if (!a.far || Math.hypot(a.x1 - a.x0, a.y1 - a.y0) < 3) return;
     const r2 = v => Math.round(v * 100) / 100;
     const s = tempShape(a);
-    const it = { ...s, x1: r2(s.x1), y1: r2(s.y1), x2: r2(s.x2), y2: r2(s.y2), id: uid(), z: nextZ(), m: Date.now() };
+    const it = { ...s, x1: r2(s.x1), y1: r2(s.y1), x2: r2(s.x2), y2: r2(s.y2), id: uid(), z: nextZ(), ...lyOf(), m: Date.now() };
     const page = a.pv.page;
     addItems(page, [it]);
     if (a.pv.rs) {
@@ -2847,7 +2980,7 @@ export async function mountEditor(root, docId, opts = {}) {
     const pv = currentPv(), pg = pv.page, [cx, cy] = viewCentre(pv), w = 150;
     const it = {
       id: uid(), t: 'nt', x: Math.round(clamp(cx - w / 2, 4, pg.w - w - 4)), y: Math.round(clamp(cy - 60, 4, pg.h - 110)),
-      w, s: '', fs: 13, c: prefs.noteColor || NOTE_COLORS[0], z: nextZ(), m: Date.now()
+      w, s: '', fs: 13, c: prefs.noteColor || NOTE_COLORS[0], z: nextZ(), ...lyOf(), m: Date.now()
     };
     addItems(pg, [it]);
     pushUndo({ pageId: pg.id, add: [it], remove: [] });
@@ -2876,7 +3009,7 @@ export async function mountEditor(root, docId, opts = {}) {
             const w = Math.min(pg.w - 40, cl * 110), hh = r * 28;
             const it = {
               id: uid(), t: 'tb', x: Math.round(clamp(cx - w / 2, 8, pg.w - w - 8)), y: Math.round(clamp(cy - hh / 2, 8, Math.max(8, pg.h - hh - 8))),
-              w, h: hh, r, cl, cells: [], fs: 12, c: '#5c606a', z: nextZ(), m: Date.now(), ...(hd.checked ? { hd: 1 } : {})
+              w, h: hh, r, cl, cells: [], fs: 12, c: '#5c606a', z: nextZ(), ...lyOf(), m: Date.now(), ...(hd.checked ? { hd: 1 } : {})
             };
             addItems(pg, [it]);
             pushUndo({ pageId: pg.id, add: [it], remove: [] });
@@ -3034,7 +3167,8 @@ export async function mountEditor(root, docId, opts = {}) {
       { label: 'Scan with the camera', icon: I.scan, onClick: () => scanInp.click() },
       { label: 'Sticky note', icon: I.note, onClick: addNote },
       { label: 'Table', icon: I.table, onClick: addTable },
-      { label: 'Saved elements', icon: I.element, onClick: elementsDialog }
+      { label: 'Saved elements', icon: I.element, onClick: elementsDialog },
+      { label: 'Excerpt: copy part of this page', icon: I.crop, onClick: () => { setOneShot('excerpt'); toast('Drag a box around the part you want. It is copied as a picture that links back to this page.', 4200); } }
     ]);
   }
 
@@ -3292,7 +3426,7 @@ export async function mountEditor(root, docId, opts = {}) {
       pushUndo({ pageId: page.id, remove: [old], add });
     } else if (s) {
       const r2 = v => Math.round(v * 100) / 100;
-      const it = { id: uid(), t: 'tx', x: r2(te.x), y: r2(te.y), w: r2(te.w), s, ...sty, z: nextZ(), m: Date.now() };
+      const it = { id: uid(), t: 'tx', x: r2(te.x), y: r2(te.y), w: r2(te.w), s, ...sty, z: nextZ(), ...lyOf(), m: Date.now() };
       addItems(page, [it]);
       pushUndo({ pageId: page.id, add: [it], remove: [] });
     } else return;
@@ -3316,7 +3450,7 @@ export async function mountEditor(root, docId, opts = {}) {
         id: uid(), t: 'im', a: asset.id,
         x: Math.round(clamp(cx - iw / 2, 8, Math.max(8, pg.w - iw - 8))),
         y: Math.round(clamp(cy - ih / 2, 8, Math.max(8, pg.h - ih - 8))),
-        w: Math.round(iw), h: Math.round(ih), z: nextZ(), m: Date.now()
+        w: Math.round(iw), h: Math.round(ih), z: nextZ(), ...lyOf(), m: Date.now()
       };
       await R.loadImage(asset.id);
       addItems(pg, [it]);
@@ -3654,7 +3788,14 @@ export async function mountEditor(root, docId, opts = {}) {
     pickBar = pickMode ? h('div', { class: 'pick-bar' }) : null;
     panel.classList.toggle('picking', pickMode);
     panelList = h('div', { class: 'panel-list' });
-    panel.append(h('div', { class: 'panel-head' }, q, bmBtn, pickBtn, pickBar), panelList);
+    const secs = pages.map((p, i) => ({ p, i })).filter(x => x.p.sec);
+    const secBtn = secs.length ? h('button', {
+      class: 'chip sm', type: 'button', title: 'Jump to a section',
+      onclick: e => popMenu(e.currentTarget, secs.map((x, n) => ({
+        label: `${x.p.sec}  (page ${x.i + 1})`, icon: I.list, onClick: () => { scrollToPage(x.i); fillPanel(); }
+      })))
+    }, h('span', { class: 'btn-ic', html: I.list }), 'Sections') : null;
+    panel.append(h('div', { class: 'panel-head' }, q, bmBtn, secBtn, pickBtn, pickBar), panelList);
     fillPanel();
   }
 
@@ -3673,11 +3814,13 @@ export async function mountEditor(root, docId, opts = {}) {
       }
     }, { root: panel, rootMargin: '300px' });
     const cur = pvs.indexOf(currentPv());
-    let shown = 0;
+    let shown = 0, secN = 0;
     pages.forEach((pg, i) => {
+      const secColor = pg.sec ? SEC_COLORS[secN++ % SEC_COLORS.length] : null;
       if (panelBm && !pg.bm) return;
       if (ql && !(numeric ? String(i + 1).startsWith(ql) : pageMatches(pg, ql))) return;
       shown++;
+      if (pg.sec) panelList.append(h('div', { class: 'sec-head', style: { '--c': secColor } }, pg.sec)); // a section starts here
       const c = h('canvas', { class: 'thumb-c' });
       c._page = pg;
       c.width = 220;
@@ -3709,6 +3852,8 @@ export async function mountEditor(root, docId, opts = {}) {
               e.stopPropagation();
               popMenu(e.currentTarget, [
                 { label: pg.title ? 'Rename this page' : 'Name this page', icon: I.edit, onClick: () => namePage(pg) },
+                { label: pg.sec ? 'Rename the section' : 'Start a section here', icon: I.list, onClick: () => sectionAt(pg) },
+                pg.sec ? { label: 'Remove the section divider', icon: I.close, onClick: () => { delete pg.sec; dirty(pg); buildPanel(); } } : null,
                 { label: 'Add page after', icon: I.plus, onClick: () => addPageAfter(pvs[i]) },
                 { label: 'Duplicate', icon: I.copy, onClick: () => duplicatePage(i) },
                 { label: 'Move up', icon: I.up, onClick: () => movePage(i, -1) },
@@ -3717,7 +3862,7 @@ export async function mountEditor(root, docId, opts = {}) {
                 { label: 'Select several pages', icon: I.pages, onClick: () => { pickMode = true; picked.add(pg.id); lastPick = i; buildPanel(); } },
                 '-',
                 { label: 'Delete page', icon: I.trash, danger: true, onClick: () => deletePage(i) }
-              ], { align: 'right' });
+              ].filter(Boolean), { align: 'right' });
             }
           })));
       panelList.append(card);
@@ -3889,7 +4034,7 @@ export async function mountEditor(root, docId, opts = {}) {
     sessOrig = sessNow();
   }
 
-  const pgLook = p => JSON.stringify([p.template, p.paper, p.bg || null, p.pdf || null, p.w, p.h]);
+  const pgLook = p => JSON.stringify([p.template, p.paper, p.bg || null, p.pdf || null, p.w, p.h, p.pm || null]);
   const samePg = (a, b) => sameList(a.items, b.items) && pgLook(a) === pgLook(b);
 
   // The pages of the notebook as they were at the start of version k (recs: every version, oldest first).
@@ -3962,6 +4107,7 @@ export async function mountEditor(root, docId, opts = {}) {
     removeItems(cur, old);
     addItems(cur, nu);
     Object.assign(cur, { template: rec.template, paper: rec.paper, bg: rec.bg || null, pdf: rec.pdf || null, w: rec.w, h: rec.h });
+    if (rec.pm) cur.pm = rec.pm; else delete cur.pm;
     if (rec.tpl) cur.tpl = rec.tpl; else delete cur.tpl;
     dirty(cur);
   }
@@ -4027,6 +4173,600 @@ export async function mountEditor(root, docId, opts = {}) {
     await db.putMany('pages', ps);
     await db.put('docs', copy);
     toast(`"${copy.title}" is in your library`, 3500);
+  }
+
+  // --- sections: a named divider that starts at a page
+  async function sectionAt(pg) {
+    const name = await promptText(pg.sec ? 'Rename the section' : 'Name of the section that starts on this page', pg.sec || '', 'For example: Unit 2, Thermodynamics');
+    if (!name || name === pg.sec) return;
+    pg.sec = name;
+    dirty(pg);
+    buildPanel();
+  }
+
+  // --- tags on writing
+  function tagSel(k) {
+    if (!sel) return;
+    const old = sel.items;
+    replaceSel(old, old.map(it => { const o = { ...it, m: Date.now() }; if (k) o.tg = k; else delete o.tg; return o; }));
+  }
+
+  // Tagged things are listed per tag. Strokes tagged together (one selection) count as one entry.
+  async function tagsDialog() {
+    commitText();
+    const groups = [];
+    pages.forEach((pg, i) => {
+      const by = new Map();
+      for (const it of pg.items) {
+        if (!it.tg || !TAGS[it.tg] || lyHidden(it)) continue;
+        const key = it.tg + ':' + (it.t === 's' ? 's' + it.m : it.id); // strokes tagged in one go share a time stamp
+        if (!by.has(key)) by.set(key, { tg: it.tg, pg, i, items: [] });
+        by.get(key).items.push(it);
+      }
+      groups.push(...by.values());
+    });
+    if (!groups.length) { toast('Nothing is tagged yet. Select something, then use the tag button on the bar above it.', 4000); return; }
+    let m = null, only = null;
+    const body = h('div');
+    const draw = () => {
+      const rows = groups.filter(g => !only || g.tg === only || (only === 'todo' && g.tg === 'done'));
+      fill(body,
+        h('div', { class: 'chips' }, h('button', { class: 'chip sm' + (only ? '' : ' on'), type: 'button', onclick: () => { only = null; draw(); } }, `All (${groups.length})`),
+          Object.keys(TAGS).filter(k => k !== 'done').map(k => {
+            const n = groups.filter(g => g.tg === k || (k === 'todo' && g.tg === 'done')).length;
+            return n ? h('button', { class: 'chip sm' + (only === k ? ' on' : ''), type: 'button', onclick: () => { only = k; draw(); } }, h('span', { class: 'chip-sw', style: { background: TAGS[k].c } }), `${TAGS[k].n} (${n})`) : null;
+          })),
+        h('div', { class: 'tag-list' }, rows.map(g => {
+          const c = h('canvas', { class: 'tag-c' });
+          regionCanvas(g.pg, R.unionBounds(g.items), 2, 8).then(src => { c.width = src.width; c.height = src.height; c.getContext('2d').drawImage(src, 0, 0); }).catch(() => {});
+          const todo = g.tg === 'todo' || g.tg === 'done';
+          return h('div', { class: 'tag-row' },
+            todo ? h('input', {
+              type: 'checkbox', checked: g.tg === 'done', title: 'Done', onchange: e => {
+                const nt = e.target.checked ? 'done' : 'todo', nu = g.items.map(it => ({ ...it, tg: nt, m: Date.now() }));
+                clearSel();
+                removeItems(g.pg, g.items); addItems(g.pg, nu);
+                pushUndo({ pageId: g.pg.id, remove: g.items, add: nu });
+                g.items = nu; g.tg = nt;
+                const pv = pvs.find(v => v.page === g.pg); if (pv) queueInk(pv);
+                dirty(g.pg);
+              }
+            }) : h('span', { class: 'tag-dot', style: { background: TAGS[g.tg].c } }, TAGS[g.tg].s),
+            h('button', { class: 'tag-go', type: 'button', title: 'Go to it', onclick: () => { m.close(); goToRect(g.pg, R.unionBounds(g.items)); } }, c),
+            h('span', { class: 'bk-sub' }, `p. ${g.i + 1}`));
+        })));
+    };
+    draw();
+    m = modal({ title: 'Tagged items', wide: true, body });
+  }
+
+  // Scroll so that a spot on a page is in view.
+  function goToRect(pg, r) {
+    const i = pages.indexOf(pg);
+    if (i < 0) return;
+    scrollToPage(i);
+    const [sx, sy] = toScreen(pvs[i], r.x, r.y);
+    let moved = false;
+    if (sy < 70 || sy > vpRect.height - 120) { ty += vpRect.height / 3 - sy; moved = true; }
+    if (sx < 16 || sx > vpRect.width - 60) { tx += vpRect.width / 3 - sx; moved = true; }
+    if (moved) applyView();
+  }
+
+  // A piece of a page as a picture (k = pixels per page unit, pad = extra around it). One page render is reused
+  // for several pieces of the same page.
+  let regionCache = null;
+  async function regionCanvas(pg, r, k = 2, pad = 6, mask) {
+    const key = pg.id + ':' + pg.modified + ':' + k;
+    if (!regionCache || regionCache.key !== key) {
+      const whole = document.createElement('canvas');
+      regionCache = { key, p: R.renderPageTo(pg, whole, pg.w * k).then(() => whole) };
+    }
+    const whole = await regionCache.p;
+    const x = clamp(r.x - pad, 0, pg.w), y = clamp(r.y - pad, 0, pg.h), w = Math.min(pg.w, r.x + r.w + pad) - x, hgt = Math.min(pg.h, r.y + r.h + pad) - y;
+    const c = document.createElement('canvas');
+    c.width = Math.max(1, Math.round(w * k));
+    c.height = Math.max(1, Math.round(hgt * k));
+    const g = c.getContext('2d');
+    g.drawImage(whole, -Math.round(x * k), -Math.round(y * k));
+    if (mask) { // a covered patch: the question side of a flashcard made from a highlight
+      g.fillStyle = '#e9d8a6';
+      g.fillRect((mask.x - x) * k, (mask.y - y) * k, mask.w * k, mask.h * k);
+      g.fillStyle = 'rgba(0,0,0,.35)';
+      g.font = `700 ${Math.min(mask.h * k * 0.8, 30)}px system-ui, sans-serif`;
+      g.textAlign = 'center';
+      g.textBaseline = 'middle';
+      g.fillText('?', (mask.x - x + mask.w / 2) * k, (mask.y - y + mask.h / 2) * k);
+    }
+    return c;
+  }
+
+  // --- excerpt: a boxed part of a page, copied as a picture that links back to where it came from
+  function setOneShot(v) {
+    oneShot = v;
+    vp.classList.toggle('picking-box', !!v);
+  }
+
+  async function endExcerpt(a) {
+    clearLive();
+    live.classList.remove('plain');
+    setOneShot(null);
+    const pg = a.pv.page;
+    const x = clamp(Math.min(a.x0, a.x1), 0, pg.w), y = clamp(Math.min(a.y0, a.y1), 0, pg.h);
+    const w = clamp(Math.max(a.x0, a.x1), 0, pg.w) - x, hgt = clamp(Math.max(a.y0, a.y1), 0, pg.h) - y;
+    if (!a.far || w < 8 || hgt < 8) { toast('Excerpt cancelled'); return; }
+    try {
+      await flush().catch(saveFailed);
+      const c = await regionCanvas(pg, { x, y, w, h: hgt }, Math.min(4, 2400 / Math.max(w, hgt)), 0);
+      const blob = await new Promise(res => c.toBlob(res, 'image/jpeg', 0.9));
+      const asset = { id: uid(), mime: 'image/jpeg', name: 'excerpt.jpg', data: await blob.arrayBuffer(), modified: Date.now() };
+      await db.put('assets', asset);
+      const r2 = v => Math.round(v * 100) / 100;
+      clipItems = [{ id: uid(), t: 'im', a: asset.id, x: r2(x), y: r2(y), w: r2(w), h: r2(hgt), z: nextZ(), m: Date.now(), lk: { d: doc.id, p: pg.id } }];
+      await db.setMeta('clip', clipItems);
+      toast('Excerpt copied. Open the page for your notes (here or in another notebook) and use Paste in the Select tool. Tapping it later jumps back to this page.', 5500);
+      if (prefs.tool === 'lasso') renderOpts();
+    } catch (e) {
+      console.error(e);
+      toast('The excerpt could not be made: ' + e.message);
+    }
+  }
+
+  // --- highlights: everything marked with the highlighter, in one list
+  async function highlightsDialog() {
+    commitText();
+    const rows = [];
+    for (let i = 0; i < pages.length; i++) {
+      const pg = pages[i], hls = pg.items.filter(it => it.t === 's' && it.tool === 'hl' && !lyHidden(it));
+      if (!hls.length) continue;
+      // Strokes that touch (a highlight over several lines, or done in two passes) are one entry.
+      const groups = [];
+      for (const it of hls.map(it => ({ it, b: R.bounds(it) })).sort((m, n) => m.b.y - n.b.y || m.b.x - n.b.x)) {
+        const near = groups.filter(g2 => it.b.x < g2.b.x + g2.b.w + 4 && it.b.x + it.b.w > g2.b.x - 4 && it.b.y < g2.b.y + g2.b.h + 3 && it.b.y + it.b.h > g2.b.y - 3);
+        const g = { items: [it.it, ...near.flatMap(n => n.items)] }; // it may join groups that were apart until now
+        g.b = R.unionBounds(g.items);
+        for (const n of near) groups.splice(groups.indexOf(n), 1);
+        groups.push(g);
+      }
+      let lines = null;
+      if (pg.pdf && !pg.tpl) { try { lines = await pageText(pg.pdf.a, pg.pdf.i); } catch { /* not on this device */ } }
+      for (const g of groups) rows.push({ pg, i, ...g, text: lines ? textUnder(pg, lines, g.items) : '' });
+    }
+    if (!rows.length) { toast('Nothing is highlighted in this notebook yet.'); return; }
+    let m = null;
+    const all = rows.filter(r => r.text).map(r => `p. ${r.i + 1}: ${r.text}`).join('\n\n');
+    m = modal({
+      title: `Highlights (${rows.length})`, wide: true,
+      body: h('div', { class: 'tag-list' }, rows.map(r => {
+        const dot = h('span', { class: 'tag-dot', style: { background: r.items[0].c } });
+        let what;
+        if (r.text) what = h('span', { class: 'hl-text' }, r.text);
+        else {
+          what = h('canvas', { class: 'tag-c' });
+          regionCanvas(r.pg, r.b, 2, 4).then(src => { what.width = src.width; what.height = src.height; what.getContext('2d').drawImage(src, 0, 0); }).catch(() => {});
+        }
+        return h('div', { class: 'tag-row' }, dot,
+          h('button', { class: 'tag-go', type: 'button', title: 'Go to it', onclick: () => { m.close(); goToRect(r.pg, r.b); } }, what),
+          h('span', { class: 'bk-sub' }, `p. ${r.i + 1}`),
+          h('button', { class: 'ic sm', type: 'button', title: 'Make a flashcard: the highlighted part is hidden on the question side', html: I.cards, onclick: e => { addCard({ p: r.pg.id, r: clozeRegion(r.pg, r.b), mk: boxOf(r.b) }); e.currentTarget.disabled = true; } }));
+      })),
+      actions: [
+        all ? { label: 'Copy the text', onClick: async () => { try { await navigator.clipboard.writeText(all); toast('Highlighted text copied'); } catch { toast('This browser would not copy the text.'); } return false; } } : null,
+        { label: `Make ${rows.length} flashcard${rows.length === 1 ? '' : 's'}`, onClick: () => { for (const r of rows) addCard({ p: r.pg.id, r: clozeRegion(r.pg, r.b), mk: boxOf(r.b) }, true); toast(`${rows.length} flashcards added`); } },
+        { label: 'Close', primary: true }
+      ].filter(Boolean)
+    });
+  }
+
+  // The PDF text lying under a highlight.
+  function textUnder(pg, t, items) {
+    const pb = R.pdfBox(pg), out = [];
+    for (const p of t.parts) {
+      const px = p.x + pb.x, py = p.y + pb.y, cy = py + p.h / 2;
+      let a = 1, b = 0; // the covered stretch of this run, as fractions of its width
+      for (const it of items) {
+        const ib = R.bounds(it), m = it.w * 0.5; // bounds carry a margin all round: take it off sideways
+        if (cy < ib.y || cy > ib.y + ib.h) continue;
+        const f0 = clamp((ib.x + m - px) / p.w, 0, 1), f1 = clamp((ib.x + ib.w - m - px) / p.w, 0, 1);
+        if (f1 > f0) { a = Math.min(a, f0); b = Math.max(b, f1); }
+      }
+      if (b - a < 0.04) continue;
+      const s = p.t, i0 = Math.round(a * s.length), i1 = Math.round(b * s.length);
+      // Snap to whole words.
+      let s0 = i0, s1 = i1;
+      while (s0 > 0 && /\S/.test(s[s0 - 1]) && i0 - s0 < 12) s0--;
+      while (s1 < s.length && /\S/.test(s[s1]) && s1 - i1 < 12) s1++;
+      const piece = s.slice(s0, s1).trim();
+      if (piece) out.push(piece);
+    }
+    return out.join(' ').replace(/\s+/g, ' ').slice(0, 600);
+  }
+
+  // --- flashcards: no AI involved. A card is a question (typed, or a picture with a covered patch) and an answer
+  // that is always a live piece of a page, so it follows later edits. They are scheduled in five boxes.
+  const CARD_DAYS = [0, 1, 3, 7, 16, 35];
+  const boxOf = b => ({ x: Math.round(b.x), y: Math.round(b.y), w: Math.round(b.w), h: Math.round(b.h) });
+  // The surroundings shown with a covered highlight: the full width of the page, a few lines above and below.
+  const clozeRegion = (pg, b) => { const y = clamp(b.y - 34, 0, pg.h); return { x: 0, y: Math.round(y), w: pg.w, h: Math.round(Math.min(pg.h, b.y + b.h + 34) - y) }; };
+  const dueCards = () => (doc.cards || []).filter(c => (c.due || 0) <= Date.now() && pages.some(p => p.id === c.p));
+
+  function saveCards(cards) {
+    doc.cards = cards;
+    docDirty = true;
+    changed = true;
+    clearTimeout(saveT);
+    saveT = setTimeout(() => flush().catch(saveFailed), 250);
+  }
+
+  function addCard(c, quiet) {
+    saveCards([...(doc.cards || []), { id: uid(), box: 0, due: 0, ...c }]);
+    if (!quiet) toast('Flashcard added. Study them from More > Flashcards.', 2600);
+  }
+
+  async function cardFromSel() {
+    if (!sel) return;
+    const pg = sel.pv.page, r = boxOf(sel.b);
+    const q = await promptText('Question for this flashcard (the selection is the answer)', '', 'For example: State Newton\'s second law');
+    if (q == null) return;
+    if (q) addCard({ p: pg.id, r, q });
+    else addCard({ p: pg.id, r: clozeRegion(pg, r), mk: r }); // no question typed: hide the selection instead
+  }
+
+  function cardsDialog() {
+    const cards = (doc.cards || []).filter(c => pages.some(p => p.id === c.p));
+    if (!cards.length) {
+      toast('No flashcards yet. Select something and choose More > Make a flashcard, or make them from More > Highlights.', 5000);
+      return;
+    }
+    const due = dueCards();
+    let m = null;
+    m = modal({
+      title: 'Flashcards',
+      body: h('div', null,
+        h('p', { class: 'modal-text' }, `${cards.length} card${cards.length === 1 ? '' : 's'} in this notebook, ${due.length} to review now.`),
+        h('p', { class: 'modal-text small' }, 'Cards you get right come back after 1, 3, 7, 16 and then 35 days. Cards you miss come back the same day.'),
+        h('div', { class: 'row' },
+          h('button', { class: 'btn', type: 'button', onclick: async () => {
+            if (!await confirmBox('Delete all flashcards', `Delete all ${cards.length} flashcards of this notebook? Your pages are not affected.`, 'Delete', true)) return;
+            saveCards([]);
+            m.close();
+          } }, 'Delete all'))),
+      actions: [
+        { label: 'Close' },
+        { label: 'Review all', onClick: () => { studyCards(cards.slice()); } },
+        due.length ? { label: `Study ${due.length} due`, primary: true, onClick: () => { studyCards(due); } } : null
+      ].filter(Boolean)
+    });
+  }
+
+  function studyCards(queue) {
+    let i = 0, shown = false, right = 0, m = null;
+    const body = h('div', { class: 'card-view' });
+    const foot = h('div', { class: 'card-foot' });
+    const grade = g => {
+      const c = queue[i], all = (doc.cards || []).slice(), k = all.findIndex(x => x.id === c.id);
+      if (k >= 0) {
+        const box = g === 0 ? 0 : clamp((c.box || 0) + g, 1, CARD_DAYS.length - 1);
+        all[k] = { ...c, box, due: g === 0 ? Date.now() + 10 * 60e3 : Date.now() + CARD_DAYS[box] * 864e5 };
+        saveCards(all);
+      }
+      if (g) right++;
+      i++;
+      shown = false;
+      draw();
+    };
+    const draw = async () => {
+      if (i >= queue.length) {
+        fill(body, h('p', { class: 'card-done' }, `Done. ${right} of ${queue.length} right.`));
+        fill(foot, h('button', { class: 'btn primary', type: 'button', onclick: () => m.close() }, 'Close'));
+        return;
+      }
+      const c = queue[i], pg = pages.find(p => p.id === c.p);
+      const head = h('div', { class: 'card-head' }, `Card ${i + 1} of ${queue.length}`,
+        h('button', { class: 'ic sm danger', type: 'button', title: 'Delete this card', html: I.trash, onclick: () => { saveCards((doc.cards || []).filter(x => x.id !== c.id)); queue.splice(i, 1); shown = false; draw(); } }));
+      const pic = h('canvas', { class: 'card-c' });
+      const k = Math.min(3, 1500 / Math.max(c.r.w, 1));
+      const put = src => { pic.width = src.width; pic.height = src.height; pic.getContext('2d').drawImage(src, 0, 0); };
+      if (!shown) {
+        if (c.q) fill(body, head, h('p', { class: 'card-q' }, c.q));
+        else { fill(body, head, pic); regionCanvas(pg, c.r, k, 0, c.mk).then(put).catch(() => {}); }
+        fill(foot, h('button', { class: 'btn primary', type: 'button', onclick: () => { shown = true; draw(); } }, 'Show the answer'));
+      } else {
+        fill(body, head, c.q ? h('p', { class: 'card-q' }, c.q) : null, pic);
+        regionCanvas(pg, c.r, k, c.q ? 6 : 0).then(put).catch(() => {});
+        fill(foot,
+          h('button', { class: 'btn', type: 'button', onclick: () => { m.close(); goToRect(pg, c.mk || c.r); } }, 'Open the page'),
+          h('button', { class: 'btn danger', type: 'button', onclick: () => grade(0) }, 'Missed'),
+          h('button', { class: 'btn', type: 'button', onclick: () => grade(1) }, 'Got it'),
+          h('button', { class: 'btn primary', type: 'button', onclick: () => grade(2) }, 'Easy'));
+      }
+    };
+    m = modal({ title: 'Study', wide: true, body: h('div', null, body, foot) });
+    m.el.classList.add('xl');
+    draw();
+  }
+
+  // --- replay: watch a page being written again, stroke by stroke
+  async function replayDialog() {
+    commitText();
+    const pg = currentPv().page;
+    const items = pg.items.filter(it => !lyHidden(it)).slice().sort((a, b) => a.z - b.z);
+    if (!items.length) { toast('There is nothing on this page to replay.'); return; }
+    const k = Math.min(2.5, 1600 / pg.w);
+    const base = document.createElement('canvas'), acc = document.createElement('canvas'), view = h('canvas', { class: 'big-c replay-c' });
+    await R.renderPageTo({ ...pg, items: [] }, base, pg.w * k);
+    await Promise.all(items.filter(it => it.t === 'im').map(it => R.loadImage(it.a)));
+    for (const c of [acc, view]) { c.width = base.width; c.height = base.height; }
+    const A = acc.getContext('2d'), V = view.getContext('2d');
+    let i = 0, n = 0, speed = 1, playing = true, raf = 0, last = 0, open = true;
+    const reset = () => { i = 0; n = 0; A.setTransform(1, 0, 0, 1, 0, 0); A.clearRect(0, 0, acc.width, acc.height); A.drawImage(base, 0, 0); };
+    const show = partial => {
+      V.setTransform(1, 0, 0, 1, 0, 0);
+      V.drawImage(acc, 0, 0);
+      if (partial) { V.setTransform(k, 0, 0, k, 0, 0); R.drawItem(V, partial); }
+    };
+    const bar = h('input', { type: 'range', class: 'mm-range', min: 0, max: items.length, step: 1, value: 0 });
+    const playBtn = h('button', { class: 'ic', type: 'button' });
+    const sync = () => { playBtn.innerHTML = playing ? I.pause : I.play; playBtn.title = playing ? 'Pause' : 'Play'; bar.value = String(i); };
+    const frame = t => {
+      raf = 0;
+      if (!open) return;
+      const dt = Math.min(60, t - (last || t));
+      last = t;
+      if (playing && i < items.length) {
+        const it = items[i], pts = it.t === 's' ? it.p.length / 3 : 0;
+        n += dt * speed * (pts ? 0.22 : 0.012); // points per millisecond; other things pause briefly, then appear
+        if (n >= (pts || 1)) {
+          A.setTransform(k, 0, 0, k, 0, 0);
+          R.drawItem(A, it);
+          i++; n = 0;
+          show(null);
+        } else if (pts) show({ ...it, p: it.p.slice(0, Math.max(1, Math.floor(n)) * 3) });
+        sync();
+      } else if (i >= items.length && playing) { playing = false; sync(); }
+      raf = requestAnimationFrame(frame);
+    };
+    playBtn.onclick = () => { if (i >= items.length) reset(); playing = !playing; sync(); };
+    bar.oninput = () => { // jump to a point in the writing
+      const to = Number(bar.value);
+      reset();
+      A.setTransform(k, 0, 0, k, 0, 0);
+      for (; i < to; i++) R.drawItem(A, items[i]);
+      show(null);
+    };
+    reset();
+    show(null);
+    sync();
+    const speeds = seg([[0.5, '½×'], [1, '1×'], [2, '2×'], [5, '5×']], 1, v => { speed = v; for (const b of speeds.children) b.classList.toggle('on', b.textContent === ({ 0.5: '½×', 1: '1×', 2: '2×', 5: '5×' })[v]); });
+    const m = modal({
+      title: 'Replay', wide: true,
+      body: h('div', null, h('div', { class: 'big-box' }, view), h('div', { class: 'replay-bar' }, playBtn, bar, speeds)),
+      onClose: () => { open = false; cancelAnimationFrame(raf); }
+    });
+    m.el.classList.add('xl');
+    raf = requestAnimationFrame(frame);
+  }
+
+  // --- level and align
+  function levelSel() {
+    if (!sel) return;
+    const strokes = sel.items.filter(it => it.t === 's');
+    let n = 0, sx = 0, sy = 0, sxx = 0, sxy = 0;
+    for (const it of strokes) for (let i = 0; i < it.p.length; i += 3) { const x = it.p[i], y = it.p[i + 1]; n++; sx += x; sy += y; sxx += x * x; sxy += x * y; }
+    const den = n * sxx - sx * sx;
+    if (n < 8 || Math.abs(den) < 1e-6) { toast('Select a line or two of handwriting first.'); return; }
+    const ang = Math.atan((n * sxy - sx * sy) / den); // the slope the writing runs along
+    if (Math.abs(ang) < 0.004) { toast('That writing is already level.'); return; }
+    if (Math.abs(ang) > 0.7) { toast('That is tilted too far to be a line of writing.'); return; }
+    const b = sel.b, old = sel.items;
+    replaceSel(old, old.map(it => R.rotateBy(it, b.x + b.w / 2, b.y + b.h / 2, -ang)));
+    toast(`Turned ${Math.abs(ang * 180 / Math.PI).toFixed(1)}° to level it`);
+  }
+
+  // Handwriting moves as one block; pictures, shapes, text boxes and the like each move on their own.
+  function alignUnits() {
+    const ink = sel.items.filter(it => it.t === 's'), rest = sel.items.filter(it => it.t !== 's');
+    const units = rest.map(it => ({ items: [it], b: R.bounds(it) }));
+    if (ink.length) units.unshift({ items: ink, b: R.unionBounds(ink) });
+    return units;
+  }
+
+  function alignMenu() {
+    if (!sel) return;
+    const lines = [...new Set(R.templateGeometry(sel.pv.page).lines.filter(l => l[1] === l[3]).map(l => l[1]))].sort((a, b) => a - b);
+    const many = alignUnits().length > 1;
+    const items = [
+      many ? { label: 'Line up the left edges', icon: I.align, onClick: () => alignSel('l') } : null,
+      many ? { label: 'Line up the centres', icon: I.align, onClick: () => alignSel('c') } : null,
+      many ? { label: 'Line up the right edges', icon: I.align, onClick: () => alignSel('r') } : null,
+      many ? { label: 'Line up the tops', icon: I.align, onClick: () => alignSel('t') } : null,
+      many ? { label: 'Line up the bottoms', icon: I.align, onClick: () => alignSel('b') } : null,
+      many ? { label: 'Space evenly across', icon: I.flow, onClick: () => alignSel('sx') } : null,
+      many ? { label: 'Space evenly down', icon: I.flow, onClick: () => alignSel('sy') } : null,
+      lines.length ? { label: 'Sit on the nearest ruled line', icon: I.template, onClick: () => alignSel('line', lines) } : null,
+      { label: 'Centre on the page', icon: I.fit, onClick: () => alignSel('page') }
+    ].filter(Boolean);
+    popMenu(selBar, items);
+  }
+
+  function alignSel(how, lines) {
+    if (!sel) return;
+    const units = alignUnits(), pg = sel.pv.page, all = R.unionBounds(sel.items);
+    const move = new Map(); // item -> [dx, dy]
+    const set = (u, dx, dy) => { for (const it of u.items) move.set(it, [dx, dy]); };
+    if (how === 'page') for (const u of units) set(u, (pg.w - all.w) / 2 - all.x, 0);
+    else if (how === 'line') {
+      for (const u of units) {
+        const bottom = u.b.y + u.b.h - (u.items[0].t === 's' ? u.items[0].w : 0); // strokes' bounds include a margin
+        const y = lines.reduce((best, l) => (Math.abs(l - bottom) < Math.abs(best - bottom) ? l : best), lines[0]);
+        set(u, 0, y - 1.5 - bottom);
+      }
+    } else if (how === 'sx' || how === 'sy') {
+      const ax = how === 'sx', s = units.slice().sort((a, b) => (ax ? a.b.x - b.b.x : a.b.y - b.b.y));
+      const total = s.reduce((t, u) => t + (ax ? u.b.w : u.b.h), 0), span = ax ? all.w : all.h, gap = (span - total) / Math.max(1, s.length - 1);
+      let at = ax ? all.x : all.y;
+      for (const u of s) { set(u, ax ? at - u.b.x : 0, ax ? 0 : at - u.b.y); at += (ax ? u.b.w : u.b.h) + gap; }
+    } else {
+      for (const u of units) {
+        const dx = how === 'l' ? all.x - u.b.x : how === 'r' ? all.x + all.w - u.b.x - u.b.w : how === 'c' ? all.x + all.w / 2 - u.b.x - u.b.w / 2 : 0;
+        const dy = how === 't' ? all.y - u.b.y : how === 'b' ? all.y + all.h - u.b.y - u.b.h : 0;
+        set(u, dx, dy);
+      }
+    }
+    const old = sel.items;
+    replaceSel(old, old.map(it => { const [dx, dy] = move.get(it) || [0, 0]; return dx || dy ? R.transformItem(it, 1, 0, 0, dx, dy) : it; }));
+  }
+
+  // --- layers: every item belongs to one; a layer can be hidden or locked. Layer 0 ("Base") always exists.
+  function setLayers(list) {
+    doc.layers = list;
+    docDirty = true;
+    changed = true;
+    clearTimeout(saveT);
+    saveT = setTimeout(() => flush().catch(saveFailed), 250);
+    applyLayers();
+  }
+
+  function applyLayers() {
+    lyOff = new Set(layers().filter(l => l.h).map(l => l.id));
+    lyNo = new Set(layers().filter(l => l.h || l.k).map(l => l.id));
+    R.setHiddenLayers(lyOff);
+    if (!layers().some(l => l.id === curLayer)) curLayer = 0;
+    for (const pv of pvs) if (pv.rs) paintInk(pv);
+    if (panelOpen) fillPanel();
+  }
+
+  function layersDialog() {
+    let m = null;
+    const body = h('div');
+    const draw = () => fill(body,
+      h('p', { class: 'modal-text small' }, 'New writing goes on the layer with the dot. A hidden layer is not shown or exported; a locked one cannot be erased or selected.'),
+      layers().map(l => h('div', { class: 'ly-row' + (l.id === curLayer ? ' on' : '') },
+        h('button', { class: 'ly-pick', type: 'button', title: 'Write on this layer', onclick: () => { curLayer = l.id; try { localStorage.setItem('inkleaf.ly.' + doc.id, String(curLayer)); } catch { /* private mode */ } if (l.h || l.k) patch(l.id, { h: 0, k: 0 }); draw(); } },
+          h('span', { class: 'ly-dot' }), l.n),
+        h('span', { class: 'bk-sub' }, `${pages.reduce((t, p) => t + p.items.filter(it => (it.ly || 0) === l.id).length, 0)} items`),
+        h('button', { class: 'chip sm' + (l.h ? ' on' : ''), type: 'button', onclick: () => patch(l.id, { h: l.h ? 0 : 1 }) }, l.h ? 'Hidden' : 'Shown'),
+        h('button', { class: 'chip sm' + (l.k ? ' on' : ''), type: 'button', onclick: () => patch(l.id, { k: l.k ? 0 : 1 }) }, l.k ? 'Locked' : 'Unlocked'),
+        l.id ? h('button', { class: 'ic sm', type: 'button', title: 'Rename', html: I.edit, onclick: async () => { const n = await promptText('Rename the layer', l.n); if (n) patch(l.id, { n }); } }) : null,
+        l.id ? h('button', { class: 'ic sm danger', type: 'button', title: 'Remove this layer (its items move to Base)', html: I.trash, onclick: () => dropLayer(l.id) }) : null)),
+      h('div', { class: 'row' }, h('button', {
+        class: 'btn', type: 'button', onclick: async () => {
+          const n = await promptText('Name of the new layer', '', 'For example: Labels, Diagram, Teacher\'s corrections');
+          if (!n) return;
+          const id = Math.max(0, ...layers().map(x => x.id)) + 1;
+          curLayer = id;
+          setLayers([...(doc.layers || []), { id, n }]);
+          draw();
+        }
+      }, 'Add a layer')));
+    const patch = (id, o) => {
+      const list = layers().map(x => (x.id === id ? { ...x, ...o } : x));
+      if (list.find(x => x.id === curLayer && (x.h || x.k)) && !o.n) toast('You are writing on that layer: new writing will ' + (o.h ? 'not show' : 'be locked') + ' until you change it back.', 3500);
+      setLayers(list.filter(x => x.id || x.h || x.k)); // Base is stored only when it is hidden or locked
+      draw();
+    };
+    const dropLayer = id => {
+      clearSel();
+      for (const pg of pages) {
+        const mine = pg.items.filter(it => (it.ly || 0) === id);
+        if (!mine.length) continue;
+        const nu = mine.map(it => { const o = { ...it, m: Date.now() }; delete o.ly; return o; });
+        removeItems(pg, mine); addItems(pg, nu);
+        dirty(pg);
+      }
+      setLayers((doc.layers || []).filter(x => x.id !== id));
+      draw();
+    };
+    draw();
+    m = modal({ title: 'Layers', wide: true, body, actions: [{ label: 'Done', primary: true }] });
+  }
+
+  function moveSelToLayer() {
+    if (!sel) return;
+    popMenu(selBar, layers().map(l => ({
+      label: l.n, icon: I.layers, onClick: () => {
+        const old = sel.items;
+        replaceSel(old, old.map(it => { const o = { ...it, m: Date.now() }; if (l.id) o.ly = l.id; else delete o.ly; return o; }));
+        if (l.h || l.k) clearSel();
+      }
+    })));
+  }
+
+  // --- PDF pages: add margins to write in, or trim the white borders so the text is larger
+  function marginDialog() {
+    const pv = currentPv(), pg = pv.page;
+    if (!pg.pdf || pg.tpl) { toast('Go to a PDF page first.'); return; }
+    const st = { side: 'r', size: 0.5, all: false };
+    const all = h('input', { type: 'checkbox', onchange: e => { st.all = e.target.checked; } });
+    const targets = () => (st.all ? pages.filter(p => p.pdf && !p.tpl) : [pg]);
+    const run = async fn => { m.close(); await reshapePdf(targets(), fn); };
+    const m = modal({
+      title: 'PDF margins and crop',
+      body: h('div', null,
+        chipGroup('Add a margin on the', [{ v: 'r', label: 'Right' }, { v: 'l', label: 'Left' }, { v: 'b', label: 'Bottom' }, { v: 't', label: 'Top' }], st.side, v => { st.side = v; }),
+        chipGroup('Margin size', [{ v: 0.25, label: 'Small' }, { v: 0.5, label: 'Medium' }, { v: 1, label: 'As wide as the page' }], st.size, v => { st.size = v; }),
+        h('label', { class: 'check' }, all, 'Do this for every PDF page in the notebook'),
+        h('p', { class: 'modal-text small' }, 'Trimming finds the white border around the print and cuts it off, so the text fills more of the screen. Your writing keeps its place on the PDF either way. "Original size" undoes both.')),
+      actions: [
+        { label: 'Original size', onClick: () => run(async p => ({ l: 0, t: 0, r: 0, b: 0 })) },
+        { label: 'Trim white borders', onClick: () => run(async p => (await trimOf(p)) || p.pm || { l: 0, t: 0, r: 0, b: 0 }) },
+        {
+          label: 'Add margin', primary: true, onClick: () => run(async p => {
+            const o = { l: 0, t: 0, r: 0, b: 0, ...(p.pm || {}) }, pb = R.pdfBox(p);
+            o[st.side] += Math.round((st.side === 'l' || st.side === 'r' ? pb.w : pb.h) * st.size);
+            return o;
+          })
+        }
+      ]
+    });
+  }
+
+  // Give pages new margins (fn returns the new {l, t, r, b} for a page) and keep the writing in place on the PDF.
+  async function reshapePdf(list, fn) {
+    commitText();
+    clearSel();
+    const b = busy('Working on the pages...'), stay = pvs.indexOf(currentPv());
+    try {
+      let n = 0;
+      for (const p of list) {
+        b.set(`Working on the pages... ${++n} of ${list.length}`);
+        const old = { l: 0, t: 0, r: 0, b: 0, ...(p.pm || {}) }, pb = R.pdfBox(p), nu = await fn(p);
+        if (['l', 't', 'r', 'b'].every(k => nu[k] === old[k])) continue;
+        const dx = nu.l - old.l, dy = nu.t - old.t;
+        if (dx || dy) {
+          const items = p.items.slice(), moved = items.map(it => R.transformItem(it, 1, 0, 0, dx, dy));
+          removeItems(p, items);
+          addItems(p, moved);
+        }
+        if (nu.l || nu.t || nu.r || nu.b) p.pm = nu; else delete p.pm;
+        p.w = Math.round((pb.w + nu.l + nu.r) * 100) / 100;
+        p.h = Math.round((pb.h + nu.t + nu.b) * 100) / 100;
+        dirty(p);
+      }
+      undoStack.length = 0; // earlier undo steps would put writing back in the old place
+      redoStack.length = 0;
+      updateUndoUi();
+      for (const v of pvs) v.links = undefined;
+      structureChanged(stay);
+    } finally { b.done(); }
+  }
+
+  // Where the print sits on a PDF page: returns negative margins that cut the white border off, or null.
+  async function trimOf(p) {
+    const pb = R.pdfBox(p), k = 0.6;
+    let c;
+    try { c = await renderPdfPage(p.pdf.a, p.pdf.i, k); } catch { return null; }
+    if (!c) return null;
+    const W = c.width, H = c.height, d = c.getContext('2d').getImageData(0, 0, W, H).data;
+    let x0 = W, y0 = H, x1 = -1, y1 = -1;
+    for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) {
+      const o = (y * W + x) * 4;
+      if (d[o + 3] > 40 && d[o] + d[o + 1] + d[o + 2] < 690) { if (x < x0) x0 = x; if (x > x1) x1 = x; if (y < y0) y0 = y; if (y > y1) y1 = y; }
+    }
+    if (x1 < 0) return null; // a blank page
+    const pad = 10, r = v => Math.round(v);
+    const l = Math.max(0, x0 / k - pad), t = Math.max(0, y0 / k - pad), rt = Math.max(0, pb.w - (x1 + 1) / k - pad), bt = Math.max(0, pb.h - (y1 + 1) / k - pad);
+    if (l + rt < 12 && t + bt < 12) return { l: 0, t: 0, r: 0, b: 0 }; // nothing worth trimming
+    return { l: -r(l), t: -r(t), r: -r(rt), b: -r(bt) };
   }
 
   // --- journal: a page per day, reached through a calendar
@@ -4368,7 +5108,11 @@ export async function mountEditor(root, docId, opts = {}) {
         ...sizes('pen', [0.3, 0.5, 0.7, 1, 1.5], [3, 5, 7, 10, 14], 3)
       ];
     }
-    else if (t === 'hl') kids = [...swatches('hl', HL_COLORS), h('div', { class: 'vsep' }), ...sizes('hl', [3.5, 5.5, 8.5], [7, 11, 15], 14)];
+    else if (t === 'hl') {
+      kids = [...swatches('hl', HL_COLORS), h('div', { class: 'vsep' }), ...sizes('hl', [3.5, 5.5, 8.5], [7, 11, 15], 14), h('div', { class: 'vsep' }),
+        h('span', { class: 'lbl' }, 'On PDF text'),
+        seg([['free', 'Freehand'], ['hl', 'Highlight'], ['ul', 'Underline'], ['st', 'Strike out']], prefs.hl.mode || 'free', v => { prefs.hl.mode = v; savePrefs(); renderOpts(); })];
+    }
     else if (t === 'eraser') {
       kids = [
         seg([['stroke', 'Whole stroke'], ['precise', 'Precise']], prefs.eraser.mode, v => { prefs.eraser.mode = v; savePrefs(); renderOpts(); }),
@@ -4461,7 +5205,7 @@ export async function mountEditor(root, docId, opts = {}) {
       { label: 'Print', icon: I.print, onClick: printDialog },
       '-',
       // On a wide screen these three have their own buttons in the tool row; a phone has no room for them there.
-      narrow ? { label: readOnly ? 'Read-only: on' : 'Read-only: off', icon: I.eye, onClick: () => setReadOnly(!readOnly) } : null,
+      full ? { label: readOnly ? 'Read-only: on' : 'Read-only: off', icon: I.eye, onClick: () => setReadOnly(!readOnly) } : null, // has its own button except in full screen
       narrow ? { label: 'Timer', icon: I.timer, onClick: () => toggleTimer() } : null,
       narrow ? { label: 'Find text', icon: I.search, onClick: openFind } : null,
       narrow ? '-' : null,
@@ -4469,6 +5213,14 @@ export async function mountEditor(root, docId, opts = {}) {
       { label: 'Earlier versions of this notebook', icon: I.history, onClick: versionsDialog },
       { label: 'History of this page', icon: I.history, onClick: historyDialog },
       { label: 'Notebook details', icon: I.info, onClick: async () => { commitText(); await flush().catch(saveFailed); detailsDialog('d', doc.id); } },
+      '-',
+      { label: 'Replay this page', icon: I.play, onClick: replayDialog },
+      { label: 'Highlights', icon: I.hl, onClick: highlightsDialog },
+      { label: 'Tagged items', icon: I.tag, onClick: tagsDialog },
+      { label: 'Flashcards' + ((doc.cards || []).length ? ` (${dueCards().length} due)` : ''), icon: I.cards, onClick: cardsDialog },
+      { label: 'Layers', icon: I.layers, onClick: layersDialog },
+      pages.some(p => p.pdf && !p.tpl) ? { label: 'PDF margins and crop', icon: I.crop, onClick: marginDialog } : null,
+      { label: 'Hold-to-erase button: ' + (prefs.holdErase ? 'on' : 'off'), icon: I.eraser, onClick: () => { prefs.holdErase = !prefs.holdErase; savePrefs(); holdBtn.hidden = !prefs.holdErase; toast(prefs.holdErase ? 'Hold the round button at the bottom left with a finger: the pen erases while it is held' : 'Hold-to-erase button hidden', 3600); } },
       { label: split ? 'Show another notebook beside' : 'Open another notebook beside', icon: I.split, onClick: openBeside },
       split ? { label: 'Close the other notebook', icon: I.close, onClick: () => { location.hash = '#/d/' + doc.id; } } : null,
       '-',
@@ -4645,6 +5397,7 @@ export async function mountEditor(root, docId, opts = {}) {
     keepAwake(false);
     offs.forEach(off => off());
     offImg();
+    R.setHiddenLayers(null);
     if (activeEd === me) activeEd = null;
     try {
       if (changed || !doc.thumb) {
@@ -4663,6 +5416,7 @@ export async function mountEditor(root, docId, opts = {}) {
   showSync(syncStatus());
   bus.emit('editor-open', doc.id);
   bmBtn.classList.add('wide'); // on a phone the bookmark star lives in the pages panel only
+  applyLayers();
   drawTabs();
   setReadOnly(readOnly, true);
   if (TM.open && !split) toggleTimer(true);
