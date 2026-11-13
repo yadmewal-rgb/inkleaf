@@ -48,7 +48,8 @@ const req = r => new Promise((res, rej) => { r.onsuccess = () => res(r.result); 
 // Run fn with the database. If the connection turns out to be dead ("the database connection is closing"),
 // open a new one and try once more. Every operation here is safe to repeat.
 const dead = e => !!e && e.name !== 'QuotaExceededError'
-  && (e.name === 'InvalidStateError' || e.name === 'AbortError' || e.name === 'TransactionInactiveError' || e.aborted || /clos(ing|ed)/i.test(e.message || ''));
+  && (e.name === 'InvalidStateError' || e.name === 'AbortError' || e.name === 'TransactionInactiveError' || e.name === 'UnknownError'
+    || e.aborted || /clos(ing|ed)|connection.*lost/i.test(e.message || '')); // iPad also reports "Connection to Indexed Database server lost"
 async function withDb(fn) {
   try {
     return await fn(await open());
@@ -58,6 +59,12 @@ async function withDb(fn) {
     return fn(await open());
   }
 }
+
+// Coming back to the app (iPad: from another app, or after the screen was off) is when the connection is most
+// often gone. Touch the database straight away so it is reconnected before anything needs saving.
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'visible') withDb(d => req(d.transaction('meta').objectStore('meta').get('prefs'))).catch(() => {});
+});
 
 function write(store, fn) {
   return withDb(d => new Promise((res, rej) => {
