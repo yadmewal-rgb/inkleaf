@@ -372,6 +372,51 @@ button.pageind:hover { background: var(--surface-2); }
 .thumb.picked .pick-mark::after { content: ''; position: absolute; left: 6px; top: 2px; width: 5px; height: 10px; border: solid #fff; border-width: 0 2.5px 2.5px 0; transform: rotate(45deg); }
 .thumb.picked .thumb-c { outline: 3px solid var(--accent); }
 
+/* top row: home, notebook tabs */
+.bar.top { gap: 4px; }
+.tabs { display: flex; align-items: center; gap: 4px; flex: 1 1 0; min-width: 0; overflow-x: auto; scrollbar-width: none; }
+.tabs::-webkit-scrollbar { display: none; }
+.tab {
+  display: flex; align-items: center; flex: 0 1 200px; min-width: 96px; height: 36px; padding: 0 2px 0 10px;
+  border-radius: 10px; background: var(--surface-2); color: var(--muted); cursor: pointer; font-size: 13.5px;
+}
+.tab:hover { color: var(--ink); }
+.tab.on { background: var(--accent-soft); color: var(--ink); cursor: default; flex-shrink: 0.4; }
+.tab-t, .tab .title { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-align: left; }
+.tab .title { max-width: none; font-size: 14px; padding: 6px 2px; }
+.tab .title:hover { background: transparent; }
+.tab-x { flex: none; width: 26px; height: 26px; border: 0; border-radius: 7px; background: transparent; color: inherit; display: inline-flex; align-items: center; justify-content: center; opacity: .65; }
+.tab-x:hover { background: rgba(128, 128, 128, .22); opacity: 1; }
+.tab-x svg { width: 14px; height: 14px; }
+
+/* tool row: fixed groups at both ends, tools and their options scroll between them */
+.lead, .trail { display: flex; align-items: center; gap: 2px; flex: none; position: sticky; z-index: 1; background: var(--surface); }
+.lead { left: 0; }
+.trail { right: 0; padding-left: 6px; }
+.ic.on { background: var(--accent-soft); color: var(--accent); }
+.ed.full .nofull { display: none; }
+.ed.ro .toolset, .ed.ro .opts { opacity: .3; pointer-events: none; }
+.ed.ro .vp { cursor: grab; }
+@media (max-width: 760px) {
+  .ic.wide { display: none; }
+  .tab { min-width: 72px; }
+}
+
+/* the pages panel sits on the left, under the sidebar button */
+.panel { right: auto; left: 0; border-left: 0; border-right: 1px solid var(--line); }
+
+/* timer */
+.timer {
+  top: 10px; right: 10px; z-index: 2; pointer-events: auto; display: flex; align-items: center; gap: 2px; padding: 4px 6px 4px 4px;
+  background: var(--surface); border: 1px solid var(--line); border-radius: 999px; box-shadow: var(--shadow);
+}
+.tm-time { border: 0; background: transparent; font: 600 17px/1 var(--font); font-variant-numeric: tabular-nums; padding: 6px 10px; border-radius: 999px; min-width: 64px; }
+.tm-time:hover { background: var(--surface-2); }
+.timer.done { border-color: var(--danger); animation: tmflash .7s steps(2) 6; }
+.timer.done .tm-time { color: var(--danger); }
+@keyframes tmflash { 50% { background: #ffe3e3; } }
+.ed.full:not(.mini) .timer { top: 66px; }
+
 /* details of a notebook or folder */
 .details .gest-row b { flex: none; max-width: 45%; }
 .details .gest-row span { overflow-wrap: anywhere; }

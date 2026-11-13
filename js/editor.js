@@ -37,6 +37,7 @@ const NOTE_COLORS = ['#ffe066', '#ffc9c9', '#b2f2bb', '#a5d8ff', '#d0bfff'];
 const FILL_COLORS = ['#ffe3e3', '#fff3bf', '#d3f9d8', '#d0ebff', '#e5dbff', '#dee2e6'];
 const HIST_GAP = 5 * 60e3, HIST_MAX = 25, HIST_DAYS = 14; // page history: one snapshot per 5 minutes of writing
 let activeEd = null; // with two notebooks side by side, the one last touched gets the keyboard
+const TM = { open: false, running: false, t0: 0, acc: 0, dur: 0 }; // the timer, shared by every notebook (dur 0 = stopwatch)
 
 const DEFAULTS = {
   noteColor: '#ffe066',
@@ -146,19 +147,31 @@ export async function mountEditor(root, docId, opts = {}) {
   const zgrip = h('div', { class: 'zgrip', title: 'Move', html: I.grip }), zsize = h('div', { class: 'handle', title: 'Resize' });
   const zframe = h('div', { class: 'zframe', hidden: true }, zgrip, zsize);
   overlay.append(eraserCur, selBox, selBar, zframe, laserCv, pullHint, findBar);
+  // Top row: home and the open notebooks as tabs. Second row: sidebar, search and read-only on the left, the
+  // tools in the middle, and timer / bookmark / full screen / add page / share / more on the right.
+  const tabsEl = h('div', { class: 'tabs' });
+  const roBtn = h('button', { class: 'ic wide', type: 'button', onclick: () => setReadOnly(!readOnly), html: I.eye });
+  const timerBtn = h('button', { class: 'ic wide', type: 'button', title: 'Timer', onclick: () => toggleTimer(), html: I.timer });
   const el = h('div', { class: 'ed' },
-    h('div', { class: 'bar' },
-      h('button', { class: 'ic', type: 'button', title: 'Back to library', onclick: exit, html: I.back }),
-      titleBtn, pageInd,
-      h('div', { class: 'grow' }),
-      syncBtn, undoBtn, redoBtn,
-      doc.journal ? h('button', { class: 'ic', type: 'button', title: 'Journal calendar', onclick: () => calendarDialog(), html: I.calendar }) : null,
-      bmBtn,
-      h('button', { class: 'ic', type: 'button', title: 'Full screen (F)', onclick: () => setFull(true), html: I.full }),
-      h('button', { class: 'ic', type: 'button', title: 'Pages', onclick: togglePanel, html: I.pages }),
-      h('button', { class: 'ic', type: 'button', title: 'Add page', onclick: () => addPageAfter(currentPv()), html: I.plus }),
-      h('button', { class: 'ic', type: 'button', title: 'More', onclick: e => moreMenu(e.currentTarget), html: I.more })),
-    h('div', { class: 'bar tools' }, toolsEl, h('div', { class: 'vsep' }), optsEl, h('div', { class: 'grow' }), fullTools),
+    h('div', { class: 'bar top' },
+      h('button', { class: 'ic', type: 'button', title: split ? 'Close this side' : 'Library', onclick: exit, html: split ? I.back : I.home }),
+      tabsEl, pageInd,
+      syncBtn, undoBtn, redoBtn),
+    h('div', { class: 'bar tools' },
+      h('div', { class: 'lead nofull' },
+        h('button', { class: 'ic', type: 'button', title: 'Pages', onclick: togglePanel, html: I.sidebar }),
+        h('button', { class: 'ic wide', type: 'button', title: 'Find text (Ctrl+F)', onclick: () => openFind(), html: I.search }),
+        roBtn),
+      h('div', { class: 'vsep nofull' }),
+      toolsEl, h('div', { class: 'vsep' }), optsEl, h('div', { class: 'grow' }),
+      h('div', { class: 'trail nofull' },
+        doc.journal ? h('button', { class: 'ic', type: 'button', title: 'Journal calendar', onclick: () => calendarDialog(), html: I.calendar }) : null,
+        timerBtn, bmBtn,
+        h('button', { class: 'ic wide', type: 'button', title: 'Full screen (F)', onclick: () => setFull(true), html: I.full }),
+        h('button', { class: 'ic', type: 'button', title: 'Add page', onclick: () => addPageAfter(currentPv()), html: I.addPage }),
+        h('button', { class: 'ic', type: 'button', title: 'Share and export', onclick: e => shareMenu(e.currentTarget), html: I.share }),
+        h('button', { class: 'ic', type: 'button', title: 'More', onclick: e => moreMenu(e.currentTarget), html: I.more })),
+      fullTools),
     h('div', { class: 'stage' }, vp, overlay, zwin, panel),
     fileInp, scanInp);
   if (split) el.classList.add('in-split');
@@ -205,7 +218,9 @@ export async function mountEditor(root, docId, opts = {}) {
   const histOrig = new Map(pages.map(p => [p.id, { t: p.modified, items: p.items.slice() }])); // pages as they were when opened
   const histLast = new Map();   // page id -> when its last history snapshot was taken this session
 
-  const fingerDraws = () => prefs.fingerDraw === true || (prefs.fingerDraw == null && !penSeen);
+  let readOnly = false; // read-only view: nothing that touches the page draws on it
+  try { readOnly = localStorage.getItem('inkleaf.ro.' + doc.id) === '1'; } catch { /* private mode */ }
+  const fingerDraws = () => !readOnly && (prefs.fingerDraw === true || (prefs.fingerDraw == null && !penSeen));
   const inkFor = (pv, color) => (color === INK && R.paperOf(pv.page).dark ? INK_ON_DARK : color);
 
   // ------------------------------------------------------------------ layout & rendering
@@ -987,6 +1002,12 @@ export async function mountEditor(root, docId, opts = {}) {
     ptrs.set(e.pointerId, p);
     stopInertia();
 
+    if (readOnly && e.pointerType !== 'touch') { // reading, not writing: the pen and the mouse just move the page
+      if (e.pointerType === 'pen') lastPenT = performance.now();
+      if (action) cancelAction();
+      startPan(p);
+      return;
+    }
     if (e.pointerType === 'pen') {
       lastPenT = performance.now();
       if (!penSeen) { penSeen = true; prefs.penSeen = true; savePrefs(); }
@@ -1152,7 +1173,7 @@ export async function mountEditor(root, docId, opts = {}) {
     pullHint.hidden = true;
     if (pn.pull >= PULL_PX) { addPageAfter(pvs[pvs.length - 1]); return; }
     const now = performance.now();
-    if (p.type === 'touch' && pn.moved < 8 && now - pn.t0 < 350) { tapAt(e.clientX, e.clientY); return; }
+    if ((p.type === 'touch' || readOnly) && pn.moved < 8 && now - pn.t0 < 350) { tapAt(e.clientX, e.clientY); return; }
     if (snapPage(now - pn.t > 90 ? 0 : pn.vx, pn.i0)) return;
     if (p.type !== 'touch' || now - pn.t > 90) return;
     let vx = pn.vx, vy = pn.vy;
@@ -1200,8 +1221,8 @@ export async function mountEditor(root, docId, opts = {}) {
   function tapAt(cx, cy) {
     const pv = pvAt(cx, cy);
     const [x, y] = toPage(pv, cx, cy);
-    if (prefs.tool === 'text') textTap(pv, x, y);
-    else if (prefs.tool === 'lasso') {
+    if (prefs.tool === 'text' && !readOnly) textTap(pv, x, y);
+    else if (prefs.tool === 'lasso' && !readOnly) {
       const it = topItemAt(pv.page, x, y);
       clearSel();
       if (it) setSel(pv, [it]);
@@ -2493,7 +2514,7 @@ export async function mountEditor(root, docId, opts = {}) {
   }
 
   function zDown(e) {
-    if (!zw || (e.pointerType === 'mouse' && e.button !== 0)) return;
+    if (!zw || readOnly || (e.pointerType === 'mouse' && e.button !== 0)) return;
     e.preventDefault();
     commitText();
     zw.rect = zpad.getBoundingClientRect();
@@ -3685,6 +3706,125 @@ export async function mountEditor(root, docId, opts = {}) {
     updatePick();
   }
 
+  // --- the share button: everything that sends the notebook somewhere
+  function shareMenu(anchor) {
+    popMenu(anchor, [
+      { label: 'Export as PDF', icon: I.pdf, onClick: async () => { commitText(); await flush().catch(saveFailed); exportFlow(doc.id); } },
+      { label: 'Send a copy to a friend', icon: I.send, onClick: async () => { commitText(); await flush().catch(saveFailed); shareNotebook(doc.id); } },
+      { label: 'This page as a picture', icon: I.image, onClick: pagePicture },
+      { label: 'Print', icon: I.print, onClick: printDialog }
+    ], { align: 'right' });
+  }
+
+  // --- tabs: the notebooks that are open, across the top
+  const readTabs = () => { try { return JSON.parse(localStorage.getItem('inkleaf.tabs') || '[]').filter(x => typeof x === 'string'); } catch { return []; } };
+  const saveTabs = ids => { try { localStorage.setItem('inkleaf.tabs', JSON.stringify(ids)); } catch { /* private mode */ } };
+
+  async function drawTabs() {
+    if (split) { tabsEl.replaceChildren(h('div', { class: 'tab on' }, titleBtn)); return; } // side by side: each side shows its own name
+    let ids = readTabs();
+    if (!ids.includes(doc.id)) ids.push(doc.id);
+    while (ids.length > 10) ids.splice(ids.findIndex(id => id !== doc.id), 1); // the oldest other tab makes room
+    const recs = (await Promise.all(ids.map(id => (id === doc.id ? doc : db.get('docs', id))))).filter(d => d && !d.deleted && !d.trashed);
+    if (destroyed) return;
+    saveTabs(recs.map(d => d.id));
+    const x = d => h('button', { class: 'tab-x', type: 'button', title: 'Close this tab', html: I.close, onclick: e => { e.stopPropagation(); closeTab(d.id); } });
+    tabsEl.replaceChildren(...recs.map(d => (d.id === doc.id
+      ? h('div', { class: 'tab on' }, titleBtn, x(d))
+      : h('div', { class: 'tab', title: d.title, onclick: () => switchTab(d.id) }, h('span', { class: 'tab-t' }, d.title), x(d)))));
+    const on = tabsEl.querySelector('.tab.on');
+    if (on && on.scrollIntoView) on.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+  }
+
+  async function switchTab(id) {
+    commitText();
+    await flush().catch(saveFailed);
+    location.hash = '#/d/' + id;
+  }
+
+  async function closeTab(id) {
+    const ids = readTabs(), i = ids.indexOf(id);
+    saveTabs(ids.filter(x => x !== id));
+    if (id !== doc.id) { drawTabs(); return; }
+    const next = ids[i + 1] || ids[i - 1];
+    commitText();
+    await flush().catch(saveFailed);
+    location.hash = next ? '#/d/' + next : doc.folderId ? '#/f/' + doc.folderId : '#/';
+  }
+
+  // --- read-only view
+  function setReadOnly(on, quiet) {
+    if (on) { commitText(); clearSel(); if (action) cancelAction(); }
+    readOnly = on;
+    try { localStorage.setItem('inkleaf.ro.' + doc.id, on ? '1' : '0'); } catch { /* private mode */ }
+    el.classList.toggle('ro', on);
+    roBtn.classList.toggle('on', on);
+    roBtn.title = on ? 'Read-only is on: tap to write again' : 'Read-only: look without leaving marks';
+    eraserCur.hidden = true;
+    if (!quiet) toast(on ? 'Read-only: nothing you touch will draw. Tap the eye to write again.' : 'Writing is on again', 2600);
+  }
+
+  // --- timer: a stopwatch, or a countdown for timed practice. It keeps running when you switch notebooks.
+  let timerEl = null, timerInt = 0;
+  const tmNow = () => TM.acc + (TM.running ? Date.now() - TM.t0 : 0);
+  const tmFmt = ms => { const s = Math.round(ms / 1000), hh = Math.floor(s / 3600); return (hh ? hh + ':' : '') + String(Math.floor(s % 3600 / 60)).padStart(hh ? 2 : 1, '0') + ':' + String(s % 60).padStart(2, '0'); };
+
+  function toggleTimer(open = !TM.open) {
+    TM.open = open;
+    timerBtn.classList.toggle('on', open);
+    clearInterval(timerInt);
+    if (timerEl) { timerEl.remove(); timerEl = null; }
+    if (!open) return;
+    const time = h('button', { class: 'tm-time', type: 'button', title: 'Set a countdown', onclick: setCountdown });
+    const play = h('button', { class: 'ic sm', type: 'button', onclick: () => { if (TM.running) { TM.acc = tmNow(); TM.running = false; } else { if (TM.dur && TM.acc >= TM.dur) TM.acc = 0; TM.t0 = Date.now(); TM.running = true; } tick(); } });
+    const tick = () => {
+      let ms = tmNow();
+      if (TM.dur && TM.running && ms >= TM.dur) { // countdown finished
+        TM.running = false;
+        TM.acc = ms = TM.dur;
+        timerEl.classList.add('done');
+        toast('Time is up', 5000);
+        beep();
+      }
+      time.textContent = tmFmt(TM.dur ? Math.max(0, TM.dur - ms) : ms);
+      play.innerHTML = TM.running ? I.pause : I.play;
+      play.title = TM.running ? 'Pause' : 'Start';
+      if (TM.running) timerEl.classList.remove('done');
+    };
+    timerEl = h('div', { class: 'timer' }, time, play,
+      h('button', { class: 'ic sm', type: 'button', title: 'Reset', html: I.rotate, onclick: () => { TM.acc = 0; TM.t0 = Date.now(); timerEl.classList.remove('done'); tick(); } }),
+      h('button', { class: 'ic sm', type: 'button', title: 'Close the timer', html: I.close, onclick: () => { TM.running = false; TM.acc = 0; toggleTimer(false); } }));
+    overlay.append(timerEl);
+    tick();
+    timerInt = setInterval(tick, 250);
+    async function setCountdown() {
+      const v = await promptText('Countdown in minutes (0 for a stopwatch)', TM.dur ? String(TM.dur / 60000) : '', 'For example 30');
+      if (v == null) return;
+      const m = parseFloat(v);
+      TM.dur = m > 0 ? Math.round(m * 60000) : 0;
+      TM.acc = 0;
+      TM.running = false;
+      timerEl.classList.remove('done');
+      tick();
+    }
+  }
+
+  function beep() {
+    try {
+      const A = new (window.AudioContext || window.webkitAudioContext)();
+      for (let i = 0; i < 3; i++) {
+        const o = A.createOscillator(), g = A.createGain();
+        o.frequency.value = 880;
+        o.connect(g); g.connect(A.destination);
+        g.gain.setValueAtTime(0.25, A.currentTime + i * 0.35);
+        g.gain.setValueAtTime(0, A.currentTime + i * 0.35 + 0.2);
+        o.start(A.currentTime + i * 0.35);
+        o.stop(A.currentTime + i * 0.35 + 0.22);
+      }
+      setTimeout(() => A.close(), 1500);
+    } catch { /* no sound available */ }
+  }
+
   // --- journal: a page per day, reached through a calendar
   function journalGo(key) {
     let i = pages.findIndex(p => p.day === key);
@@ -4097,10 +4237,8 @@ export async function mountEditor(root, docId, opts = {}) {
     const fd = prefs.fingerDraw;
     const label = fd === true ? 'Finger drawing: on' : fd === false ? 'Finger drawing: off' : `Finger drawing: auto (${fingerDraws() ? 'on' : 'off'})`;
     popMenu(anchor, [
-      { label: 'Export as PDF', icon: I.share, onClick: async () => { commitText(); await flush().catch(saveFailed); exportFlow(doc.id); } },
-      { label: 'Send a copy', icon: I.send, onClick: async () => { commitText(); await flush().catch(saveFailed); shareNotebook(doc.id); } },
-      { label: 'This page as a picture', icon: I.image, onClick: pagePicture },
-      { label: 'Print', icon: I.print, onClick: printDialog },
+      { label: readOnly ? 'Read-only: on' : 'Read-only: off', icon: I.eye, onClick: () => setReadOnly(!readOnly) },
+      { label: 'Timer', icon: I.timer, onClick: () => toggleTimer() },
       '-',
       { label: 'Find text', icon: I.search, onClick: openFind },
       pages.some(p => p.pdf && !p.tpl) ? { label: 'PDF contents', icon: I.list, onClick: outlineDialog } : null,
@@ -4144,7 +4282,7 @@ export async function mountEditor(root, docId, opts = {}) {
     const mod = e.ctrlKey || e.metaKey, key = e.key.toLowerCase();
     if (mod && key === 'z') { e.preventDefault(); if (e.shiftKey) redo(); else undo(); }
     else if (mod && (key === 'c' || key === 'x') && sel) { e.preventDefault(); copySel(key === 'x'); }
-    else if (mod && key === 'v') { e.preventDefault(); pasteClip(); }
+    else if (mod && key === 'v') { e.preventDefault(); if (!readOnly) pasteClip(); }
     else if (mod && key === 'y') { e.preventDefault(); redo(); }
     else if (mod && key === 'f') { e.preventDefault(); openFind(); }
     else if (e.key === 'PageDown' || (hz && e.key === 'ArrowRight')) { e.preventDefault(); goPage(1); }
@@ -4154,7 +4292,7 @@ export async function mountEditor(root, docId, opts = {}) {
     else if (e.key === 'Escape') { if (sel) clearSel(); else if (find || !findBar.hidden) closeFind(); else setFull(false); }
     else if (!mod && !e.altKey) {
       const t = { p: 'pen', h: 'hl', e: 'eraser', l: 'lasso', s: 'shape', t: 'text', a: 'tape', k: 'laser' }[key];
-      if (t) setTool(t);
+      if (t) { if (!readOnly) setTool(t); }
       else if (key === 'f') setFull(!full);
       else if (key === 'r') toggleRuler();
       else if (key === 'z') toggleZoom();
@@ -4272,6 +4410,7 @@ export async function mountEditor(root, docId, opts = {}) {
     stopInertia();
     ro.disconnect();
     if (thumbObs) thumbObs.disconnect();
+    clearInterval(timerInt);
     window.removeEventListener('keydown', onKey);
     window.removeEventListener('keyup', onKeyUp);
     document.removeEventListener('visibilitychange', onVisibility);
@@ -4298,6 +4437,10 @@ export async function mountEditor(root, docId, opts = {}) {
   const offs = [bus.on('remote-record', onRemote), bus.on('sync-status', showSync)];
   showSync(syncStatus());
   bus.emit('editor-open', doc.id);
+  bmBtn.classList.add('wide'); // on a phone the bookmark star lives in the pages panel only
+  drawTabs();
+  setReadOnly(readOnly, true);
+  if (TM.open && !split) toggleTimer(true);
 
   vp.addEventListener('pointerdown', onDown);
   vp.addEventListener('pointermove', onMove);

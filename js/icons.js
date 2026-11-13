@@ -62,6 +62,13 @@ export const I = {
   print: s('<path d="M7 9V3h10v6"/><rect x="3" y="9" width="18" height="8" rx="1.5"/><path d="M7 14h10v7H7z"/>'),
   split: s('<rect x="3" y="4" width="18" height="16" rx="1.5"/><path d="M12 4v16"/>'),
   insert: s('<rect x="3" y="3" width="18" height="18" rx="3"/><path d="M12 8v8M8 12h8"/>'),
+  home: s('<path d="M4 11l8-7 8 7"/><path d="M6 10v9h4v-5h4v5h4v-9"/>'),
+  sidebar: s('<rect x="3" y="4" width="18" height="16" rx="2"/><path d="M9.500 4v16"/><path d="M5.500 8h1.500M5.500 11h1.500M5.500 14h1.500"/>'),
+  eye: s('<path d="M2.500 12s3.500-6.500 9.500-6.500S21.500 12 21.500 12s-3.500 6.500-9.500 6.500S2.500 12 2.500 12z"/><circle cx="12" cy="12" r="2.800"/>'),
+  timer: s('<circle cx="12" cy="13.500" r="7.500"/><path d="M12 9.500v4l2.500 2"/><path d="M9.500 3h5M12 3v3M18.500 7l1.500-1.500"/>'),
+  play: s('<path d="M8 5.500v13l10-6.500z" fill="currentColor"/>'),
+  pause: s('<path d="M8.500 5.500v13M15.500 5.500v13" stroke-width="2.600"/>'),
+  addPage: s('<path d="M7 3h7l5 5v11a2 2 0 01-2 2H7a2 2 0 01-2-2V5a2 2 0 012-2z"/><path d="M14 3v5h5"/><path d="M12 11.500v6M9 14.500h6"/>'),
   info: s('<circle cx="12" cy="12" r="9"/><path d="M12 11v6"/><circle cx="12" cy="7.600" r="1" fill="currentColor" stroke="none"/>'),
   calendar: s('<rect x="3" y="5" width="18" height="16" rx="2"/><path d="M3 10h18M8 3v4M16 3v4"/><rect x="7" y="13" width="3.5" height="3.5" rx=".5" fill="currentColor" stroke="none"/>'),
   template: s('<rect x="4" y="3" width="16" height="18" rx="2"/><path d="M8 8h8M8 12h8M8 16h8"/>')
