@@ -1,7 +1,7 @@
 // The library: folders, notebooks, PDF import, search, favourites and tags, the recycle bin.
 import {
   db, newPage, createDoc, createFolder, duplicateDoc, loadPages, COVERS,
-  trashDoc, trashFolder, restoreItem, restorePage, erasePage, deleteDoc, deleteFolder, purgeTrash, TRASH_DAYS, journalPage
+  assetIdsOf, trashDoc, trashFolder, restoreItem, restorePage, erasePage, deleteDoc, deleteFolder, purgeTrash, TRASH_DAYS, journalPage
 } from './db.js';
 import { h, uid, bus, fmtDate, debounce, fill } from './util.js';
 import { I } from './icons.js';
@@ -91,6 +91,121 @@ export function chooseNotebook(title, excludeId) {
     fill();
     m = modal({ title, body: h('div', null, q, list), onClose: () => res(out) });
     q.focus();
+  });
+}
+
+// ---------- details of a notebook or folder
+const fmtSize = b => (b < 1024 ? b + ' B' : b < 1048576 ? Math.round(b / 1024) + ' KB' : b < 1073741824 ? (b / 1048576).toFixed(1) + ' MB' : (b / 1073741824).toFixed(2) + ' GB');
+const fmtWhen = t => (t ? new Date(t).toLocaleString([], { day: 'numeric', month: 'short', year: 'numeric', hour: 'numeric', minute: '2-digit' }) : 'Not recorded');
+const plural = (n, one, many) => `${n.toLocaleString()} ${n === 1 ? one : many || one + 's'}`;
+
+// What a set of notebooks holds: pages, kinds of content, and the space it takes on this device.
+async function measure(docs) {
+  const st = { pages: 0, ink: 0, strokes: 0, hl: 0, text: 0, pics: 0, notes: 0, tables: 0, shapes: 0, tape: 0, bm: 0, assets: new Set(), files: [], fileBytes: 0, missing: 0 };
+  for (const d of docs) {
+    const pages = await loadPages(d);
+    st.pages += pages.length;
+    st.ink += new Blob([JSON.stringify(pages)]).size + (d.thumb ? d.thumb.length : 0);
+    for (const p of pages) {
+      if (p.bm) st.bm++;
+      for (const it of p.items) {
+        if (it.t === 's') { if (it.tool === 'hl') st.hl++; else st.strokes++; }
+        else if (it.t === 'tx') st.text++;
+        else if (it.t === 'im') st.pics++;
+        else if (it.t === 'nt') st.notes++;
+        else if (it.t === 'tb') st.tables++;
+        else if (it.t === 'sh') st.shapes++;
+        else if (it.t === 'tp') st.tape++;
+      }
+    }
+    for (const id of assetIdsOf(pages)) st.assets.add(id);
+  }
+  for (const id of st.assets) {
+    const a = await db.get('assets', id);
+    if (!a || !a.data) { st.missing++; continue; } // not downloaded to this device yet
+    st.fileBytes += a.data.byteLength;
+    if (a.mime === 'application/pdf') st.files.push(`${a.name || 'PDF'} (${fmtSize(a.data.byteLength)})`);
+  }
+  return st;
+}
+
+function contentsLine(st) {
+  const parts = [
+    st.strokes && plural(st.strokes, 'pen stroke'), st.hl && plural(st.hl, 'highlight'), st.text && plural(st.text, 'text box', 'text boxes'),
+    st.pics && plural(st.pics, 'picture'), st.shapes && plural(st.shapes, 'shape'), st.notes && plural(st.notes, 'sticky note'),
+    st.tables && plural(st.tables, 'table'), st.tape && plural(st.tape, 'strip of tape', 'strips of tape')
+  ].filter(Boolean);
+  return parts.length ? parts.join(', ') : 'Nothing written yet';
+}
+
+// kind: 'd' (notebook) or 'f' (folder)
+export async function detailsDialog(kind, id) {
+  const b = busy('Measuring...');
+  let rows, title;
+  try {
+    const allF = await db.all('folders');
+    const pathOf = fid => {
+      const names = [];
+      for (let f = allF.find(x => x.id === fid); f; f = f.parentId ? allF.find(x => x.id === f.parentId) : null) names.unshift(f.name);
+      return ['Library', ...names].join(' / ');
+    };
+    const sizeRows = st => [
+      ['Size on this device', fmtSize(st.ink + st.fileBytes)],
+      ['', `Writing ${fmtSize(st.ink)} · PDFs and pictures ${fmtSize(st.fileBytes)}`],
+      st.missing ? ['', `${plural(st.missing, 'file')} not downloaded to this device yet`] : null
+    ];
+    if (kind === 'd') {
+      const d = await db.get('docs', id), st = await measure([d]);
+      const first = (await loadPages(d))[0];
+      title = d.title;
+      rows = [
+        ['Kind', d.journal ? 'Journal notebook' : st.files.length ? 'Notebook with an imported PDF' : 'Notebook'],
+        ['Location', pathOf(d.folderId)],
+        ['Pages', plural(st.pages, 'page') + (st.bm ? ` (${st.bm} bookmarked)` : '')],
+        ...sizeRows(st),
+        ['Contents', contentsLine(st)],
+        st.files.length ? ['PDF files', st.files.join(', ')] : null,
+        first ? ['Page size', `${Math.round(first.w * 0.3528)} × ${Math.round(first.h * 0.3528)} mm`] : null,
+        ['Created', fmtWhen(d.created)],
+        ['Last edited', fmtWhen(d.modified)],
+        ['Last opened here', openedAt(d.id) ? fmtWhen(openedAt(d.id)) : 'Not on this device'],
+        ['Favourite', d.fav ? 'Yes' : 'No'],
+        d.tags && d.tags.length ? ['Tags', d.tags.map(t => '#' + t).join('  ')] : null
+      ];
+    } else {
+      const f = allF.find(x => x.id === id);
+      const inside = new Set([id]);
+      let grew = true;
+      while (grew) {
+        grew = false;
+        for (const x of allF) if (!x.deleted && !x.trashed && x.parentId && inside.has(x.parentId) && !inside.has(x.id)) { inside.add(x.id); grew = true; }
+      }
+      const docs = (await db.all('docs')).filter(d => !d.deleted && !d.trashed && !d.sys && inside.has(d.folderId));
+      const st = await measure(docs);
+      const newest = docs.reduce((m, d) => Math.max(m, d.modified || 0), 0), oldest = docs.reduce((m, d) => Math.min(m, d.created || Infinity), Infinity);
+      title = f.name;
+      rows = [
+        ['Kind', 'Folder'],
+        ['Location', pathOf(f.parentId)],
+        ['Contains', `${plural(docs.length, 'notebook')}, ${plural(inside.size - 1, 'folder')}`],
+        ['Pages', plural(st.pages, 'page')],
+        ...sizeRows(st),
+        ['Contents', contentsLine(st)],
+        ['Oldest notebook created', docs.length && isFinite(oldest) ? fmtWhen(oldest) : 'None'],
+        ['Last edited', newest ? fmtWhen(newest) : fmtWhen(f.modified)]
+      ];
+    }
+  } catch (e) {
+    console.error(e);
+    b.done();
+    toast('Could not read the details: ' + e.message);
+    return;
+  }
+  b.done();
+  modal({
+    title: 'Details: ' + title,
+    body: h('div', { class: 'gest details' }, rows.filter(Boolean).map(([k, v]) => h('div', { class: 'gest-row' + (k ? '' : ' sub') }, h('b', null, k), h('span', null, v)))),
+    actions: [{ label: 'OK', primary: true }]
   });
 }
 
@@ -313,6 +428,7 @@ export async function mountLibrary(root, folderId, opts = {}) {
       { label: 'Duplicate', icon: I.copy, onClick: async () => { await duplicateDoc(d); render(); } },
       { label: 'Export as PDF', icon: I.share, onClick: () => exportFlow(d.id) },
       { label: 'Send a copy', icon: I.send, onClick: () => shareCopy(d) },
+      { label: 'Details', icon: I.info, onClick: () => detailsDialog('d', d.id) },
       '-',
       { label: 'Move to bin', icon: I.trash, danger: true, onClick: async () => { await trashDoc(d); toast(`"${d.title}" is in the bin for ${TRASH_DAYS} days`); render(); } }
     ], { align: 'right' });
@@ -332,6 +448,7 @@ export async function mountLibrary(root, folderId, opts = {}) {
           if (dest !== undefined && dest !== (f.parentId || null)) { await db.put('folders', { ...f, parentId: dest, modified: Date.now() }); render(); }
         }
       },
+      { label: 'Details', icon: I.info, onClick: () => detailsDialog('f', f.id) },
       '-',
       { label: 'Move to bin', icon: I.trash, danger: true, onClick: async () => { await trashFolder(f); toast(`"${f.name}" and its contents are in the bin`); render(); } }
     ], { align: 'right' });

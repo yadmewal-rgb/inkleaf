@@ -1,6 +1,6 @@
 // The notebook editor: page layout, pan/zoom, stylus/finger/mouse input, tools, selection, undo.
 import { db, newPage, loadPages, trashPage, sysPages, addSysPage, removeSysPage, TRASH_DAYS, dayKey, dayIndex, newDayPage } from './db.js';
-import { chooseNotebook, markOpened } from './library.js';
+import { chooseNotebook, markOpened, detailsDialog } from './library.js';
 import { shareNotebook } from './sync.js';
 import { openPdf } from './pdfrender.js';
 import { h, uid, nextZ, clamp, bus, distSeg, downloadBlob, safeName, debounce, fill } from './util.js';
@@ -4107,6 +4107,7 @@ export async function mountEditor(root, docId, opts = {}) {
       { label: 'Find text', icon: I.search, onClick: openFind },
       pages.some(p => p.pdf && !p.tpl) ? { label: 'PDF contents', icon: I.list, onClick: outlineDialog } : null,
       { label: 'Page history', icon: I.history, onClick: historyDialog },
+      { label: 'Notebook details', icon: I.info, onClick: async () => { commitText(); await flush().catch(saveFailed); detailsDialog('d', doc.id); } },
       { label: split ? 'Show another notebook beside' : 'Open another notebook beside', icon: I.split, onClick: openBeside },
       split ? { label: 'Close the other notebook', icon: I.close, onClick: () => { location.hash = '#/d/' + doc.id; } } : null,
       '-',
