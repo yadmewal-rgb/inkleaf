@@ -242,7 +242,7 @@ export async function mountEditor(root, docId, opts = {}) {
   const lyOf = () => ({ ly: curLayer || undefined });                       // what a newly made item carries
   const lyHidden = it => lyOff.size > 0 && lyOff.has(it.ly || 0);
   const lyBlocked = it => lyNo.size > 0 && lyNo.has(it.ly || 0);            // hidden or locked: cannot be erased or selected
-  const holdBtn = h('button', { class: 'hold-erase', type: 'button', hidden: !prefs.holdErase, title: 'Hold with a finger: the pen erases while this is held', html: I.eraser });
+  const holdBtn = h('button', { class: 'hold-erase', type: 'button', hidden: true, // hold-to-erase was removed as a feature title: 'Hold with a finger: the pen erases while this is held', html: I.eraser });
   {
     const set = on => { holdErase = on; holdBtn.classList.toggle('on', on); };
     holdBtn.addEventListener('pointerdown', e => { e.preventDefault(); try { holdBtn.setPointerCapture(e.pointerId); } catch { /* synthetic pointer */ } set(true); });
@@ -2137,7 +2137,6 @@ export async function mountEditor(root, docId, opts = {}) {
           { label: 'Make a flashcard', icon: I.cards, onClick: cardFromSel },
           { label: 'Level the writing', icon: I.level, onClick: levelSel },
           { label: 'Align and tidy', icon: I.align, onClick: () => alignMenu() },
-          layers().length > 1 ? { label: 'Move to a layer', icon: I.layers, onClick: () => moveSelToLayer() } : null,
           { label: 'Save as a picture', icon: I.image, onClick: selPicture },
           one && one.t === 'nt' ? { label: one.fo ? 'Open the note' : 'Fold the note away', icon: I.note, onClick: () => { const o = { ...one, m: Date.now() }; if (one.fo) delete o.fo; else o.fo = 1; replaceSel([one], [o]); } } : null,
           ...(one && one.t === 'tb' ? [
@@ -4627,8 +4626,8 @@ export async function mountEditor(root, docId, opts = {}) {
   }
 
   function applyLayers() {
-    lyOff = new Set(layers().filter(l => l.h).map(l => l.id));
-    lyNo = new Set(layers().filter(l => l.h || l.k).map(l => l.id));
+    lyOff = new Set(); // layers were removed as a feature: nothing is ever hidden or locked
+    lyNo = new Set();
     R.setHiddenLayers(lyOff);
     if (!layers().some(l => l.id === curLayer)) curLayer = 0;
     for (const pv of pvs) if (pv.rs) paintInk(pv);
@@ -5218,9 +5217,7 @@ export async function mountEditor(root, docId, opts = {}) {
       { label: 'Highlights', icon: I.hl, onClick: highlightsDialog },
       { label: 'Tagged items', icon: I.tag, onClick: tagsDialog },
       { label: 'Flashcards' + ((doc.cards || []).length ? ` (${dueCards().length} due)` : ''), icon: I.cards, onClick: cardsDialog },
-      { label: 'Layers', icon: I.layers, onClick: layersDialog },
       pages.some(p => p.pdf && !p.tpl) ? { label: 'PDF margins and crop', icon: I.crop, onClick: marginDialog } : null,
-      { label: 'Hold-to-erase button: ' + (prefs.holdErase ? 'on' : 'off'), icon: I.eraser, onClick: () => { prefs.holdErase = !prefs.holdErase; savePrefs(); holdBtn.hidden = !prefs.holdErase; toast(prefs.holdErase ? 'Hold the round button at the bottom left with a finger: the pen erases while it is held' : 'Hold-to-erase button hidden', 3600); } },
       { label: split ? 'Show another notebook beside' : 'Open another notebook beside', icon: I.split, onClick: openBeside },
       split ? { label: 'Close the other notebook', icon: I.close, onClick: () => { location.hash = '#/d/' + doc.id; } } : null,
       '-',
@@ -5262,6 +5259,12 @@ export async function mountEditor(root, docId, opts = {}) {
     else if (mod && key === 'v') { e.preventDefault(); if (!readOnly) pasteClip(); }
     else if (mod && key === 'y') { e.preventDefault(); redo(); }
     else if (mod && key === 'f') { e.preventDefault(); openFind(); }
+    else if ((e.key === 'ArrowDown' || e.key === 'ArrowUp') && !hz) { // scroll the page, which matters most in read-only mode
+      e.preventDefault();
+      stopInertia();
+      ty += (e.key === 'ArrowDown' ? -1 : 1) * (e.shiftKey ? vpRect.height * 0.9 : 90);
+      applyView();
+    }
     else if (e.key === 'PageDown' || (hz && e.key === 'ArrowRight')) { e.preventDefault(); goPage(1); }
     else if (e.key === 'PageUp' || (hz && e.key === 'ArrowLeft')) { e.preventDefault(); goPage(-1); }
     else if (e.key === ' ') { e.preventDefault(); spaceDown = true; vp.classList.add('grab'); }

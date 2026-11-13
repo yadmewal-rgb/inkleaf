@@ -1,5 +1,5 @@
 // Offline support: network first, falling back to the cached copy.
-const CACHE = 'inkleaf-v20';
+const CACHE = 'inkleaf-v21';
 const SHELL = [
   './', 'index.html', 'manifest.webmanifest', 'css/app.css',
   'js/app.js', 'js/util.js', 'js/icons.js', 'js/ui.js', 'js/db.js', 'js/render.js',
