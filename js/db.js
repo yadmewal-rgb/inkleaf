@@ -83,9 +83,10 @@ export const db = {
   keys: s => withDb(d => req(d.transaction(s).objectStore(s).getAllKeys())),
   byDoc: docId => withDb(d => req(d.transaction('pages').objectStore('pages').index('docId').getAll(docId))),
   // Saving announces "db-write" so sync can upload the change. Sync's own writes pass silent = true.
-  put: (s, v, silent) => write(s, os => { os.put(v); }).then(() => { if (!silent && s !== 'meta') bus.emit('db-write', s); }),
+  // It names the records written, so sync can upload just those.
+  put: (s, v, silent) => write(s, os => { os.put(v); }).then(() => { if (!silent && s !== 'meta') bus.emit('db-write', { s, ids: [v.id] }); }),
   putMany: (s, arr, silent) => (arr.length
-    ? write(s, os => { for (const v of arr) os.put(v); }).then(() => { if (!silent && s !== 'meta') bus.emit('db-write', s); })
+    ? write(s, os => { for (const v of arr) os.put(v); }).then(() => { if (!silent && s !== 'meta') bus.emit('db-write', { s, ids: arr.map(v => v.id) }); })
     : Promise.resolve()),
   // Store rec only if the saved copy still has the expected "modified" stamp (undefined = must not exist yet).
   putIf: (s, rec, expectModified) => {

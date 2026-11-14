@@ -397,9 +397,12 @@ async function pullChanges() {
   return changed;
 }
 
-// Upload what changed in one notebook (the one being written in).
-async function pushDoc(docId) {
-  const pages = await db.byDoc(docId);
+// Upload what changed in one notebook (the one being written in). only = ids of the pages saved since the last
+// push; reading just those back, not the whole notebook, keeps writing smooth in long notebooks.
+async function pushDoc(docId, only) {
+  const pages = only
+    ? (await Promise.all([...only].map(id => db.get('pages', id)))).filter(p => p && p.docId === docId)
+    : await db.byDoc(docId);
   for (const p of pages) {
     if (p.deleted) continue;
     if (p.pdf && !st['a_' + p.pdf.a]) queueAsset(p.pdf.a, 'up');
@@ -475,15 +478,18 @@ async function tick() {
 // Local saves are counted; a push only counts as done if it finished with nothing newer waiting.
 // Anything that could not be sent (offline, signed out) is retried by the polling loop.
 let writeSeq = 0, pushedSeq = 0;
+// Pages saved here since the last push. null = not known (just started, or a push failed): check every page.
+let savedPages = null;
 
 function pushNow() {
-  const ids = [...openDocs], seq = writeSeq;
+  const ids = [...openDocs], seq = writeSeq, only = savedPages;
+  savedPages = new Set();
   return run(async () => {
     if (!ids.length) return fullPass();
-    for (const id of ids) await pushDoc(id);
+    for (const id of ids) await pushDoc(id, only);
     return false;
   }, false)
-    .then(ok => { if (ok) pushedSeq = Math.max(pushedSeq, seq); });
+    .then(ok => { if (ok) pushedSeq = Math.max(pushedSeq, seq); else savedPages = null; });
 }
 
 function pushSoon(delay = PUSH_MS) {
@@ -512,7 +518,11 @@ export async function initSync() {
 
   if (!wired) {
     wired = true;
-    bus.on('db-write', () => { writeSeq++; if (clientId) pushSoon(); });          // something was saved locally
+    bus.on('db-write', w => {                                                     // something was saved locally
+      writeSeq++;
+      if (savedPages && w && w.s === 'pages') for (const id of w.ids) savedPages.add(id);
+      if (clientId) pushSoon();
+    });
     bus.on('editor-open', id => { openDocs.add(id); if (ready()) { run(pullChanges, false); } schedule(); });
     bus.on('editor-close', id => { openDocs.delete(id); schedule(); });
     window.addEventListener('online', () => { if (ready()) run(fullPass, false); });

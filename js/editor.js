@@ -1,16 +1,14 @@
 // The notebook editor: page layout, pan/zoom, stylus/finger/mouse input, tools, selection, undo.
 import { db, newPage, loadPages, trashPage, sysPages, addSysPage, removeSysPage, TRASH_DAYS, dayKey, dayIndex, newDayPage } from './db.js';
 import { chooseNotebook, markOpened, detailsDialog } from './library.js';
-import { shareNotebook } from './sync.js';
-import { openPdf } from './pdfrender.js';
+import { openPdf, renderPdfPage } from './pdfrender.js';
 import { h, uid, nextZ, clamp, bus, distSeg, downloadBlob, safeName, debounce, fill, imgReady } from './util.js';
 import * as R from './render.js';
-import { renderPdfPage } from './pdfrender.js';
 import { pageLinks, resolveDest, pdfOutline, pageText, textMatches } from './pdftools.js';
 import { I } from './icons.js';
 import { popMenu, popover, confirmBox, promptText, toast, modal, chipGroup, templatePicker, PAPER_OPTS, busy } from './ui.js';
 import { exportFlow } from './export.js';
-import { syncNow, syncStatus, mergePage, mergeDoc } from './sync.js';
+import { syncNow, syncStatus, mergePage, mergeDoc, shareNotebook } from './sync.js';
 
 const GAP = 14, MIN_S = 0.2, MAX_S = 6;
 const COARSE = matchMedia('(pointer: coarse)').matches;
@@ -44,6 +42,7 @@ const TAGS = {
   done: { n: 'Done', c: '#868e96', s: '✓' }
 };
 const SEC_COLORS = ['#1971c2', '#e8590c', '#2f9e44', '#9c36b5', '#e03131', '#0c8599'];
+const fmtWhen = t => new Date(t).toLocaleString([], { day: 'numeric', month: 'short', hour: 'numeric', minute: '2-digit' });
 const TM = { open: false, running: false, t0: 0, acc: 0, dur: 0 }; // the timer, shared by every notebook (dur 0 = stopwatch)
 
 const DEFAULTS = {
@@ -755,12 +754,18 @@ export async function mountEditor(root, docId, opts = {}) {
     applyView();
   }
 
+  // Runs on every frame while scrolling, so it only touches the page (and storage) when something changed.
+  let indShown = '', posSaved = -1;
   function updateIndicator() {
     const i = pvs.indexOf(currentPv());
-    pageInd.textContent = pageInd2.textContent = `${i + 1} / ${pvs.length}`;
+    const txt = `${i + 1} / ${pvs.length}`;
+    if (txt !== indShown) { indShown = txt; pageInd.textContent = pageInd2.textContent = txt; }
     const bm = !!(pvs[i] && pvs[i].page.bm);
     if (bmBtn._on !== bm) { bmBtn._on = bm; bmBtn.innerHTML = bm ? I.starOn : I.star; bmBtn.classList.toggle('star-on', bm); bmBtn.title = bm ? 'Remove bookmark' : 'Bookmark this page'; }
-    try { localStorage.setItem('inkleaf.pos.' + doc.id, String(i)); } catch { /* private mode */ }
+    if (i !== posSaved) {
+      posSaved = i;
+      try { localStorage.setItem('inkleaf.pos.' + doc.id, String(i)); } catch { /* private mode */ }
+    }
   }
 
   // ------------------------------------------------------------------ data changes, undo, saving
@@ -790,10 +795,26 @@ export async function mountEditor(root, docId, opts = {}) {
     page.modified = Date.now();
     dirtyPages.add(page);
     changed = true;
-    clearTimeout(saveT);
-    saveT = setTimeout(() => flush().catch(saveFailed), 250);
+    saveSoon(250);
     if (panelOpen) refreshThumb(page);
     if (zw && zw.pv.page === page) queueZoom();
+  }
+
+  // Saving copies whole pages on the main thread. Done while the pen is moving it makes the ink stutter, so a
+  // save that falls due mid-stroke waits for the pen to lift (endAction runs it), or 4 s of non-stop drawing.
+  let saveWait = 0;
+  function saveSoon(ms) {
+    clearTimeout(saveT);
+    saveT = setTimeout(saveNow, ms);
+  }
+  function saveNow() {
+    clearTimeout(saveT);
+    if (action && !destroyed) {
+      if (!saveWait) saveWait = Date.now();
+      if (Date.now() - saveWait < 4000) { saveT = setTimeout(saveNow, 1000); return; }
+    }
+    saveWait = 0;
+    flush().catch(saveFailed);
   }
 
   let failToastT = 0;
@@ -808,6 +829,7 @@ export async function mountEditor(root, docId, opts = {}) {
 
   async function flush() {
     clearTimeout(saveT);
+    saveWait = 0;
     if (!dirtyPages.size && !docDirty) return;
     const ps = [...dirtyPages];
     dirtyPages.clear();
@@ -825,7 +847,7 @@ export async function mountEditor(root, docId, opts = {}) {
       // Nothing is dropped: the same pages are saved again in a few seconds, for as long as it takes.
       for (const p of ps) if (pages.includes(p)) dirtyPages.add(p);
       if (writeDoc) docDirty = true;
-      if (!destroyed) { clearTimeout(saveT); saveT = setTimeout(() => flush().catch(saveFailed), 3000); }
+      if (!destroyed) saveSoon(3000);
       throw e;
     }
     for (const p of ps) snapshot(p).catch(e => console.warn('Page history not saved', e));
@@ -866,11 +888,11 @@ export async function mountEditor(root, docId, opts = {}) {
       body: h('div', { class: 'hist' },
         h('p', { class: 'modal-text small' }, `Kept on this device for ${HIST_DAYS} days. Restoring can be undone.`),
         arr.map(s => {
-          const c = h('canvas', { class: 'hist-c zoomable', title: 'Tap to see it large', onclick: () => bigPreview({ ...pg, items: s.items }, new Date(s.t).toLocaleString([], { day: 'numeric', month: 'short', hour: 'numeric', minute: '2-digit' })) });
+          const c = h('canvas', { class: 'hist-c zoomable', title: 'Tap to see it large', onclick: () => bigPreview({ ...pg, items: s.items }, fmtWhen(s.t)) });
           R.renderPageTo({ ...pg, items: s.items }, c, 180).catch(() => {});
           return h('div', { class: 'hist-row' }, c,
             h('div', { class: 'hist-meta' },
-              h('b', null, new Date(s.t).toLocaleString([], { day: 'numeric', month: 'short', hour: 'numeric', minute: '2-digit' })),
+              h('b', null, fmtWhen(s.t)),
               h('span', null, `${s.items.length} item${s.items.length === 1 ? '' : 's'}`),
               h('button', { class: 'btn sm', type: 'button', onclick: () => { m.close(); restoreVersion(pv, s); } }, 'Restore this version')));
         }))
@@ -937,7 +959,7 @@ export async function mountEditor(root, docId, opts = {}) {
     }
     const m = mergePage(P, rec);
     if (m === P) { // we already have everything in it; make sure our copy is what is stored
-      if (P.modified !== rec.modified) { dirtyPages.add(P); clearTimeout(saveT); saveT = setTimeout(() => flush().catch(saveFailed), 300); }
+      if (P.modified !== rec.modified) { dirtyPages.add(P); saveSoon(300); }
       return;
     }
     if (sel && sel.pv.page === P) clearSel();
@@ -975,7 +997,7 @@ export async function mountEditor(root, docId, opts = {}) {
     const before = pages.map(p => p.id).join();
     Object.assign(doc, m);
     titleBtn.textContent = doc.title;
-    if (m !== rec) { docDirty = true; clearTimeout(saveT); saveT = setTimeout(() => flush().catch(saveFailed), 300); }
+    if (m !== rec) { docDirty = true; saveSoon(300); }
     orderPages();
     if (pages.map(p => p.id).join() !== before) remoteRebuild();
   }
@@ -1167,8 +1189,7 @@ export async function mountEditor(root, docId, opts = {}) {
   }
 
   function onWheel(e) {
-    e.preventDefault();
-    measure();
+    e.preventDefault(); // (no measure() here: the resize observer keeps vpRect current, and measuring forces a layout per wheel tick)
     stopInertia();
     if (e.ctrlKey || e.metaKey) { zoomAt(e.clientX, e.clientY, Math.exp(-e.deltaY * 0.01)); return; }
     const k = e.deltaMode === 1 ? 32 : 1;
@@ -1214,9 +1235,12 @@ export async function mountEditor(root, docId, opts = {}) {
     // Dragging past the end of the last page (up, or left when side by side): keep count of how far, to offer a new page.
     const over = hz ? tx - wantX : ty - want;
     if (over > 0.5) pan.pull += over; else if ((hz ? dx : dy) > 0) pan.pull = 0;
-    pullHint.hidden = pan.pull < 14;
-    pullHint.textContent = pan.pull >= PULL_PX ? 'Release to add a page' : hz ? 'Pull left to add a page' : 'Pull up to add a page';
-    pullHint.classList.toggle('go', pan.pull >= PULL_PX);
+    const showHint = pan.pull >= 14;
+    if (pullHint.hidden === showHint) pullHint.hidden = !showHint;
+    if (showHint) {
+      const go = pan.pull >= PULL_PX, txt = go ? 'Release to add a page' : hz ? 'Pull left to add a page' : 'Pull up to add a page';
+      if (pullHint.textContent !== txt) { pullHint.textContent = txt; pullHint.classList.toggle('go', go); }
+    }
   }
 
   function endPan(p, e) {
@@ -1375,6 +1399,7 @@ export async function mountEditor(root, docId, opts = {}) {
     else if (a.tool === 'text' && !a.far) textTap(a.pv, a.x0, a.y0);
     else if (a.tool === 'excerpt') endExcerpt(a);
     if (pendingRebuild) remoteRebuild();
+    if (saveWait && !action) saveNow(); // a save held back while the pen was down
   }
 
   // Abandon an unfinished gesture (a second finger arrived, the pen took over, the OS cancelled it).
@@ -1392,6 +1417,7 @@ export async function mountEditor(root, docId, opts = {}) {
     if (a.tool === 'excerpt') setOneShot(null);
     if (a.rule && ruler) rulerLabel();
     if (pendingRebuild) remoteRebuild();
+    if (saveWait && !action) saveNow();
   }
 
   // --- pen & highlighter
@@ -1826,8 +1852,7 @@ export async function mountEditor(root, docId, opts = {}) {
       const b = sel.b;
       sel.k = clamp(Math.max((x - b.x) / b.w, (y - b.y) / b.h), 0.1, 12);
     }
-    nextLive(drawSelLive);
-    positionOverlays();
+    nextLive(() => { drawSelLive(); positionOverlays(); }); // once per frame, however many pen samples arrive
   }
 
   function endLasso(a) {
@@ -2485,7 +2510,8 @@ export async function mountEditor(root, docId, opts = {}) {
   function rulerLabel(len) {
     let deg = Math.round(-ruler.ang * 180 / Math.PI);
     deg = ((deg % 180) + 180) % 180;
-    ruler.lbl.textContent = len != null ? `${Math.round(len * MM)} mm` : `${deg}°`;
+    const txt = len != null ? `${Math.round(len * MM)} mm` : `${deg}°`;
+    if (ruler.lbl.textContent !== txt) ruler.lbl.textContent = txt;
   }
 
   function positionRuler() {
@@ -4005,7 +4031,6 @@ export async function mountEditor(root, docId, opts = {}) {
   const sessNow = () => ({ order: pages.map(p => p.id), pages: new Map(pages.map(p => [p.id, clonePg(p)])) });
   let sessOrig = sessNow(), ver = null, verEntry = null, verList = null, verFresh = false, verChain = Promise.resolve();
   const verKey = t => `ver:${doc.id}:${t}`;
-  const fmtVer = t => new Date(t).toLocaleString([], { day: 'numeric', month: 'short', hour: 'numeric', minute: '2-digit' });
 
   async function verOpen() {
     if (ver) return false;
@@ -4078,14 +4103,14 @@ export async function mountEditor(root, docId, opts = {}) {
         h('div', { class: 'menu flat pick-list' }, recs.map((r, k) => {
           const n = Object.keys(r.pre).length;
           return h('button', { class: 'mi', type: 'button', onclick: async () => { m.close(); versionView(recs, k); } },
-            h('span', { class: 'mi-ic', html: I.history }), 'Before ' + fmtVer(r.t),
+            h('span', { class: 'mi-ic', html: I.history }), 'Before ' + fmtWhen(r.t),
             h('span', { class: 'bk-sub' }, k === recs.length - 1 && ver && ver.t === r.t ? 'start of this session' : `${n} page${n === 1 ? '' : 's'} changed after it`));
         }).reverse()))
     });
   }
 
   async function versionView(recs, k) {
-    const then = await verState(recs, k), when = fmtVer(recs[k].t);
+    const then = await verState(recs, k), when = fmtWhen(recs[k].t);
     const nowIds = new Set(pages.map(p => p.id)), thenIds = new Set(then.map(r => r.id));
     const diff = then.map((r, i) => ({ r, i, cur: pages.find(p => p.id === r.id) })).filter(x => !x.cur || !samePg(x.r, x.cur));
     const added = pages.filter(p => !thenIds.has(p.id)).length;
@@ -4407,8 +4432,7 @@ export async function mountEditor(root, docId, opts = {}) {
     doc.cards = cards;
     docDirty = true;
     changed = true;
-    clearTimeout(saveT);
-    saveT = setTimeout(() => flush().catch(saveFailed), 250);
+    saveSoon(250);
   }
 
   function addCard(c, quiet) {
