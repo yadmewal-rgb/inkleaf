@@ -363,24 +363,41 @@ async function pushRecord(kind, rec) {
   throw new Error('This record keeps changing on another device; it will be sent on the next round.');
 }
 
-// Send a file: to the person's Google Drive when it is linked (and then drop any copy on the sync service, which
-// older versions put there), otherwise to the sync service.
+// Where a file is kept: under 200 MB on the sync service (quick to fetch on every device), bigger ones in the
+// hidden app folder of the person's Google Drive. Every PDF also gets a visible copy in the "Inkleaf" folder of
+// their Drive, so Drive always holds a whole copy. If the service is full, a small file goes to Drive instead.
+// st entry: {sz: bytes, s: version on the service, drive: 1 if in the hidden Drive folder, full: 1 if the service
+// refused it, vis: 1 once the visible copy is done (or not needed)}.
+let BIG = 200 * 1048576;
+export const _setBig = n => { BIG = n; }; // tests use a small limit
+function assetPlaced(s, linked) {
+  if (!s || s.sz == null) return false;
+  const kept = s.sz < BIG || !linked ? !!s.s || (s.full && !!s.drive) : !!s.drive;
+  return kept && (!linked || s.vis || visibleOk === false);
+}
+
 async function pushAsset(id) {
-  const name = 'a_' + id, s = st[name];
-  if (s && ((s.drive && (s.vis || visibleOk === false)) || (await driveToken()) === null)) return;
+  const name = 'a_' + id, linked = !!(await driveToken());
+  if (assetPlaced(st[name], linked)) return;
   const a = await db.get('assets', id);
   if (!a || a.deleted || !a.data) return;
-  if (await driveToken()) {
-    if (!(s && s.drive) && !await driveFind(id)) await driveUpload(id, a.data, a.mime || 'application/octet-stream', a.name || '');
-    st[name] = { drive: 1 };
-    // and a copy of a PDF in the visible "Inkleaf" folder (s.vis once it is there)
-    if (a.mime !== 'application/pdf' || (await visibleCopy(a) && visibleOk)) st[name].vis = 1;
+  const cur = { ...(st[name] || {}), sz: a.data.byteLength };
+  const info = JSON.stringify({ mime: a.mime || '', name: a.name || '' });
+  if ((cur.sz < BIG || !linked) && !cur.s && !cur.full) {
+    try { cur.s = (await putBlob('a', id, new Uint8Array(a.data), { info })).s; }
+    catch (e) { if (e.status !== 507 || !linked) throw e; cur.full = 1; } // the service is full: Drive takes it
+  }
+  if (linked && (cur.sz >= BIG || cur.full) && !cur.drive) {
+    if (!await driveFind(id)) await driveUpload(id, a.data, a.mime || 'application/octet-stream', a.name || '');
+    cur.drive = 1;
+  }
+  if (linked && cur.sz >= BIG) { // a big file does not stay on the service (older versions put everything there)
     const r = await http(server + '/meta/a/' + encodeURIComponent(id), { headers: { Authorization: 'Bearer ' + session.token } });
     if (r.ok) await call('/blob/a/' + encodeURIComponent(id) + '?moved=1', { method: 'DELETE' }).catch(() => {});
-    return;
+    delete cur.s;
   }
-  const j = await putBlob('a', id, new Uint8Array(a.data), { info: JSON.stringify({ mime: a.mime || '', name: a.name || '' }) });
-  st[name] = { lm: a.modified, s: j.s };
+  if (linked && (a.mime !== 'application/pdf' || (await visibleCopy(a) && visibleOk))) cur.vis = 1;
+  st[name] = cur;
 }
 
 // Fetch a file this device lacks. item: its entry on the sync service, if known; otherwise Drive is asked first.
@@ -389,7 +406,7 @@ async function pullAsset(id, item) {
   const have = await db.get('assets', id);
   if (have && (have.data || have.deleted)) { if (!st[name]) st[name] = item && item.s ? { s: item.s } : { drive: 1 }; return false; }
   let rec = null;
-  if (await driveToken()) {
+  if (!(item && item.parts) && await driveToken()) { // a file listed on the service comes from there
     const f = await driveFind(id);
     if (f) {
       const data = await (await drive(`/drive/v3/files/${f.id}?alt=media`)).arrayBuffer();
@@ -550,7 +567,7 @@ async function fullPass() {
   // Every file here goes to Drive once it is linked (files older versions put on the sync service move across);
   // files the pages use but this device lacks are fetched.
   const linked = !!(await driveToken().catch(() => null));
-  for (const id of await db.keys('assets')) { const s = st['a_' + id]; if (!s || (linked && (!s.drive || (!s.vis && visibleOk !== false)))) queueAsset(id, 'up'); }
+  for (const id of await db.keys('assets')) if (!assetPlaced(st['a_' + id], linked)) queueAsset(id, 'up');
   await fetchMissingFiles(await db.all('pages'));
   saveState();
   return changed;
