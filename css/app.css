@@ -685,11 +685,12 @@ button.pageind:hover { background: var(--surface-2); }
 .hlt-head b { font-size: 11px; color: var(--muted); font-weight: 600; }
 .hlt-list { flex: 1; min-width: 0; display: flex; gap: 6px; overflow-x: auto; overscroll-behavior: contain; scrollbar-width: thin; }
 .hlt-chip {
-  flex: none; display: flex; align-items: center; gap: 6px; max-width: 260px; height: 54px; padding: 4px 4px 4px 8px;
+  flex: none; display: flex; align-items: center; gap: 6px; max-width: 380px; height: 100px; padding: 4px 4px 4px 8px;
   border: 1px solid var(--line); border-radius: 10px; background: var(--bg); cursor: pointer;
 }
 .hlt-chip .tag-dot { width: 10px; height: 10px; }
 .hlt-what { flex: 1; min-width: 0; font-size: 12.5px; line-height: 1.3; overflow: hidden; display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; }
-.hlt-pic { display: block; max-height: 44px; max-width: 170px; width: auto; height: auto; border-radius: 4px; }
+.hlt-pic { display: block; max-height: 90px; max-width: 300px; width: auto; height: auto; border-radius: 4px; }
 .hlt-chip .bk-sub { flex: none; margin: 0; font-size: 11px; }
-@media (max-width: 560px) { .hlt-chip { max-width: 200px; } .hlt-head b { display: none; } }
+@media (max-width: 560px) { .hlt-chip { max-width: 260px; height: 76px; } .hlt-pic { max-height: 66px; max-width: 190px; } .hlt-head b { display: none; } }
+.tag-c.hl-shot { max-height: 200px; background: #fff; }

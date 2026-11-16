@@ -4382,12 +4382,9 @@ export async function mountEditor(root, docId, opts = {}) {
       title: `Highlights (${rows.length})`, wide: true,
       body: h('div', { class: 'tag-list' }, rows.map(r => {
         const dot = h('span', { class: 'tag-dot', style: { background: r.items[0].c } });
-        let what;
-        if (r.text) what = h('span', { class: 'hl-text' }, r.text);
-        else {
-          what = h('canvas', { class: 'tag-c' });
-          regionCanvas(r.pg, r.b, 2, 4).then(src => { what.width = src.width; what.height = src.height; what.getContext('2d').drawImage(src, 0, 0); }).catch(() => {});
-        }
+        // A picture of the highlighted lines with a line above and below (read-out PDF text garbles scripts like Hindi).
+        const what = h('canvas', { class: 'tag-c hl-shot' });
+        hlShot(r.pg, r.items).then(src => { what.width = src.width; what.height = src.height; what.getContext('2d').drawImage(src, 0, 0); }).catch(() => {});
         return h('div', { class: 'tag-row' }, dot,
           h('button', { class: 'tag-go', type: 'button', title: 'Go to it', onclick: () => { m.close(); goToRect(r.pg, r.b); } }, what),
           h('span', { class: 'bk-sub' }, `p. ${r.i + 1}`),
@@ -4449,8 +4446,9 @@ export async function mountEditor(root, docId, opts = {}) {
     if (!c.h) return c.r ? { pg, r: c.r, mk: c.mk } : null;
     const hs = new Set(c.h), its = pg.items.filter(it => hs.has(it.id));
     if (!its.length) return null;
-    const mk = boxOf(R.unionBounds(its));
-    return { pg, mk, r: clozeRegion(pg, mk) };
+    const u = R.unionBounds(its), w = Math.max(...its.map(it => it.w || 12)); // bounds carry a stroke width of margin
+    const mk = boxOf({ x: u.x + w * 0.4, y: u.y + w * 0.45, w: Math.max(4, u.w - w * 0.8), h: Math.max(4, u.h - w * 0.9) });
+    return { pg, mk, r: clozeRegion(pg, mk), its };
   }
 
   // --- the tray along the bottom
@@ -4497,17 +4495,48 @@ export async function mountEditor(root, docId, opts = {}) {
     const chip = h('div', { class: 'hlt-chip', title: 'Go to it', onclick: () => goToRect(r.pg, r.b) },
       h('span', { class: 'tag-dot', style: { background: r.items[0].c } }), what,
       h('span', { class: 'bk-sub' }, `p. ${r.i + 1}`), cardToggle(r));
-    (async () => {
-      let text = '';
-      if (r.pg.pdf && !r.pg.tpl) { try { text = textUnder(r.pg, await pageText(r.pg.pdf.a, r.pg.pdf.i), r.items); } catch { /* not on this device yet */ } }
-      if (text) { fill(what, text); return; }
-      const src = await regionCanvas(r.pg, r.b, 1.5, 2); // one scale, so chips of a page share one render
+    hlShot(r.pg, r.items).then(src => {
       const c = h('canvas', { class: 'hlt-pic' });
       c.width = src.width; c.height = src.height;
       c.getContext('2d').drawImage(src, 0, 0);
       fill(what, c);
-    })().catch(() => { fill(what, 'Highlight'); });
+    }).catch(() => { fill(what, 'Highlight'); });
     return chip;
+  }
+
+  // The part of the page that shows a highlight: the highlighted lines plus one line above and one below.
+  // On PDF pages the real text lines are used; elsewhere the highlighter's width stands in for a line.
+  async function hlRegion(pg, items) {
+    const b = R.unionBounds(items), w = Math.max(...items.map(it => it.w || 12));
+    // bounds reach a whole stroke width past the ink's middle; the ink itself covers half of that
+    let y0 = b.y + w / 2 - w * 1.15, y1 = b.y + b.h - w / 2 + w * 1.15;
+    if (pg.pdf && !pg.tpl) {
+      try {
+        const L = textLines(pg, await pageText(pg.pdf.a, pg.pdf.i)).filter(l => l.x < b.x + b.w && l.x + l.w > b.x);
+        const mid = l => l.y + l.h / 2, inside = L.filter(l => mid(l) > b.y && mid(l) < b.y + b.h);
+        if (inside.length) {
+          const top = Math.min(...inside.map(l => l.y)), bot = Math.max(...inside.map(l => l.y + l.h));
+          const lh = inside.reduce((s, l) => s + l.h, 0) / inside.length;
+          const above = L.filter(l => mid(l) < top).sort((p, q) => mid(q) - mid(p))[0];
+          const below = L.filter(l => mid(l) > bot).sort((p, q) => mid(p) - mid(q))[0];
+          // a line far away (the gap before the next question) is not "the line above": show a line's worth of space
+          y0 = above && top - (above.y + above.h) < lh * 2.5 ? above.y - 2 : top - lh * 1.4;
+          y1 = below && below.y - bot < lh * 2.5 ? below.y + below.h + 2 : bot + lh * 1.4;
+          y0 = Math.min(y0, b.y + w / 2 - 2); y1 = Math.max(y1, b.y + b.h - w / 2 + 2); // never cut the highlight itself
+        }
+      } catch { /* PDF text not on this device yet: keep the estimate */ }
+    }
+    const x0 = clamp(b.x + w * 0.3 - 6, 0, pg.w), x1 = clamp(b.x + b.w - w * 0.3 + 6, 0, pg.w);
+    y0 = clamp(y0, 0, pg.h); y1 = clamp(y1, 0, pg.h);
+    return { x: Math.round(x0), y: Math.round(y0), w: Math.max(1, Math.round(x1 - x0)), h: Math.max(1, Math.round(y1 - y0)) };
+  }
+
+  // Pictures of highlights are made one at a time at one scale, so those of the same page share one page render.
+  let shotChain = Promise.resolve();
+  function hlShot(pg, items, mask) {
+    const p = shotChain.then(async () => regionCanvas(pg, await hlRegion(pg, items), 2.5, 0, mask));
+    shotChain = p.catch(() => {});
+    return p;
   }
 
   // The PDF text lying under a highlight.
@@ -4630,11 +4659,11 @@ export async function mountEditor(root, docId, opts = {}) {
       const put = src => { pic.width = src.width; pic.height = src.height; pic.getContext('2d').drawImage(src, 0, 0); };
       if (!shown) {
         if (c.q) fill(body, head, h('p', { class: 'card-q' }, c.q));
-        else { fill(body, head, pic); regionCanvas(pg, c.r, k, 0, c.mk).then(put).catch(() => {}); }
+        else { fill(body, head, pic); (A.its ? hlShot(pg, A.its, c.mk) : regionCanvas(pg, c.r, k, 0, c.mk)).then(put).catch(() => {}); }
         fill(foot, h('button', { class: 'btn primary', type: 'button', onclick: () => { shown = true; draw(); } }, 'Show the answer'));
       } else {
         fill(body, head, c.q ? h('p', { class: 'card-q' }, c.q) : null, pic);
-        regionCanvas(pg, c.r, k, c.q ? 6 : 0).then(put).catch(() => {});
+        (A.its ? hlShot(pg, A.its) : regionCanvas(pg, c.r, k, c.q ? 6 : 0)).then(put).catch(() => {});
         fill(foot,
           h('button', { class: 'btn', type: 'button', onclick: () => { m.close(); goToRect(pg, c.mk || c.r); } }, 'Open the page'),
           h('button', { class: 'btn danger', type: 'button', onclick: () => grade(0) }, 'Missed'),
