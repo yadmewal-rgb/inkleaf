@@ -165,6 +165,7 @@ export async function mountEditor(root, docId, opts = {}) {
   const tray = h('div', { class: 'hltray', hidden: true },
     h('div', { class: 'hlt-head' },
       h('b', null, 'Highlights'), trayCardsBtn,
+      h('button', { class: 'ic sm', type: 'button', title: 'See them full screen', html: I.full, onclick: () => highlightsDialog() }),
       h('button', { class: 'ic sm', type: 'button', title: 'Hide (show again from More > Highlights)', html: I.close, onclick: () => { prefs.hlTray = false; savePrefs(); drawTray(); } })),
     trayList);
   const zgrip = h('div', { class: 'zgrip', title: 'Move', html: I.grip }), zsize = h('div', { class: 'handle', title: 'Resize' });
@@ -241,7 +242,10 @@ export async function mountEditor(root, docId, opts = {}) {
 
   let oneShot = null;     // 'excerpt' while the next drag marks out a part of the page to copy
   let readOnly = false; // read-only view: nothing that touches the page draws on it
-  try { readOnly = localStorage.getItem('inkleaf.ro.' + doc.id) === '1'; } catch { /* private mode */ }
+  // Notebooks can open in view-only, so a phone held in the hand does not draw stray lines. Automatic (null):
+  // on touch devices where fingers would draw (no stylus seen, e.g. phones); an iPad with Apple Pencil opens for writing.
+  const openRead = () => prefs.openRead === true || (prefs.openRead == null && COARSE && !prefs.penSeen && prefs.fingerDraw !== false);
+  try { readOnly = openRead() || localStorage.getItem('inkleaf.ro.' + doc.id) === '1'; } catch { readOnly = openRead(); }
   const fingerDraws = () => !readOnly && (prefs.fingerDraw === true || (prefs.fingerDraw == null && !penSeen));
   const inkFor = (pv, color) => (color === INK && R.paperOf(pv.page).dark ? INK_ON_DARK : color);
 
@@ -4370,7 +4374,8 @@ export async function mountEditor(root, docId, opts = {}) {
   }
 
   // --- highlights: everything marked with the highlighter, in one list
-  async function highlightsDialog() {
+  // focus: ids of strokes of the highlight to show first (a tap on it in the tray).
+  async function highlightsDialog(focus) {
     commitText();
     const rows = [];
     for (let i = 0; i < pages.length; i++) {
@@ -4381,29 +4386,40 @@ export async function mountEditor(root, docId, opts = {}) {
       for (const g of groups) rows.push({ pg, i, ...g, text: lines ? textUnder(pg, lines, g.items) : '' });
     }
     if (!rows.length) { toast('Nothing is highlighted in this notebook yet.'); return; }
-    let m = null;
+    // Full screen: every highlight as a full-width picture, one under the other, in page order. X closes it.
     const all = rows.filter(r => r.text).map(r => `p. ${r.i + 1}: ${r.text}`).join('\n\n');
-    m = modal({
-      title: `Highlights (${rows.length})`, wide: true,
-      body: h('div', { class: 'tag-list' }, rows.map(r => {
-        const dot = h('span', { class: 'tag-dot', style: { background: r.items[0].c } });
-        // A picture of the highlighted lines with a line above and below (read-out PDF text garbles scripts like Hindi).
-        const what = h('canvas', { class: 'tag-c hl-shot' });
-        hlShot(r.pg, r.items).then(src => { what.width = src.width; what.height = src.height; what.getContext('2d').drawImage(src, 0, 0); }).catch(() => {});
-        return h('div', { class: 'tag-row' }, dot,
-          h('button', { class: 'tag-go', type: 'button', title: 'Go to it', onclick: () => { m.close(); goToRect(r.pg, r.b); } }, what),
-          h('span', { class: 'bk-sub' }, `p. ${r.i + 1}`),
-          cardToggle(r));
-      })),
-      actions: [
-        all ? { label: 'Copy the text', onClick: async () => { try { await navigator.clipboard.writeText(all); toast('Highlighted text copied'); } catch { toast('This browser would not copy the text.'); } return false; } } : null,
-        prefs.hlTray === false ? { label: 'Show them at the bottom', onClick: () => { prefs.hlTray = true; savePrefs(); drawTray(); } } : null,
-        { label: 'Highlights notebook', onClick: () => { highlightsNotebook(); } },
-        { label: 'Export as PDF', onClick: () => { exportPdf(); } },
-        rows.some(r => !groupCard(r)) ? { label: 'Make the missing flashcards', onClick: () => { const n = rows.filter(r => !groupCard(r)); for (const r of n) setGroupCard(r, true); toast(`${n.length} flashcard${n.length === 1 ? '' : 's'} added`); } } : null,
-        { label: 'Close', primary: true }
-      ].filter(Boolean)
-    });
+    const close = () => { view.remove(); document.removeEventListener('keydown', onEsc, true); };
+    const onEsc = e => { if (e.key === 'Escape') { e.stopPropagation(); close(); } };
+    const btn = (label, fn, cls = 'btn sm') => h('button', { class: cls, type: 'button', onclick: fn }, label);
+    let target = null;
+    const list = h('div', { class: 'hlv-list' }, rows.map(r => {
+      const pic = h('canvas', { class: 'hlv-pic' });
+      hlShot(r.pg, r.items).then(src => { pic.width = src.width; pic.height = src.height; pic.getContext('2d').drawImage(src, 0, 0); }).catch(() => {});
+      const card = h('div', { class: 'hlv-card' },
+        h('div', { class: 'hlv-bar' },
+          h('span', { class: 'tag-dot', style: { background: r.items[0].c } }),
+          h('b', null, `Page ${r.i + 1}`),
+          h('div', { class: 'grow' }),
+          cardToggle(r),
+          btn('Go to it', () => { close(); goToRect(r.pg, r.b); })),
+        pic);
+      if (focus && r.items.some(it => focus.has(it.id))) target = card;
+      return card;
+    }));
+    const view = h('div', { class: 'hlview' },
+      h('div', { class: 'hlv-head' },
+        h('b', { class: 'hlv-title' }, `Highlights (${rows.length})`),
+        h('div', { class: 'hlv-acts' },
+          all ? btn('Copy the text', async () => { try { await navigator.clipboard.writeText(all); toast('Highlighted text copied'); } catch { toast('This browser would not copy the text.'); } }) : null,
+          prefs.hlTray === false ? btn('Show them on screen', () => { prefs.hlTray = true; savePrefs(); drawTray(); }) : null,
+          btn('Highlights notebook', () => { close(); highlightsNotebook(); }),
+          btn('Export as PDF', () => { close(); exportPdf(); }),
+          rows.some(r => !groupCard(r)) ? btn('Make the missing flashcards', e => { const n = rows.filter(r => !groupCard(r)); for (const r of n) setGroupCard(r, true); toast(`${n.length} flashcard${n.length === 1 ? '' : 's'} added`); e.currentTarget.remove(); close(); highlightsDialog(); }) : null),
+        h('button', { class: 'ic hlv-x', type: 'button', title: 'Close (Esc)', html: I.close, onclick: close })),
+      list);
+    el.append(view);
+    document.addEventListener('keydown', onEsc, true);
+    if (target) requestAnimationFrame(() => target.scrollIntoView({ block: 'center' }));
   }
 
   // Highlighter strokes that touch (a highlight over several lines, or done in two passes) count as one highlight.
@@ -4467,6 +4483,8 @@ export async function mountEditor(root, docId, opts = {}) {
     trayCardsBtn.title = on ? 'New highlights become flashcards by themselves (tap to stop)' : 'Tap to make new highlights into flashcards by themselves';
   }
   function queueTray() { clearTimeout(trayT); trayT = setTimeout(drawTray, 350); }
+  const TRAY_SIDE = matchMedia('(pointer: fine) and (min-width: 1000px)');
+  TRAY_SIDE.addEventListener('change', () => { if (!destroyed) drawTray(); });
 
   async function drawTray() {
     clearTimeout(trayT);
@@ -4493,13 +4511,18 @@ export async function mountEditor(root, docId, opts = {}) {
       for (const [k, v] of keep) trayChips.set(k, v);
       trayList.replaceChildren(...out);
     }
-    const hh = tray.hidden ? 0 : tray.offsetHeight;
+    // On a laptop's wide screen the tray is a column down the right side (the page area narrows to make room);
+    // elsewhere it is a strip along the bottom.
+    const side = TRAY_SIDE.matches;
+    tray.classList.toggle('side', side);
+    el.classList.toggle('tray-side', side && !tray.hidden);
+    const hh = tray.hidden || side ? 0 : tray.offsetHeight;
     if (hh !== trayH) { trayH = hh; applyView(); }
   }
 
   function trayChip(r) {
     const what = h('span', { class: 'hlt-what' }, '…');
-    const chip = h('div', { class: 'hlt-chip', title: 'Go to it', onclick: () => goToRect(r.pg, r.b) },
+    const chip = h('div', { class: 'hlt-chip', title: 'See it large', onclick: () => highlightsDialog(new Set(r.items.map(it => it.id))) },
       h('span', { class: 'tag-dot', style: { background: r.items[0].c } }), what,
       h('span', { class: 'bk-sub' }, `p. ${r.i + 1}`), cardToggle(r));
     hlShot(r.pg, r.items).then(src => {
@@ -4517,10 +4540,14 @@ export async function mountEditor(root, docId, opts = {}) {
     const b = R.unionBounds(items), w = Math.max(...items.map(it => it.w || 12));
     // bounds reach a whole stroke width past the ink's middle; the ink itself covers half of that
     let y0 = b.y + w / 2 - w * 1.15, y1 = b.y + b.h - w / 2 + w * 1.15;
-    let x0 = b.x + w * 0.3 - 6, x1 = b.x + b.w - w * 0.3 + 6;
+    // Every picture spans the page's whole text width, so all of them come out the same width and the same size
+    // of writing: on a PDF page from its leftmost to its rightmost text, elsewhere the whole page.
+    let x0 = 0, x1 = pg.w;
     if (pg.pdf && !pg.tpl) {
       try {
-        const L = textLines(pg, await pageText(pg.pdf.a, pg.pdf.i)).filter(l => l.x < b.x + b.w && l.x + l.w > b.x);
+        const all = textLines(pg, await pageText(pg.pdf.a, pg.pdf.i));
+        if (all.length) { x0 = Math.min(...all.map(l => l.x)) - 16; x1 = Math.max(...all.map(l => l.x + l.w)) + 16; } // the same margin for every highlight
+        const L = all.filter(l => l.x < b.x + b.w && l.x + l.w > b.x);
         const mid = l => l.y + l.h / 2, inside = L.filter(l => mid(l) > b.y && mid(l) < b.y + b.h);
         if (inside.length) {
           const top = Math.min(...inside.map(l => l.y)), bot = Math.max(...inside.map(l => l.y + l.h));
@@ -4531,10 +4558,6 @@ export async function mountEditor(root, docId, opts = {}) {
           y0 = above && top - (above.y + above.h) < lh * 2.5 ? above.y - 2 : top - lh * 1.4;
           y1 = below && below.y - bot < lh * 2.5 ? below.y + below.h + 2 : bot + lh * 1.4;
           y0 = Math.min(y0, b.y + w / 2 - 2); y1 = Math.max(y1, b.y + b.h - w / 2 + 2); // never cut the highlight itself
-          // whole lines, as far as they go, so no sentence is cut off at the side
-          const shown = L.filter(l => mid(l) > y0 && mid(l) < y1);
-          x0 = Math.min(x0, ...shown.map(l => l.x - 4));
-          x1 = Math.max(x1, ...shown.map(l => l.x + l.w + 4));
         }
       } catch { /* PDF text not on this device yet: keep the estimate */ }
     }
@@ -4598,7 +4621,7 @@ export async function mountEditor(root, docId, opts = {}) {
       pg.items.push({ id: uid(), t: 'tx', x: M, y, w: W - 2 * M, s: `Highlights of “${doc.title}” (${cards.length})`, fs: 18, b: 1, c: INK, z: nextZ(), m: t });
       y += 40;
       for (const c of cards) {
-        let w = Math.min(W - 2 * M, c.w), hh = c.h * w / c.w;
+        let w = W - 2 * M, hh = c.h * w / c.w; // every card the full width of the sheet
         if (hh > H - 2 * M - 30) { hh = H - 2 * M - 30; w = c.w * hh / c.h; }
         if (y + 16 + hh > H - M) {
           pg = newPage(nd.id, { w: W, h: H, template: 'blank', paper: 'white' });
@@ -4627,7 +4650,7 @@ export async function mountEditor(root, docId, opts = {}) {
 
   let shotChain = Promise.resolve();
   function hlShot(pg, items, mask) {
-    const p = shotChain.then(async () => regionCanvas(pg, await hlRegion(pg, items), 2.5, 0, mask));
+    const p = shotChain.then(async () => regionCanvas(pg, await hlRegion(pg, items), 3.5, 0, mask)); // sharp at full screen width
     shotChain = p.catch(() => {});
     return p;
   }
@@ -5425,7 +5448,7 @@ export async function mountEditor(root, docId, opts = {}) {
       { label: 'Notebook details', icon: I.info, onClick: async () => { commitText(); await flush().catch(saveFailed); detailsDialog('d', doc.id); } },
       '-',
       { label: 'Replay this page', icon: I.play, onClick: replayDialog },
-      { label: 'Highlights', icon: I.hl, onClick: highlightsDialog },
+      { label: 'Highlights', icon: I.hl, onClick: () => highlightsDialog() },
       { label: 'Tagged items', icon: I.tag, onClick: tagsDialog },
       { label: 'Flashcards' + ((doc.cards || []).length ? ` (${dueCards().length} due)` : ''), icon: I.cards, onClick: cardsDialog },
       pages.some(p => p.pdf && !p.tpl) ? { label: 'PDF margins and crop', icon: I.crop, onClick: marginDialog } : null,
@@ -5453,6 +5476,13 @@ export async function mountEditor(root, docId, opts = {}) {
           prefs.fingerDraw = fd == null ? !fingerDraws() : fd === true ? false : null;
           savePrefs();
           toast(prefs.fingerDraw === true ? 'Fingers draw' : prefs.fingerDraw === false ? 'Fingers scroll, stylus draws' : 'Automatic: fingers scroll once a stylus is used');
+        }
+      },
+      {
+        label: 'Open notebooks view-only: ' + (prefs.openRead === true ? 'always' : prefs.openRead === false ? 'never' : `auto (${openRead() ? 'on' : 'off'} here)`), icon: I.eye, onClick: () => {
+          prefs.openRead = prefs.openRead == null ? !openRead() : prefs.openRead === true ? false : null;
+          savePrefs();
+          toast(prefs.openRead === true ? 'Notebooks open view-only. Tap the eye to write.' : prefs.openRead === false ? 'Notebooks open ready to write' : 'Automatic: view-only on devices where fingers draw (phones)', 3200);
         }
       },
       '-',

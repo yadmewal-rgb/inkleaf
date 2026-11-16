@@ -112,7 +112,7 @@ export async function buildPdf(doc, pages, progress, front) {
     for (let n = 0; n < front.cards.length; n++) {
       const c = front.cards[n];
       if (progress) progress(n + 1, front.cards.length, 'highlight');
-      let w = Math.min(W - 2 * M, c.w), hh = c.h * w / c.w;
+      let w = W - 2 * M, hh = c.h * w / c.w; // every card the full width of the sheet
       if (hh > H - 2 * M - 40) { hh = H - 2 * M - 40; w = c.w * hh / c.h; }
       if (y - 14 - hh - 6 < M) newSheet();
       sheet.drawText(c.label, { x: M, y: y - 10, size: 9, font, color: grey });

@@ -694,3 +694,29 @@ button.pageind:hover { background: var(--surface-2); }
 .hlt-chip .bk-sub { flex: none; margin: 0; font-size: 11px; }
 @media (max-width: 560px) { .hlt-chip { max-width: 260px; height: 76px; } .hlt-pic { max-height: 66px; max-width: 190px; } .hlt-head b { display: none; } }
 .tag-c.hl-shot { max-height: 200px; background: #fff; }
+
+/* Tray as a column down the right side (laptops). The page area narrows so nothing hides behind it. */
+.hltray.side { left: auto; top: 0; width: 330px; flex-direction: column; border-top: 0; border-left: 1px solid var(--line); box-shadow: -3px 0 12px rgba(0, 0, 0, .08); padding: 8px; }
+.hltray.side .hlt-head { border-right: 0; border-bottom: 1px solid var(--line); padding: 0 0 6px; }
+.hltray.side .hlt-head b { margin-right: auto; }
+.hltray.side .hlt-list { flex-direction: column; overflow-x: hidden; overflow-y: auto; }
+.hltray.side .hlt-chip { max-width: none; height: auto; flex-wrap: wrap; padding: 6px; }
+.hltray.side .hlt-what { flex-basis: 100%; order: 5; display: block; -webkit-line-clamp: unset; }
+.hltray.side .hlt-pic { max-width: 100%; max-height: none; width: 100%; }
+.ed.tray-side .stage > .vp, .ed.tray-side .stage > .overlay { right: 330px; }
+
+/* Highlights, full screen: one full-width picture per highlight, one under the other. */
+.hlview { position: fixed; inset: 0; z-index: 60; display: flex; flex-direction: column; background: var(--desk, #e9e7e2); }
+.hlv-head {
+  flex: none; display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+  padding: calc(8px + env(safe-area-inset-top)) max(12px, env(safe-area-inset-right)) 8px max(12px, env(safe-area-inset-left));
+  background: var(--surface); border-bottom: 1px solid var(--line);
+}
+.hlv-title { font-size: 17px; }
+.hlv-acts { flex: 1; display: flex; gap: 6px; flex-wrap: wrap; }
+.hlv-x { flex: none; }
+.hlv-list { flex: 1; min-height: 0; overflow-y: auto; padding: 14px max(12px, env(safe-area-inset-right)) calc(24px + env(safe-area-inset-bottom)) max(12px, env(safe-area-inset-left)); }
+.hlv-card { max-width: 980px; margin: 0 auto 14px; background: var(--surface); border: 1px solid var(--line); border-radius: 12px; overflow: hidden; }
+.hlv-bar { display: flex; align-items: center; gap: 8px; padding: 6px 8px 6px 12px; border-bottom: 1px solid var(--line); }
+.hlv-bar .tag-dot { width: 12px; height: 12px; }
+.hlv-pic { display: block; width: 100%; height: auto; background: #fff; }
