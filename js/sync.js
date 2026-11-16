@@ -876,7 +876,7 @@ export async function openSettings() {
   const usage = h('div', { class: 'usage', hidden: true });
   if (session && !cfg.off && navigator.onLine) {
     call('/me').then(r => r.json()).then(j => {
-      const fmt = b => (b >= 1024 ** 3 ? (b / 1024 ** 3).toFixed(2) + ' GB' : b >= 1048576 ? Math.round(b / 1048576) + ' MB' : Math.max(1, Math.round(b / 1024)) + ' KB');
+      const fmt = b => (b >= 1048576 ? Math.round(b / 1048576) + ' MB' : Math.max(1, Math.round(b / 1024)) + ' KB'); // in MB, as the shares are set
       const quota = Number(j.quota) || 500 * 1048576, used = Number(j.bytes) || 0, pct = Math.min(100, used / quota * 100);
       usage.replaceChildren(
         h('div', { class: 'usage-text' }, `Space used on the sync service: ${fmt(used)} of ${fmt(quota)} (${pct < 1 ? pct.toFixed(1) : Math.round(pct)}%)`,
