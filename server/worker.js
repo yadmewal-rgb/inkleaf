@@ -153,7 +153,13 @@ export class User extends DurableObject {
   }
 
   usedBytes() { return Number(this.sql.exec('SELECT COALESCE(SUM(size), 0) AS b FROM recs WHERE size > 0').toArray()[0].b); }
-  quota() { return (Number(this.env.QUOTA_MB) || 500) * 1048576; }
+  // Each person's share of the service: QUOTA_MB, except the owner (the first address in ALLOWED), who gets
+  // OWNER_QUOTA_MB. The owner's address stays in the ALLOWED secret, never in the code.
+  quota() {
+    const owner = (this.env.ALLOWED || '').split(',')[0].trim().toLowerCase();
+    const mine = owner && owner === String(this.kvGet('email') || '').toLowerCase();
+    return (Number(mine ? this.env.OWNER_QUOTA_MB : this.env.QUOTA_MB) || Number(this.env.QUOTA_MB) || 500) * 1048576;
+  }
 
   async session(token) {
     const secret = String(token || '').split('.')[1];

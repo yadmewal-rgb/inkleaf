@@ -2,7 +2,7 @@
 // (Workers > Create > Import a repository, root directory "server").
 // Set in the Cloudflare dashboard as secrets, never here: ALLOWED (allowed e-mail addresses, comma separated)
 // and GOOGLE_SECRET (the client secret of Inkleaf's Google OAuth client, so files can be kept in each person's Drive).
-// QUOTA_MB: each person's share of Cloudflare storage.
+// QUOTA_MB: each person's share of Cloudflare storage; OWNER_QUOTA_MB for the first address in ALLOWED.
 {
   "name": "inkleaf-sync",
   "main": "worker.js",
@@ -13,6 +13,7 @@
   "migrations": [{ "tag": "v1", "new_sqlite_classes": ["User"] }],
   "vars": {
     "ORIGINS": "https://yadmewal-rgb.github.io,http://localhost:8080",
-    "QUOTA_MB": "500"
+    "QUOTA_MB": "500",
+    "OWNER_QUOTA_MB": "2000"
   }
 }
