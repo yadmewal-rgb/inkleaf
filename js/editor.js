@@ -1,5 +1,5 @@
 // The notebook editor: page layout, pan/zoom, stylus/finger/mouse input, tools, selection, undo.
-import { db, newPage, createDoc, loadPages, trashPage, sysPages, addSysPage, removeSysPage, TRASH_DAYS, dayKey, dayIndex, newDayPage } from './db.js';
+import { db, newPage, createDoc, duplicateDoc, loadPages, trashPage, sysPages, addSysPage, removeSysPage, TRASH_DAYS, dayKey, dayIndex, newDayPage } from './db.js';
 import { chooseNotebook, markOpened, detailsDialog } from './library.js';
 import { openPdf, renderPdfPage } from './pdfrender.js';
 import { h, uid, nextZ, clamp, bus, distSeg, downloadBlob, safeName, debounce, fill, imgReady } from './util.js';
@@ -7,7 +7,7 @@ import * as R from './render.js';
 import { pageLinks, resolveDest, pdfOutline, pageText, textMatches } from './pdftools.js';
 import { I } from './icons.js';
 import { popMenu, popover, confirmBox, promptText, toast, modal, chipGroup, templatePicker, PAPER_OPTS, busy } from './ui.js';
-import { exportFlow } from './export.js';
+import { exportFlow, pdfAsPictures } from './export.js';
 import { syncNow, syncStatus, mergePage, mergeDoc, shareNotebook } from './sync.js';
 
 const GAP = 14, MIN_S = 0.2, MAX_S = 6;
@@ -4701,6 +4701,59 @@ export async function mountEditor(root, docId, opts = {}) {
     });
   }
 
+  // --- making a huge PDF smaller: its pages are rebuilt as pictures in a copy of the notebook (the writing comes
+  // along); the original stays as it is until the person is happy with the copy and deletes it.
+  async function shrinkDialog() {
+    commitText();
+    await flush().catch(saveFailed);
+    const used = new Map(); // asset id -> PDF page indexes this notebook uses
+    for (const p of pages) if (p.pdf && !p.tpl) { if (!used.has(p.pdf.a)) used.set(p.pdf.a, new Set()); used.get(p.pdf.a).add(p.pdf.i); }
+    const b = busy('Measuring the PDF...');
+    const list = [];
+    try {
+      for (const [id, idx] of used) { const a = await db.get('assets', id); if (a && a.data) list.push({ id, name: a.name || 'PDF', mb: a.data.byteLength / 1048576, idx: [...idx].sort((x, y) => x - y) }); }
+    } finally { b.done(); }
+    list.sort((x, y) => y.mb - x.mb);
+    const big = list[0];
+    if (!big) { toast('The PDF of this notebook is not on this device yet.'); return; }
+    const perPage = big.mb / big.idx.length;
+    if (perPage < 0.5) { toast(`This PDF is already small (${big.mb.toFixed(1)} MB for ${big.idx.length} pages).`, 3500); return; }
+    let hasText = false;
+    for (const i of big.idx.slice(0, 3)) { try { if ((await pageText(big.id, i)).s.trim().length > 20) hasText = true; } catch { /* unreadable */ } }
+    let dpi = 150;
+    const m = modal({
+      title: 'Make the PDF smaller',
+      body: h('div', null,
+        h('p', { class: 'modal-text' }, `${big.name} is ${Math.round(big.mb)} MB for ${big.idx.length} pages. Inkleaf can rebuild its pages as pictures, which is usually far smaller. It makes a copy of this notebook with the smaller PDF and your writing; this notebook stays as it is, so you can compare and then delete one.`),
+        hasText ? h('p', { class: 'modal-text small' }, 'This PDF has text in it. In the copy the pages become pictures, so their text can no longer be searched, copied, or followed by the highlighter.') : h('p', { class: 'modal-text small' }, 'Its pages hold only pictures and drawings, so nothing is lost.'),
+        chipGroup('Picture quality', [{ v: 150, label: 'Standard' }, { v: 220, label: 'Sharper (larger file)' }], 150, v => { dpi = v; })),
+      actions: [{ label: 'Cancel' }, { label: 'Make a smaller copy', primary: true, onClick: () => { run(); } }]
+    });
+    async function run() {
+      const p = busy('Rebuilding the pages...');
+      try {
+        const bytes = await pdfAsPictures(big.id, big.idx, dpi, (i, n) => p.set(`Rebuilding page ${i} of ${n}...`));
+        const mb = bytes.byteLength / 1048576;
+        if (mb > big.mb * 0.8) { p.done(); toast(`That would only shrink it to ${Math.round(mb)} MB, so nothing was changed.`, 4500); return; }
+        p.set('Saving the copy...');
+        const asset = { id: uid(), mime: 'application/pdf', name: (big.name || 'PDF').replace(/\.pdf$/i, '') + ' (smaller).pdf', data: bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength), modified: Date.now() };
+        await db.put('assets', asset);
+        const copy = await duplicateDoc(doc);
+        const at = new Map(big.idx.map((i, n) => [i, n]));
+        const cps = (await db.byDoc(copy.id)).filter(q => q.pdf && q.pdf.a === big.id);
+        for (const q of cps) q.pdf = { a: asset.id, i: at.get(q.pdf.i) };
+        await db.putMany('pages', cps);
+        await db.put('docs', { ...copy, title: doc.title + ' (smaller)', modified: Date.now() });
+        p.done();
+        if (await confirmBox('Smaller copy made', `${Math.round(big.mb)} MB → ${mb < 10 ? mb.toFixed(1) : Math.round(mb)} MB. "${doc.title} (smaller)" is in your library with your writing. Check it, then move the one you do not need to the bin. Open the copy now?`, 'Open')) openDoc(copy.id, 1);
+      } catch (e) {
+        p.done();
+        console.error(e);
+        toast('Could not make the PDF smaller: ' + (e.message || e), 5000);
+      }
+    }
+  }
+
   // A new notebook holding a picture card of every highlight; tapping a card opens that spot in this notebook.
   async function highlightsNotebook() {
     commitText();
@@ -5551,6 +5604,7 @@ export async function mountEditor(root, docId, opts = {}) {
       { label: 'Tagged items', icon: I.tag, onClick: tagsDialog },
       { label: 'Flashcards' + ((doc.cards || []).length ? ` (${dueCards().length} due)` : ''), icon: I.cards, onClick: cardsDialog },
       pages.some(p => p.pdf && !p.tpl) ? { label: 'PDF margins and crop', icon: I.crop, onClick: marginDialog } : null,
+      pages.some(p => p.pdf && !p.tpl) ? { label: 'Make the PDF smaller', icon: I.pdf, onClick: shrinkDialog } : null,
       { label: split ? 'Show another notebook beside' : 'Open another notebook beside', icon: I.split, onClick: openBeside },
       split ? { label: 'Close the other notebook', icon: I.close, onClick: () => { location.hash = '#/d/' + doc.id; } } : null,
       '-',

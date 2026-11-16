@@ -2,7 +2,7 @@
 import { db, loadPages } from './db.js';
 import { loadScript, h, safeName, downloadBlob } from './util.js';
 import * as R from './render.js';
-import { renderPdfPage } from './pdfrender.js';
+import { renderPdfPage, pdfDoc } from './pdfrender.js';
 import { annotPages } from './pdftools.js';
 import { busy, modal, toast } from './ui.js';
 
@@ -277,4 +277,24 @@ export async function exportFlow(docId, onlyIds, front, frontOnly) {
     });
   }
   modal({ title: 'PDF ready', body: h('p', { class: 'modal-text' }, `${name} (${mb} MB)`), actions });
+}
+
+// A PDF rebuilt as pictures of its pages, to shrink PDFs that are huge for what they show (such as ones saved by
+// the iPhone and iPad Markup tool, full of tiny drawing objects). idxs: the pages to keep (0-based), in order;
+// dpi: picture sharpness. Marks made in other apps are kept, since they are part of the picture.
+export async function pdfAsPictures(assetId, idxs, dpi, progress) {
+  await loadScript('vendor/pdf-lib.min.js');
+  const out = await window.PDFLib.PDFDocument.create();
+  out.setProducer('Inkleaf');
+  const src = await pdfDoc(assetId);
+  for (let n = 0; n < idxs.length; n++) {
+    const i = idxs[n], v = (await src.getPage(i + 1)).getViewport({ scale: 1 });
+    const c = await renderPdfPage(assetId, i, dpi / 72);
+    const jpg = await canvasBytes(c, 'image/jpeg', 0.82);
+    c.width = c.height = 0;
+    const page = out.addPage([v.width, v.height]);
+    page.drawImage(await out.embedJpg(jpg), { x: 0, y: 0, width: v.width, height: v.height });
+    if (progress) progress(n + 1, idxs.length);
+  }
+  return out.save();
 }
