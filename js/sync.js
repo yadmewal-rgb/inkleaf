@@ -1,43 +1,43 @@
-// Google Drive sync (live) and backup files.
+// Live sync through Inkleaf's own Cloudflare service (server/worker.js), plus backup files.
 //
 // How it works
 // - Everything is saved on the device first (IndexedDB). Sync only ever runs in the background.
-// - Each record (folder, notebook, page, attached file) is one small file in the app's private Drive
-//   folder ("appDataFolder"), so only what changed is transferred.
-// - Pushing: about a second after something is saved locally, the changed records are uploaded.
-// - Pulling: Drive is asked "what changed?" every few seconds; changed records are downloaded and merged.
-//   A page edited on two devices is merged stroke by stroke, so nobody's writing is lost.
-// - There is no server. The browser talks to Drive with a token that lasts about an hour, after which
-//   Drive needs one tap to sign in again.
+// - Each record (folder, notebook, page, attached file) is stored on the service as its own versioned blob,
+//   so only what changed is transferred. Every change on the service gets the next sequence number.
+// - Pushing: a moment after something is saved here, the changed records are uploaded. Each upload says which
+//   version it builds on; if another device got there first, its version is fetched, merged and sent again.
+// - Pulling: the service tells every open device about a change over a live connection (WebSocket), and the
+//   device asks for what changed. A page edited on two devices is merged stroke by stroke, so nothing is lost.
+// - Sign-in: Google, once per device. The service then gives this device its own key, which does not expire.
 import { db, assetIdsOf } from './db.js';
 import { h, uid, bus, loadScript, downloadBlob, bufToB64, b64ToBuf } from './util.js';
 import { modal, toast, confirmBox, busy } from './ui.js';
 import { I } from './icons.js';
 
-const SCOPE = 'https://www.googleapis.com/auth/drive.appdata';
-const API = 'https://www.googleapis.com';
+const SERVER = 'https://inkleaf-sync.yadmewal.workers.dev';
+const SCOPE = 'openid email';
 const STORES = { a: 'assets', f: 'folders', d: 'docs', p: 'pages' };
-const FILE_FIELDS = 'id,name,modifiedTime,mimeType,description';
-const LIVE_MS = 1500;   // poll interval while a notebook is open
-const IDLE_MS = 15000;  // poll interval in the library
+const PART = 1_400_000; // pieces of large files (the service keeps at most 1.5 MB per piece)
 const PUSH_MS = 250;    // delay between a local save and its upload
+const POLL_LIVE = 60000, POLL_NOLIVE = 6000, POLL_IDLE = 30000; // checks besides the live connection
 
 let http = (url, opts) => fetch(url, opts);
-export const _setHttp = fn => { http = fn; }; // lets tests swap in a fake Drive
+export const _setHttp = fn => { http = fn; };           // tests swap in a fake service
+let makeSocket = url => new WebSocket(url);
+export const _setSocket = fn => { makeSocket = fn; };
 
 // Built-in Google OAuth client, so devices do not need one pasted in. A client ID is public by design.
-const DEFAULT_CLIENT_ID = '473809010149-3hhf0nu5aisisgvu3gnaee49lfgdlga2.apps.googleusercontent.com';
-// An ID typed into an older version's Settings is ignored: a mistyped one blocked sign-in ("invalid_client").
-const effectiveId = cfg => (cfg.off ? '' : DEFAULT_CLIENT_ID);
+const CLIENT_ID = '473809010149-3hhf0nu5aisisgvu3gnaee49lfgdlga2.apps.googleusercontent.com';
 
-let clientId = '';
-let token = null, tokenExp = 0;
-let st = {};          // name -> {fid, lm: local "modified" when last in step, rm: remote modifiedTime}
-let cursor = null;    // Drive "changes" page token
+let server = SERVER;
+let session = null;   // {token, email}
+let off = false;      // sync turned off on this device
+let st = {};          // "k_id" -> {lm: local "modified" when last in step, s: the service's version}
+let cursor = 0;       // the newest change seen
 const openDocs = new Set(); // notebooks open in the editor (two when side by side)
-let pushT = 0, loopT = 0, stateT = 0;
+let pushT = 0, loopT = 0, stateT = 0, pullT = 0;
 let chain = Promise.resolve();
-let status = { state: 'off', text: 'Google Drive sync is not set up' };
+let status = { state: 'off', text: 'Sync is not set up' };
 
 export const syncStatus = () => status;
 function setStatus(state, text) {
@@ -56,105 +56,111 @@ const exclusive = fn => {
 function saveState() {
   clearTimeout(stateT);
   stateT = setTimeout(() => {
-    db.setMeta('syncState', st).catch(() => {});
-    db.setMeta('syncCursor', cursor).catch(() => {});
+    db.setMeta('cloudState', st).catch(() => {});
+    db.setMeta('cloudCursor', cursor).catch(() => {});
   }, 300);
 }
 
-// ---------------------------------------------------------------- auth
-const tokenValid = () => !!token && Date.now() < tokenExp - 60000;
-
-async function getToken(interactive) {
-  if (tokenValid()) return token;
-  if (!interactive) { const e = new Error('Sign-in needed'); e.signin = true; throw e; }
-  if (!clientId) throw new Error('Add your Google client ID in Settings first.');
+// ---------------------------------------------------------------- sign-in
+// Google is asked once, only to prove who this is; the service answers with this device's own key.
+async function googleToken() {
   await loadScript('https://accounts.google.com/gsi/client');
   return new Promise((res, rej) => {
     const client = google.accounts.oauth2.initTokenClient({
-      client_id: clientId,
+      client_id: CLIENT_ID,
       scope: SCOPE,
-      callback: r => {
-        if (r.error) { rej(new Error(r.error_description || r.error)); return; }
-        token = r.access_token;
-        tokenExp = Date.now() + (Number(r.expires_in) || 3600) * 1000;
-        db.setMeta('syncToken', { token, exp: tokenExp }).catch(() => {});
-        res(token);
-      },
+      callback: r => { if (r.error) rej(new Error(r.error_description || r.error)); else res(r.access_token); },
       error_callback: e => rej(new Error(e && e.type === 'popup_closed' ? 'Sign-in was cancelled.' : 'Google sign-in could not open. Allow pop-ups and try again.'))
     });
     client.requestAccessToken({ prompt: '' });
   });
 }
 
-async function api(path, opts = {}) {
-  const t = await getToken(false);
-  const r = await http(API + path, { ...opts, headers: { Authorization: 'Bearer ' + t, ...(opts.headers || {}) } });
+const deviceLabel = () => {
+  const u = navigator.userAgent;
+  return /iPad|Macintosh.*Mobile|Macintosh(?=.*Safari)(?=.*Version)/.test(u) && navigator.maxTouchPoints > 1 ? 'iPad'
+    : /iPhone/.test(u) ? 'iPhone' : /Android/.test(u) ? (/Mobile/.test(u) ? 'Android phone' : 'Android tablet') : /Windows/.test(u) ? 'Windows' : 'Browser';
+};
+
+async function signIn() {
+  const at = await googleToken();
+  const r = await http(server + '/auth', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ access_token: at, label: deviceLabel() }) });
+  const j = await r.json().catch(() => ({}));
+  if (r.status === 403 && j.error === 'not-allowed') throw new Error(`${j.email} is not on Inkleaf's list of allowed accounts. Add it to ALLOWED in Cloudflare.`);
+  if (!r.ok || !j.token) throw new Error(j.error === 'google-rejected' ? 'Google did not confirm the sign-in. Try again.' : 'The sync service did not answer (' + r.status + ').');
+  session = { token: j.token, email: j.email };
+  await db.setMeta('cloud', session);
+}
+
+async function signOut() {
+  const s = session;
+  session = null;
+  closeLive();
+  await db.setMeta('cloud', null);
+  if (s) http(server + '/signout', { method: 'POST', headers: { Authorization: 'Bearer ' + s.token } }).catch(() => {});
+}
+
+async function call(path, opts = {}) {
+  if (!session) { const e = new Error('Sign-in needed'); e.signin = true; throw e; }
+  const r = await http(server + path, { ...opts, headers: { Authorization: 'Bearer ' + session.token, ...(opts.headers || {}) } });
   if (r.status === 401) {
-    token = null;
-    tokenExp = 0;
-    db.setMeta('syncToken', null).catch(() => {});
+    session = null;
+    closeLive();
+    db.setMeta('cloud', null).catch(() => {});
     const e = new Error('Sign-in needed');
     e.signin = true;
     throw e;
   }
+  if (r.status === 409) { const e = new Error('Changed elsewhere'); e.conflict = (await r.json().catch(() => ({}))).s || 0; throw e; }
   if (!r.ok) {
-    const e = new Error(`Google Drive error ${r.status}: ${(await r.text()).slice(0, 160)}`);
+    const e = new Error(`Sync service error ${r.status}: ${(await r.text().catch(() => '')).slice(0, 160)}`);
     e.status = r.status;
     throw e;
   }
   return r;
 }
 
-// ---------------------------------------------------------------- Drive files
-async function listRemote() {
-  const files = new Map();
-  let pageToken = '';
-  do {
-    const q = `/drive/v3/files?spaces=appDataFolder&pageSize=1000&fields=nextPageToken,files(${FILE_FIELDS})`
-      + (pageToken ? '&pageToken=' + encodeURIComponent(pageToken) : '');
-    const j = await (await api(q)).json();
-    for (const f of j.files || []) {
-      const old = files.get(f.name);
-      if (!old || f.modifiedTime > old.modifiedTime) files.set(f.name, f); // tolerate accidental duplicates
-    }
-    pageToken = j.nextPageToken || '';
-  } while (pageToken);
-  return files;
+// ---------------------------------------------------------------- blobs on the service
+const canZip = typeof CompressionStream === 'function' && typeof DecompressionStream === 'function';
+async function pipe(bytes, stream) { return new Uint8Array(await new Response(new Blob([bytes]).stream().pipeThrough(stream)).arrayBuffer()); }
+
+// Records go as JSON, compressed where the browser can (writing compresses about four times).
+async function encode(rec) {
+  const raw = new TextEncoder().encode(JSON.stringify(rec));
+  return canZip ? { bytes: await pipe(raw, new CompressionStream('gzip')), gz: true } : { bytes: raw, gz: false };
+}
+async function decode(bytes, gz) {
+  return JSON.parse(new TextDecoder().decode(gz ? await pipe(bytes, new DecompressionStream('gzip')) : bytes));
 }
 
-async function upload(name, fileId, blob, description) {
-  const type = blob.type || 'application/octet-stream';
-  if (fileId) {
-    const r = await api(`/upload/drive/v3/files/${fileId}?uploadType=media&fields=id,modifiedTime`, {
-      method: 'PATCH', headers: { 'Content-Type': type }, body: blob
-    });
-    return r.json();
+// Store bytes as kind k, id. o: base (the version this builds on; omitted = store regardless), info, gz.
+async function putBlob(k, id, bytes, o = {}) {
+  const q = new URLSearchParams({ size: String(bytes.byteLength) });
+  if (o.base != null) q.set('base', String(o.base));
+  if (o.info) q.set('info', o.info);
+  if (o.gz) q.set('gz', '1');
+  if (bytes.byteLength <= PART) {
+    return (await call(`/blob/${k}/${encodeURIComponent(id)}?${q}`, { method: 'PUT', headers: { 'Content-Type': 'application/octet-stream' }, body: bytes })).json();
   }
-  const boundary = 'inkleaf' + Math.random().toString(36).slice(2);
-  const meta = JSON.stringify({ name, parents: ['appDataFolder'], mimeType: type, description: description || '' });
-  const body = new Blob([
-    `--${boundary}\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n${meta}\r\n`,
-    `--${boundary}\r\nContent-Type: ${type}\r\n\r\n`, blob,
-    `\r\n--${boundary}--`
-  ]);
-  const r = await api('/upload/drive/v3/files?uploadType=multipart&fields=id,modifiedTime', {
-    method: 'POST', headers: { 'Content-Type': 'multipart/related; boundary=' + boundary }, body
-  });
-  return r.json();
-}
-
-// Create or update, using what we already know about the file.
-async function putFile(name, blob, description) {
-  const s = st[name];
-  if (s && s.fid) {
-    try { return await upload(name, s.fid, blob); } catch (e) { if (e.status !== 404) throw e; } // gone: recreate
+  const up = uid(), parts = Math.ceil(bytes.byteLength / PART);
+  for (let n = 0; n < parts; n++) {
+    await call(`/part/${up}/${n}`, { method: 'PUT', headers: { 'Content-Type': 'application/octet-stream' }, body: bytes.subarray(n * PART, (n + 1) * PART) });
   }
-  return upload(name, null, blob, description);
+  return (await call(`/commit/${k}/${encodeURIComponent(id)}?${q}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ up, parts }) })).json();
 }
 
-const download = fileId => api(`/drive/v3/files/${fileId}?alt=media`);
-const removeRemote = fileId => api(`/drive/v3/files/${fileId}`, { method: 'DELETE' });
-const toBlob = rec => new Blob([JSON.stringify(rec)], { type: 'application/json' });
+// item: a feed entry {k, id, s, parts, gz}.
+async function getBlob(item) {
+  const bufs = [];
+  for (let n = 0; n < (item.parts || 1); n++) bufs.push(new Uint8Array(await (await call(`/blob/${item.k}/${encodeURIComponent(item.id)}/${n}`)).arrayBuffer()));
+  if (bufs.length === 1) return bufs[0];
+  const out = new Uint8Array(bufs.reduce((t, b) => t + b.length, 0));
+  let o = 0;
+  for (const b of bufs) { out.set(b, o); o += b.length; }
+  return out;
+}
+
+const removeBlob = (k, id) => call(`/blob/${k}/${encodeURIComponent(id)}`, { method: 'DELETE' });
 
 // ---------------------------------------------------------------- merging
 // Each merge returns one of its inputs untouched when that input already holds the full result,
@@ -240,10 +246,36 @@ async function merge(kind, L, R) {
 }
 
 // ---------------------------------------------------------------- moving single records
+// Send a folder / notebook / page. If another device changed it first, theirs is brought in and merged,
+// and the merged record is sent instead.
 async function pushRecord(kind, rec) {
-  const name = kind + '_' + rec.id;
-  const info = await putFile(name, toBlob(rec));
-  st[name] = { fid: info.id, lm: rec.modified, rm: info.modifiedTime };
+  const name = kind + '_' + rec.id, store = STORES[kind];
+  for (let tries = 0; tries < 4; tries++) {
+    const s = st[name];
+    try {
+      const { bytes, gz } = await encode(rec);
+      const j = await putBlob(kind, rec.id, bytes, { base: s ? s.s : 0, gz });
+      st[name] = { lm: rec.modified, s: j.s };
+      return;
+    } catch (e) {
+      if (e.conflict === undefined) throw e;
+      const item = { k: kind, id: rec.id, s: e.conflict, parts: 0 };
+      const meta = (await (await call(`/changes?since=${e.conflict - 1}&limit=1`)).json()).items.find(x => x.k === kind && x.id === rec.id);
+      if (!meta) { st[name] = { lm: -1, s: e.conflict }; continue; } // changed again meanwhile: just retry
+      Object.assign(item, meta);
+      const R = await decode(await getBlob(item), item.gz);
+      const L = (await db.get(store, rec.id)) || rec;
+      const m = await merge(kind, L, R);
+      if (m !== L) {
+        if (!await db.putIf(store, m, L.modified)) { st[name] = { lm: -1, s: item.s }; rec = (await db.get(store, rec.id)) || rec; continue; }
+        bus.emit('remote-record', { kind, rec: m });
+      }
+      if (m === R) { st[name] = { lm: R.modified, s: item.s }; return; } // theirs already had everything
+      st[name] = { lm: -1, s: item.s };
+      rec = m;
+    }
+  }
+  throw new Error('This record keeps changing on another device; it will be sent on the next round.');
 }
 
 async function pushAsset(id) {
@@ -251,18 +283,20 @@ async function pushAsset(id) {
   if (st[name]) return;
   const a = await db.get('assets', id);
   if (!a || a.deleted || !a.data) return;
-  const info = await upload(name, null, new Blob([a.data], { type: a.mime || 'application/octet-stream' }), a.name || '');
-  st[name] = { fid: info.id, lm: a.modified, rm: info.modifiedTime };
+  const j = await putBlob('a', id, new Uint8Array(a.data), { info: JSON.stringify({ mime: a.mime || '', name: a.name || '' }) });
+  st[name] = { lm: a.modified, s: j.s };
 }
 
-async function pullAsset(id, file) {
+async function pullAsset(id, item) {
   const name = 'a_' + id;
   const have = await db.get('assets', id);
-  if (have && (have.data || have.deleted)) { st[name] = { fid: file.id, lm: have.modified, rm: file.modifiedTime }; return false; }
-  const data = await (await download(file.id)).arrayBuffer();
-  const rec = { id, mime: file.mimeType || 'application/octet-stream', name: file.description || '', data, modified: Date.now() };
+  if (have && (have.data || have.deleted)) { st[name] = { lm: have.modified, s: item.s }; return false; }
+  const bytes = await getBlob(item);
+  let info = {};
+  try { info = JSON.parse(item.info || '{}'); } catch { /* none */ }
+  const rec = { id, mime: info.mime || 'application/octet-stream', name: info.name || '', data: bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength), modified: Date.now() };
   await db.put('assets', rec, true);
-  st[name] = { fid: file.id, lm: rec.modified, rm: file.modifiedTime };
+  st[name] = { lm: rec.modified, s: item.s };
   bus.emit('remote-record', { kind: 'a', rec: { id } });
   return true;
 }
@@ -278,7 +312,7 @@ function setIdle() {
   if (assetActive || assetQ.length) setStatus('syncing', FILES_TEXT); else setStatus('ok', IDLE_TEXT);
 }
 
-// job: 'up' to upload a local file, or the Drive file info to download.
+// job: 'up' to upload a local file, or the feed entry to download.
 function queueAsset(id, job) {
   const r = assetRetry.get(id);
   if (assetBusy.has(id) || (r && r.at > Date.now())) return;
@@ -311,21 +345,23 @@ function retryAssets() {
   for (const [id, r] of assetRetry) if (r.at <= Date.now()) { assetRetry.delete(id); queueAsset(id, r.job); }
 }
 
-// Bring one remote folder / notebook / page record in, merging with whatever is here.
-async function applyRemote(kind, id, file) {
-  const name = kind + '_' + id, store = STORES[kind], s = st[name];
-  if (s && s.rm === file.modifiedTime) return false; // already in step with this version
-  const R = await (await download(file.id)).json();
-  const L = await db.get(store, id);
+// Bring one folder / notebook / page in from the service, merging with whatever is here.
+async function applyRemote(item) {
+  const kind = item.k, name = kind + '_' + item.id, store = STORES[kind], s = st[name];
+  if (s && s.s === item.s) return false; // already in step with this version
+  let R = null;
+  try { R = await decode(await getBlob(item), item.gz); } catch (e) { if (e.signin || e.status || e.name === 'TypeError') throw e; }
+  if (!R || R.id !== item.id) { st[name] = { lm: -1, s: item.s }; console.warn('Skipped an unreadable record', name); return false; }
+  const L = await db.get(store, item.id);
   const m = L ? await merge(kind, L, R) : R;
-  if (m === L) { // ours already contains everything the remote copy has
-    const info = await putFile(name, toBlob(L));
-    st[name] = { fid: info.id, lm: L.modified, rm: info.modifiedTime };
+  if (m === L) { // ours already contains everything theirs has
+    st[name] = { lm: L.modified === R.modified ? L.modified : -1, s: item.s };
+    if (L.modified !== R.modified) await pushRecord(kind, L);
     return false;
   }
   // Only store it if the local record did not change while we were downloading; otherwise retry next round.
   if (!await db.putIf(store, m, L ? L.modified : undefined)) return false;
-  st[name] = { fid: file.id, lm: m === R ? R.modified : -1, rm: file.modifiedTime };
+  st[name] = { lm: m === R ? R.modified : -1, s: item.s };
   if (m !== R) await pushRecord(kind, m);
   bus.emit('remote-record', { kind, rec: m });
   return true;
@@ -338,80 +374,53 @@ async function pool(n, items, fn) {
 }
 
 // ---------------------------------------------------------------- sync passes
-// Everything, both directions. Used at start-up, on demand, and for library changes.
-async function fullPass() {
-  const start = (await (await api('/drive/v3/changes/startPageToken')).json()).startPageToken;
-  const remote = await listRemote();
+// What changed on the service since last time. Cheap: one small request when nothing did.
+async function pullChanges() {
   let changed = false;
-  const referenced = new Set();
-
-  for (const kind of ['f', 'd', 'p']) {
-    const store = STORES[kind];
-    const locals = new Map((await db.all(store)).map(r => [kind + '_' + r.id, r]));
-    if (kind === 'p') {
-      for (const p of locals.values()) {
-        if (p.deleted) continue;
-        if (p.pdf) referenced.add(p.pdf.a);
-        if (p.bg) referenced.add(p.bg.a);
-        for (const it of p.items || []) if (it.t === 'im') referenced.add(it.a);
+  for (;;) {
+    const j = await (await call('/changes?since=' + cursor + '&limit=500')).json();
+    const rank = { f: 0, d: 1, p: 2, a: 3 };
+    const items = j.items.slice().sort((x, y) => rank[x.k] - rank[y.k] || x.s - y.s);
+    let gone = null; // attached files removed on another device
+    for (const it of items) {
+      if (it.k === 'a') {
+        if (it.size < 0) (gone = gone || []).push(it);
+        else if (!st['a_' + it.id] || st['a_' + it.id].s !== it.s) queueAsset(it.id, it);
+        continue;
+      }
+      if (await applyRemote(it)) changed = true;
+    }
+    if (gone) {
+      // Keep (and send back) a file a page here still uses; otherwise drop it here as well.
+      const used = assetIdsOf((await db.all('pages')).filter(p => !p.deleted));
+      for (const it of gone) {
+        delete st['a_' + it.id];
+        if (used.has(it.id)) queueAsset(it.id, 'up');
+        else if (await db.get('assets', it.id)) await db.put('assets', { id: it.id, deleted: true, modified: Date.now() }, true);
       }
     }
-    const names = new Set(locals.keys());
-    for (const n of remote.keys()) if (n[0] === kind && n[1] === '_') names.add(n);
-    await pool(4, [...names], async name => {
-      const L = locals.get(name), file = remote.get(name), s = st[name];
-      if (L && !file) await pushRecord(kind, L);
-      else if (file && (!L || !s || s.rm !== file.modifiedTime)) { if (await applyRemote(kind, name.slice(2), file)) changed = true; }
-      else if (L && s.lm !== L.modified) await pushRecord(kind, L);
-    });
+    if (j.items.length) cursor = Math.max(cursor, ...j.items.map(i => i.s));
+    if (!j.more) break;
   }
-
-  // Attached files (PDFs, pictures). They never change: upload once, download once, or delete.
-  const dels = (await db.getMeta('assetDels')) || [];
-  for (const id of dels) {
-    const name = 'a_' + id, file = remote.get(name);
-    if (file) { await removeRemote(file.id).catch(() => {}); remote.delete(name); }
-    delete st[name];
-  }
-  if (dels.length) await db.setMeta('assetDels', []);
-  const localIds = new Set(await db.keys('assets'));
-  for (const id of localIds) {
-    const name = 'a_' + id, file = remote.get(name);
-    if (file) { if (!st[name]) st[name] = { fid: file.id, lm: 0, rm: file.modifiedTime }; continue; }
-    if (st[name]) {
-      delete st[name];
-      // Removed from Drive by another device. Keep it (and put it back) if a page here still uses it.
-      if (!referenced.has(id)) { await db.put('assets', { id, deleted: true, modified: Date.now() }, true); continue; }
-    }
-    queueAsset(id, 'up');
-  }
-  for (const name of remote.keys()) {
-    if (name.startsWith('a_') && !localIds.has(name.slice(2))) queueAsset(name.slice(2), remote.get(name));
-  }
-
-  cursor = start;
   saveState();
   return changed;
 }
 
-// Only what Drive says changed since last time. Cheap enough to run every few seconds.
-async function pullChanges() {
-  if (!cursor) return fullPass();
-  let changed = false, tok = cursor;
-  while (tok) {
-    const j = await (await api(`/drive/v3/changes?pageToken=${encodeURIComponent(tok)}&spaces=appDataFolder&pageSize=200`
-      + `&fields=newStartPageToken,nextPageToken,changes(fileId,removed,file(${FILE_FIELDS},trashed))`)).json();
-    const files = (j.changes || []).filter(c => c.file && !c.removed && !c.file.trashed).map(c => c.file)
-      .filter(f => f.name && f.name[1] === '_' && STORES[f.name[0]]);
-    const rank = { f: 0, d: 1, p: 2, a: 3 };
-    files.sort((x, y) => rank[x.name[0]] - rank[y.name[0]]);
-    for (const f of files) {
-      const kind = f.name[0], id = f.name.slice(2);
-      if (kind === 'a') { if (!st[f.name]) queueAsset(id, f); continue; }
-      if (await applyRemote(kind, id, f)) changed = true;
-    }
-    if (j.newStartPageToken) { cursor = j.newStartPageToken; tok = null; } else tok = j.nextPageToken || null;
+// Everything, both directions: bring in what is new there, then send whatever here is not there yet.
+// Used at start-up, on demand, and for library changes.
+async function fullPass() {
+  const changed = await pullChanges();
+  for (const kind of ['f', 'd', 'p']) {
+    const locals = await db.all(STORES[kind]);
+    await pool(4, locals, async L => {
+      const s = st[kind + '_' + L.id];
+      if (!s || s.lm !== L.modified) await pushRecord(kind, L);
+    });
   }
+  const dels = (await db.getMeta('assetDels')) || [];
+  for (const id of dels) { await removeBlob('a', id).catch(() => {}); delete st['a_' + id]; }
+  if (dels.length) await db.setMeta('assetDels', []);
+  for (const id of await db.keys('assets')) if (!st['a_' + id]) queueAsset(id, 'up');
   saveState();
   return changed;
 }
@@ -440,16 +449,65 @@ async function pushDoc(docId, only) {
   saveState();
 }
 
+// ---------------------------------------------------------------- live connection
+let ws = null, wsLive = false, wsWait = 2000, wsT = 0, pingT = 0;
+
+function openLive() {
+  if (ws || !session || off || !navigator.onLine) return;
+  clearTimeout(wsT);
+  const u = session.token.split('.')[0];
+  let sock;
+  try { sock = makeSocket(server.replace(/^http/, 'ws') + '/ws?u=' + encodeURIComponent(u)); } catch { return; }
+  ws = sock;
+  sock.onopen = () => sock.send(JSON.stringify({ token: session && session.token }));
+  sock.onmessage = e => {
+    let m;
+    try { m = JSON.parse(e.data); } catch { return; }
+    if (m.hello) { wsLive = true; wsWait = 2000; schedule(); }
+    if ((m.s || 0) > cursor) pullSoon();
+  };
+  sock.onclose = e => {
+    if (ws !== sock) return;
+    ws = null;
+    wsLive = false;
+    if (e.code === 4001) { session = null; db.setMeta('cloud', null).catch(() => {}); setStatus('signin', 'Sync paused. Tap to sign in again.'); return; }
+    if (session && !off) wsT = setTimeout(openLive, wsWait = Math.min(wsWait * 2, 60000));
+    schedule();
+  };
+  sock.onerror = () => { /* onclose follows */ };
+  clearInterval(pingT);
+  pingT = setInterval(() => { if (ws && wsLive && document.visibilityState === 'visible') { try { ws.send('{"ping":1}'); } catch { /* closing */ } } }, 50000);
+}
+
+function closeLive() {
+  clearTimeout(wsT);
+  clearInterval(pingT);
+  const s = ws;
+  ws = null;
+  wsLive = false;
+  if (s) { try { s.close(1000, 'bye'); } catch { /* already closed */ } }
+}
+
+function pullSoon() {
+  clearTimeout(pullT);
+  pullT = setTimeout(() => {
+    if (!ready()) return;
+    exclusive(async () => {
+      try { if (await pullChanges()) bus.emit('synced'); setIdle(); } catch (e) { fail(e, false); }
+    });
+  }, 120);
+}
+
 // ---------------------------------------------------------------- scheduling
-const ready = () => !!clientId && tokenValid() && navigator.onLine;
+const ready = () => !!session && !off && navigator.onLine;
 
 function fail(e, interactive) {
-  if (e.signin) { setStatus('signin', 'Sync paused. Tap to sign in to Google Drive again.'); return; }
-  if (e.name === 'TypeError' || !navigator.onLine) { // the request never reached Google
+  if (e.signin) { setStatus('signin', 'Sync paused. Tap to sign in again.'); return; }
+  if (e.name === 'TypeError' || !navigator.onLine) { // the request never reached the service
     setStatus('error', 'Offline. Changes are saved here and will sync when you are back online.');
     return;
   }
-  console.error(e);
+  console.error('Sync problem:', e.name, e.message, e);
   setStatus('error', 'Sync problem: ' + e.message);
   if (interactive) toast('Sync problem: ' + e.message, 5000);
 }
@@ -457,7 +515,7 @@ function fail(e, interactive) {
 function run(fn, interactive) {
   return exclusive(async () => {
     try {
-      setStatus('syncing', 'Syncing with Google Drive...');
+      setStatus('syncing', 'Syncing...');
       const changed = await fn();
       db.setMeta('lastSync', Date.now()).catch(() => {});
       setIdle();
@@ -472,11 +530,12 @@ function run(fn, interactive) {
 
 function schedule() {
   clearTimeout(loopT);
-  loopT = setTimeout(tick, openDocs.size ? LIVE_MS : IDLE_MS);
+  loopT = setTimeout(tick, wsLive ? POLL_LIVE : openDocs.size ? POLL_NOLIVE : POLL_IDLE);
 }
 
 async function tick() {
   if (ready() && document.visibilityState === 'visible') {
+    if (!ws) openLive();
     await exclusive(async () => {
       try {
         const changed = await pullChanges();
@@ -485,17 +544,15 @@ async function tick() {
       } catch (e) { fail(e, false); }
     });
     retryAssets();
-    if (writeSeq !== pushedSeq) await pushNow(); // something saved earlier has not reached Drive yet
-  } else if (clientId && !tokenValid() && status.state !== 'signin') {
-    setStatus('signin', 'Sync paused. Tap to sign in to Google Drive again.');
-  } else if (clientId && !navigator.onLine) {
+    if (writeSeq !== pushedSeq) await pushNow(); // something saved earlier has not reached the service yet
+  } else if (session && !off && !navigator.onLine) {
     setStatus('error', 'Offline. Changes are saved here and will sync when you are back online.');
   }
   schedule();
 }
 
 // Local saves are counted; a push only counts as done if it finished with nothing newer waiting.
-// Anything that could not be sent (offline, signed out) is retried by the polling loop.
+// Anything that could not be sent (offline, signed out) is retried by the loop.
 let writeSeq = 0, pushedSeq = 0;
 // Pages saved here since the last push. null = not known (just started, or a push failed): check every page.
 let savedPages = null;
@@ -518,44 +575,50 @@ function pushSoon(delay = PUSH_MS) {
 
 // interactive = started by a tap, so a Google sign-in window may be opened.
 export async function syncNow(interactive = false) {
-  if (!clientId) { if (interactive) openSettings(); return; }
+  if (off) { if (interactive) openSettings(); return; }
   if (!navigator.onLine) { setStatus('error', 'Offline. Changes are saved here and will sync when you are back online.'); return; }
-  try { await getToken(interactive); } catch (e) { fail(e, interactive); return; }
+  if (!session) {
+    if (!interactive) return;
+    try { await signIn(); } catch (e) { fail(e, true); return; }
+  }
   const ok = await run(fullPass, interactive);
-  if (ok && interactive) toast('Synced with Google Drive');
+  if (ok && interactive) toast('Synced');
+  openLive();
   schedule();
 }
 
 let wired = false;
 export async function initSync() {
   const cfg = (await db.getMeta('sync')) || {};
-  clientId = effectiveId(cfg);
-  st =(await db.getMeta('syncState')) || {};
-  cursor = (await db.getMeta('syncCursor')) || null;
-  const saved = await db.getMeta('syncToken');
-  if (saved && Date.now() < saved.exp - 60000) { token = saved.token; tokenExp = saved.exp; } else { token = null; tokenExp = 0; }
+  off = !!cfg.off;
+  server = (await db.getMeta('cloudServer')) || SERVER; // a test server can be set here
+  session = (await db.getMeta('cloud')) || null;
+  st = (await db.getMeta('cloudState')) || {};
+  cursor = (await db.getMeta('cloudCursor')) || 0;
 
   if (!wired) {
     wired = true;
     bus.on('db-write', w => {                                                     // something was saved locally
       writeSeq++;
       if (savedPages && w && w.s === 'pages') for (const id of w.ids) savedPages.add(id);
-      if (clientId) pushSoon();
+      if (session && !off) pushSoon();
     });
     bus.on('editor-open', id => { openDocs.add(id); if (ready()) { run(pullChanges, false); } schedule(); });
     bus.on('editor-close', id => { openDocs.delete(id); schedule(); });
-    window.addEventListener('online', () => { if (ready()) run(fullPass, false); });
+    window.addEventListener('online', () => { if (ready()) { run(fullPass, false); openLive(); } });
     setTimeout(() => autoBackup(), 8000);          // weekly snapshot, if one is due
     setInterval(() => autoBackup(), 3600e3);
     document.addEventListener('visibilitychange', () => {
       if (document.visibilityState === 'hidden') pushSoon(0);                       // leaving: upload right away
-      else if (ready()) { run(pullChanges, false); schedule(); }
+      else if (ready()) { openLive(); run(pullChanges, false); schedule(); }
     });
   }
 
-  if (!clientId) { setStatus('off', 'Set up Google Drive sync'); clearTimeout(loopT); return; }
-  if (!tokenValid()) { setStatus('signin', 'Tap to sign in to Google Drive and start syncing.'); schedule(); return; }
+  closeLive();
+  if (off) { setStatus('off', 'Sync is turned off on this device'); clearTimeout(loopT); return; }
+  if (!session) { setStatus('signin', 'Tap to sign in with Google once and start live sync.'); clearTimeout(loopT); return; }
   run(fullPass, false);
+  openLive();
   schedule();
 }
 
@@ -660,43 +723,44 @@ export async function openSettings() {
       await initSync();
     }
   };
+  const who = session && !cfg.off
+    ? `This device is signed in as ${session.email}. It stays signed in; nothing needs doing again.`
+    : cfg.off ? 'Sync is turned off on this device.' : 'This device is not signed in yet.';
   const m = modal({
     title: 'Settings',
     wide: true,
     body: h('div', null,
-      h('h3', null, 'Google Drive sync'),
+      h('h3', null, 'Live sync'),
       h('p', { class: 'modal-text' },
-        'Notes are always kept on this device, so they open instantly and work offline. With sync on, changes are also ',
-        'sent to a private app folder in your own Google Drive within a few seconds and merged into your other devices.'),
-      h('p', { class: 'modal-text small' },
-        'Tap "Sync now" and sign in with a Google account that has been added as a test user. Nothing else needs setting up.'),
+        'Notes are always kept on this device, so they open instantly and work offline. With sync on, every change is also ',
+        'sent to Inkleaf\'s own sync service (on Cloudflare) and appears on your other devices within a second or two.'),
+      h('p', { class: 'modal-text small' }, who),
       h('div', { class: 'row' },
         h('button', {
           class: 'btn primary', type: 'button',
           onclick: async () => { await turnOn(); m.close(); syncNow(true); }
-        }, 'Sync now'),
-        effectiveId(cfg) ? h('button', {
+        }, session && !cfg.off ? 'Sync now' : 'Sign in with Google'),
+        session && !cfg.off ? h('button', {
           class: 'btn', type: 'button',
           onclick: async () => {
-            if (!await confirmBox('Turn off sync', 'Stop syncing on this device? Notes stay on this device and in Drive.', 'Turn off')) return;
-            await db.setMeta('sync', { off: true });
-            await db.setMeta('syncToken', null);
-            await db.setMeta('syncState', {});
-            await db.setMeta('syncCursor', null);
+            if (!await confirmBox('Sign out', 'Sign this device out of sync? Notes stay on this device and on your other devices.', 'Sign out')) return;
+            await signOut();
+            await db.setMeta('cloudState', {});
+            await db.setMeta('cloudCursor', 0);
             await initSync();
             m.close();
           }
-        }, 'Turn off') : null),
+        }, 'Sign out') : null),
       h('p', { class: 'modal-text small' }, last ? 'Last synced ' + new Date(last).toLocaleString() : 'Not synced yet on this device.'),
       h('h3', null, 'Backup file'),
-      h('p', { class: 'modal-text' }, 'Save every notebook into one file, or restore one. Useful for moving notes without Drive.'),
+      h('p', { class: 'modal-text' }, 'Save every notebook into one file, or restore one. Useful for moving notes without sync.'),
       h('div', { class: 'row' },
         h('button', { class: 'btn', type: 'button', onclick: exportBackup }, 'Save backup'),
         h('button', { class: 'btn', type: 'button', onclick: () => fileInp.click() }, 'Restore backup'),
         fileInp),
       h('h3', null, 'Automatic backups'),
       h('p', { class: 'modal-text' },
-        'Once a week Inkleaf keeps a snapshot of every notebook by itself: the last 3 on this device and, with sync on, the last 8 in your Google Drive. ',
+        'Once a week Inkleaf keeps a snapshot of every notebook by itself: the last 3 on this device and, with sync on, the last 8 on the sync service. ',
         'If something gets lost or damaged, you can bring a notebook back from a snapshot as a copy.'),
       h('p', { class: 'modal-text small' }, 'Snapshots hold your pages and writing. Imported PDFs and pictures are not duplicated in them; they stay with the library.'),
       bkList,
@@ -707,19 +771,20 @@ export async function openSettings() {
 }
 
 // ---------------------------------------------------------------- automatic backups
-const BK_EVERY = 7 * 864e5, BK_LOCAL = 3, BK_DRIVE = 8;
+const BK_EVERY = 7 * 864e5, BK_LOCAL = 3, BK_CLOUD = 8;
 let bkBusy = false;
 
-// Snapshots in Drive, newest first.
-async function driveBackups() {
-  const q = encodeURIComponent("name contains 'zbackup'");
-  const j = await (await api(`/drive/v3/files?spaces=appDataFolder&pageSize=100&q=${q}&fields=files(id,name,size,description)`)).json();
-  return (j.files || [])
-    .map(f => ({ id: f.id, t: Number((/^zbackup-(\d+)/.exec(f.name) || [])[1]) || 0, bytes: Number(f.size) || 0, docs: Number(f.description) || 0 }))
-    .filter(f => f.t).sort((a, b) => b.t - a.t);
+// Snapshots on the sync service, newest first.
+async function cloudBackups() {
+  const j = await (await call('/list/b')).json();
+  return (j.items || []).map(it => {
+    let info = {};
+    try { info = JSON.parse(it.info || '{}'); } catch { /* none */ }
+    return { item: it, t: Number(it.id) || 0, bytes: it.size, docs: Number(info.docs) || 0 };
+  }).filter(f => f.t).sort((a, b) => b.t - a.t);
 }
 
-// Takes a snapshot when a week has passed since the last one (or when forced), and copies the newest to Drive.
+// Takes a snapshot when a week has passed since the last one (or when forced), and copies the newest to the service.
 export async function autoBackup(force) {
   if (bkBusy) return;
   bkBusy = true;
@@ -743,13 +808,15 @@ export async function autoBackup(force) {
       }
     }
     const latest = list[list.length - 1];
-    if (latest && !latest.drive && ready()) {
+    if (latest && !latest.cloud && ready()) {
       const text = await db.getMeta('autobk:' + latest.t);
       await exclusive(async () => {
-        await upload(`zbackup-${latest.t}.json`, null, new Blob([text], { type: 'application/json' }), String(latest.docs));
-        for (const f of (await driveBackups()).slice(BK_DRIVE)) await removeRemote(f.id).catch(() => {});
+        const raw = new TextEncoder().encode(text);
+        const bytes = canZip ? await pipe(raw, new CompressionStream('gzip')) : raw;
+        await putBlob('b', String(latest.t), bytes, { info: JSON.stringify({ docs: latest.docs }), gz: canZip });
+        for (const f of (await cloudBackups()).slice(BK_CLOUD)) await removeBlob('b', f.item.id).catch(() => {});
       });
-      latest.drive = true;
+      latest.cloud = true;
       await db.setMeta('autobk', list);
     }
   } catch (e) {
@@ -792,18 +859,22 @@ function snapshotDialog(text, when) {
 
 const bkList = h('div', { class: 'bk-list' });
 async function fillBk() {
-  const rows = new Map(); // t -> {t, docs, bytes, local, driveId}
+  const rows = new Map(); // t -> {t, docs, bytes, local, item (on the service)}
   for (const b of (await db.getMeta('autobk')) || []) rows.set(b.t, { ...b, local: true });
   if (ready()) {
-    try { for (const f of await driveBackups()) rows.set(f.t, { ...(rows.get(f.t) || f), driveId: f.id }); } catch { /* offline: show what is on this device */ }
+    try { for (const f of await cloudBackups()) rows.set(f.t, { ...(rows.get(f.t) || f), item: f.item }); } catch { /* offline: show what is on this device */ }
   }
   const all = [...rows.values()].sort((a, b) => b.t - a.t);
-  const textOf = async b => (b.local ? db.getMeta('autobk:' + b.t) : (await download(b.driveId)).text());
+  const textOf = async b => {
+    if (b.local) return db.getMeta('autobk:' + b.t);
+    const bytes = await getBlob(b.item);
+    return new TextDecoder().decode(b.item.gz ? await pipe(bytes, new DecompressionStream('gzip')) : bytes);
+  };
   const fmt = t => new Date(t).toLocaleString([], { day: 'numeric', month: 'short', year: 'numeric', hour: 'numeric', minute: '2-digit' });
   bkList.replaceChildren(...(all.length ? all.map(b => h('div', { class: 'bk-row' },
     h('div', { class: 'bk-meta' },
       h('b', null, fmt(b.t)),
-      h('span', { class: 'bk-sub' }, `${b.docs} notebook${b.docs === 1 ? '' : 's'} · ${b.local && b.driveId ? 'this device and Drive' : b.local ? 'this device' : 'Drive'}`)),
+      h('span', { class: 'bk-sub' }, `${b.docs} notebook${b.docs === 1 ? '' : 's'} · ${b.local && b.item ? 'this device and the sync service' : b.local ? 'this device' : 'sync service'}`)),
     h('button', {
       class: 'btn sm', type: 'button', onclick: async () => {
         try { snapshotDialog(await textOf(b), fmt(b.t)); } catch (e) { toast('Could not open that snapshot: ' + e.message); }
@@ -816,27 +887,27 @@ async function fillBk() {
     }, 'Download'),
     h('button', {
       class: 'ic sm danger', type: 'button', title: 'Delete this snapshot', html: I.trash, onclick: async () => {
-        if (!await confirmBox('Delete snapshot', `Delete the snapshot from ${fmt(b.t)}${b.driveId ? ', here and in Google Drive' : ''}? Your notebooks are not affected.`, 'Delete', true)) return;
+        if (!await confirmBox('Delete snapshot', `Delete the snapshot from ${fmt(b.t)}${b.item ? ', here and on the sync service' : ''}? Your notebooks are not affected.`, 'Delete', true)) return;
         await dropBackups([b]);
         fillBk();
       }
     }))) : [h('p', { class: 'modal-text small' }, 'No snapshots at the moment. One is made at the next weekly backup, or tap "Back up now".')]),
     all.length > 1 ? h('button', {
       class: 'btn sm bk-all', type: 'button', onclick: async () => {
-        if (!await confirmBox('Delete all snapshots', `Delete all ${all.length} snapshots, on this device and in Google Drive? Your notebooks are not affected. A new snapshot is made at the next weekly backup.`, 'Delete all', true)) return;
+        if (!await confirmBox('Delete all snapshots', `Delete all ${all.length} snapshots, on this device and on the sync service? Your notebooks are not affected. A new snapshot is made at the next weekly backup.`, 'Delete all', true)) return;
         await dropBackups(all);
         fillBk();
       }
     }, 'Delete all snapshots') : '');
 }
 
-// Remove snapshots from this device and, where they are there, from Drive. A fresh weekly one is not made at once.
+// Remove snapshots from this device and, where they are there, from the sync service. A fresh weekly one is not made at once.
 async function dropBackups(items) {
   const gone = new Set(items.map(b => b.t));
   let list = (await db.getMeta('autobk')) || [];
   for (const b of items) {
     if (b.local) await db.setMeta('autobk:' + b.t, null);
-    if (b.driveId) { try { await removeRemote(b.driveId); } catch (e) { if (e.status !== 404) toast('Could not delete the Drive copy: ' + e.message); } }
+    if (b.item) { try { await removeBlob('b', b.item.id); } catch (e) { toast('Could not delete the copy on the sync service: ' + e.message); } }
   }
   list = list.filter(b => !gone.has(b.t));
   await db.setMeta('autobk', list);

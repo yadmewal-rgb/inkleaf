@@ -291,7 +291,7 @@ export async function deleteDoc(doc) {
     const others = assetIdsOf((await db.all('pages')).filter(p => !p.deleted));
     const dead = [...mine].filter(id => !others.has(id));
     await db.putMany('assets', dead.map(id => ({ id, deleted: true, modified: t })));
-    if (dead.length) await db.setMeta('assetDels', ((await db.getMeta('assetDels')) || []).concat(dead)); // sync removes them from Drive
+    if (dead.length) await db.setMeta('assetDels', ((await db.getMeta('assetDels')) || []).concat(dead)); // sync removes them from the sync service
   }
 }
 

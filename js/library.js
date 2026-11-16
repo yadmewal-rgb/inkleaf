@@ -250,7 +250,7 @@ export async function mountLibrary(root, folderId, opts = {}) {
   const results = h('div', { class: 'results' });
   const crumbs = h('div', { class: 'crumbs' });
   const tools = h('div', { class: 'lib-tools' });
-  const syncBtn = h('button', { class: 'ic', type: 'button', title: 'Sync with Google Drive', html: I.sync, onclick: () => syncNow(true) });
+  const syncBtn = h('button', { class: 'ic', type: 'button', title: 'Sync', html: I.sync, onclick: () => syncNow(true) });
   const pdfInp = h('input', {
     type: 'file', accept: 'application/pdf,.pdf', hidden: true,
     onchange: async () => {
