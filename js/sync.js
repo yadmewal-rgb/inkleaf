@@ -15,7 +15,9 @@ import { modal, toast, confirmBox, busy } from './ui.js';
 import { I } from './icons.js';
 
 const SERVER = 'https://inkleaf-sync.yadmewal.workers.dev';
-const SCOPE = 'openid email https://www.googleapis.com/auth/drive.appdata';
+// drive.appdata: Inkleaf's hidden app folder (files it syncs); drive.file: only files Inkleaf itself creates, used
+// for the visible "Inkleaf" folder holding copies of the PDFs under their real names.
+const SCOPE = 'openid email https://www.googleapis.com/auth/drive.appdata https://www.googleapis.com/auth/drive.file';
 const DRIVE = 'https://www.googleapis.com';
 const STORES = { a: 'assets', f: 'folders', d: 'docs', p: 'pages' };
 const PART = 1_400_000; // pieces of large files (the service keeps at most 1.5 MB per piece)
@@ -94,7 +96,7 @@ async function signIn() {
   if (j.error === 'no-google-secret') throw new Error('The sync service is missing its Google setting (GOOGLE_SECRET in Cloudflare).');
   if (!r.ok || !j.token) throw new Error(j.error === 'google-rejected' ? 'Google did not confirm the sign-in. Try again.' : 'The sync service did not answer (' + r.status + ').');
   session = { token: j.token, email: j.email };
-  gTok = null; driveOn = null;
+  gTok = null; driveOn = null; visibleOk = null; visFolder = null;
   await db.setMeta('cloud', session);
 }
 
@@ -131,14 +133,48 @@ async function driveFind(id) {
   return (j.files || [])[0] || null;
 }
 
-async function driveUpload(id, data, mime, name, fileName) {
+async function driveUpload(id, data, mime, name, fileName, metaOver) {
   const boundary = 'inkleaf' + Math.random().toString(36).slice(2);
-  const meta = JSON.stringify({ name: fileName || 'a_' + id, parents: ['appDataFolder'], mimeType: mime, description: name || '' });
+  const meta = JSON.stringify(metaOver || { name: fileName || 'a_' + id, parents: ['appDataFolder'], mimeType: mime, description: name || '' });
   const body = new Blob([
     `--${boundary}\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n${meta}\r\n`,
     `--${boundary}\r\nContent-Type: ${mime}\r\n\r\n`, data, `\r\n--${boundary}--`
   ]);
   return (await drive('/upload/drive/v3/files?uploadType=multipart&fields=id', { method: 'POST', headers: { 'Content-Type': 'multipart/related; boundary=' + boundary }, body })).json();
+}
+
+// A visible "Inkleaf" folder in the person's Drive with a copy of every PDF under its real name, so they can be
+// found and opened without Inkleaf. Needs the drive.file permission; a link made by an older version lacks it,
+// and then visible copies wait until the person taps "Link Google Drive" again (visibleOk = false).
+let visFolder = null, visibleOk = null;
+async function visibleFolder() {
+  if (visFolder) return visFolder;
+  const q = encodeURIComponent("mimeType = 'application/vnd.google-apps.folder' and trashed = false and appProperties has { key='inkleaf' and value='files' }");
+  const j = await (await drive(`/drive/v3/files?q=${q}&fields=files(id)`)).json();
+  if (j.files && j.files[0]) return (visFolder = j.files[0].id);
+  const r = await (await drive('/drive/v3/files?fields=id', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ name: 'Inkleaf', mimeType: 'application/vnd.google-apps.folder', appProperties: { inkleaf: 'files' } })
+  })).json();
+  return (visFolder = r.id);
+}
+async function visibleCopy(a) {
+  if (visibleOk === false || a.mime !== 'application/pdf') return true; // only PDFs get a visible copy
+  try {
+    const folder = await visibleFolder();
+    const q = encodeURIComponent(`trashed = false and appProperties has { key='inkleaf' and value='${a.id}' }`);
+    const j = await (await drive(`/drive/v3/files?q=${q}&fields=files(id)`)).json();
+    if (!(j.files && j.files[0])) {
+      let name = (a.name || 'Document').replace(/[\\/]+/g, ' ').trim() || 'Document';
+      if (!/\.pdf$/i.test(name)) name += '.pdf';
+      await driveUpload(a.id, a.data, a.mime, '', '', { name, parents: [folder], mimeType: a.mime, appProperties: { inkleaf: a.id } });
+    }
+    visibleOk = true;
+    return true;
+  } catch (e) {
+    if (e.status === 403) { visibleOk = false; return true; } // no drive.file permission on this link yet
+    throw e;
+  }
 }
 
 async function signOut() {
@@ -331,12 +367,14 @@ async function pushRecord(kind, rec) {
 // older versions put there), otherwise to the sync service.
 async function pushAsset(id) {
   const name = 'a_' + id, s = st[name];
-  if (s && (s.drive || (await driveToken()) === null)) return;
+  if (s && ((s.drive && (s.vis || visibleOk === false)) || (await driveToken()) === null)) return;
   const a = await db.get('assets', id);
   if (!a || a.deleted || !a.data) return;
   if (await driveToken()) {
-    if (!await driveFind(id)) await driveUpload(id, a.data, a.mime || 'application/octet-stream', a.name || '');
+    if (!(s && s.drive) && !await driveFind(id)) await driveUpload(id, a.data, a.mime || 'application/octet-stream', a.name || '');
     st[name] = { drive: 1 };
+    // and a copy of a PDF in the visible "Inkleaf" folder (s.vis once it is there)
+    if (a.mime !== 'application/pdf' || (await visibleCopy(a) && visibleOk)) st[name].vis = 1;
     const r = await http(server + '/meta/a/' + encodeURIComponent(id), { headers: { Authorization: 'Bearer ' + session.token } });
     if (r.ok) await call('/blob/a/' + encodeURIComponent(id) + '?moved=1', { method: 'DELETE' }).catch(() => {});
     return;
@@ -512,7 +550,7 @@ async function fullPass() {
   // Every file here goes to Drive once it is linked (files older versions put on the sync service move across);
   // files the pages use but this device lacks are fetched.
   const linked = !!(await driveToken().catch(() => null));
-  for (const id of await db.keys('assets')) { const s = st['a_' + id]; if (!s || (linked && !s.drive)) queueAsset(id, 'up'); }
+  for (const id of await db.keys('assets')) { const s = st['a_' + id]; if (!s || (linked && (!s.drive || (!s.vis && visibleOk !== false)))) queueAsset(id, 'up'); }
   await fetchMissingFiles(await db.all('pages'));
   saveState();
   return changed;
@@ -685,6 +723,7 @@ export async function initSync() {
   const cfg = (await db.getMeta('sync')) || {};
   off = !!cfg.off;
   server = (await db.getMeta('cloudServer')) || SERVER; // a test server can be set here
+  gTok = null; driveOn = null; visibleOk = null; visFolder = null; // ask Google afresh (a new link may have added permissions)
   session = (await db.getMeta('cloud')) || null;
   st = (await db.getMeta('cloudState')) || {};
   cursor = (await db.getMeta('cloudCursor')) || 0;
@@ -827,7 +866,9 @@ export async function openSettings() {
           h('span', { class: 'bk-sub' }, ` · ${j.devices} device sign-in${j.devices === 1 ? '' : 's'}`)),
         h('div', { class: 'usage-bar' }, h('div', { class: 'usage-fill' + (pct > 85 ? ' warn' : ''), style: { width: Math.max(pct, 0.5) + '%' } })),
         j.drive
-          ? h('p', { class: 'modal-text small' }, 'PDFs and pictures are kept in your own Google Drive, and a full copy of every notebook goes there once a day. The sync service only holds your writing.')
+          ? h('div', null,
+            h('p', { class: 'modal-text small' }, 'PDFs and pictures are kept in your own Google Drive, and a full copy of every notebook goes there once a day. The sync service only holds your writing. Your PDFs also appear under their own names in the "Inkleaf" folder of your Drive.'),
+            visibleOk === false ? h('p', { class: 'modal-text small' }, 'To put the PDFs in the visible Inkleaf folder, Google needs one more permission:', ' ', h('button', { class: 'btn sm', type: 'button', onclick: async () => { m.close(); try { await signIn(); toast('Done. PDFs are copied to the Inkleaf folder in your Drive.', 3500); syncNow(false); } catch (e) { fail(e, true); } } }, 'Link Google Drive again')) : '')
           : h('div', null,
             h('p', { class: 'modal-text small' }, 'Your Google Drive is not linked yet, so PDFs and pictures are kept on the sync service. Sign in again to keep them (and a daily full copy) in your Google Drive instead.'),
             h('button', { class: 'btn sm', type: 'button', onclick: async () => { m.close(); try { await signIn(); toast('Google Drive linked. Files move there in the background.', 3500); syncNow(false); } catch (e) { fail(e, true); } } }, 'Link Google Drive')),
