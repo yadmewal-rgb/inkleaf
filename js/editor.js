@@ -159,6 +159,14 @@ export async function mountEditor(root, docId, opts = {}) {
       h('div', { class: 'grow' }),
       h('button', { class: 'ic sm', type: 'button', title: 'Close the zoom window', html: I.close, onclick: () => toggleZoom(false) })),
     zpad);
+  // Highlights tray: every highlight in the notebook, newest first, along the bottom of the screen.
+  const trayList = h('div', { class: 'hlt-list' });
+  const trayCardsBtn = h('button', { class: 'ic sm', type: 'button', html: I.cards, onclick: () => { prefs.hlCards = prefs.hlCards === false; savePrefs(); trayHead(); toast(prefs.hlCards ? 'New highlights become flashcards by themselves' : 'New highlights no longer become flashcards'); } });
+  const tray = h('div', { class: 'hltray', hidden: true },
+    h('div', { class: 'hlt-head' },
+      h('b', null, 'Highlights'), trayCardsBtn,
+      h('button', { class: 'ic sm', type: 'button', title: 'Hide (show again from More > Highlights)', html: I.close, onclick: () => { prefs.hlTray = false; savePrefs(); drawTray(); } })),
+    trayList);
   const zgrip = h('div', { class: 'zgrip', title: 'Move', html: I.grip }), zsize = h('div', { class: 'handle', title: 'Resize' });
   const zframe = h('div', { class: 'zframe', hidden: true }, zgrip, zsize);
   overlay.append(eraserCur, selBox, selBar, zframe, laserCv, pullHint, findBar);
@@ -185,7 +193,7 @@ export async function mountEditor(root, docId, opts = {}) {
         h('button', { class: 'ic wide', type: 'button', title: 'Full screen (F)', onclick: () => setFull(true), html: I.full }),
         h('button', { class: 'ic', type: 'button', title: 'More', onclick: e => moreMenu(e.currentTarget), html: I.more })),
       fullTools),
-    h('div', { class: 'stage' }, vp, overlay, zwin, panel),
+    h('div', { class: 'stage' }, vp, overlay, tray, zwin, panel),
     fileInp, scanInp);
   if (split) el.classList.add('in-split');
   el.addEventListener('pointerdown', () => { activeEd = me; }, true);
@@ -193,7 +201,7 @@ export async function mountEditor(root, docId, opts = {}) {
 
   // ------------------------------------------------------------------ view state
   let scale = 1, ls = 1, tx = 0, ty = 0, vpRect = vp.getBoundingClientRect(), worldW = 0, worldH = 0;
-  let zooming = false, zoomT = 0, rafView = 0;
+  let zooming = false, zoomT = 0, rafView = 0, trayH = 0;
   const pvs = []; // one "page view" per page: {page, el, bg, hi, ink, x, y, rs, clip, bgRs, bgTok, hiTok}
 
   let ptrs = new Map();
@@ -331,7 +339,7 @@ export async function mountEditor(root, docId, opts = {}) {
       tx = clamp(tx, Math.min(lo, hi), hi);
     } else tx = cw + 2 * pad <= vw ? (vw - cw) / 2 : clamp(tx, vw - cw - pad, pad);
     const top = full && !el.classList.contains('mini') ? 58 : 0; // room to pull the page out from under the floating tool bar
-    const bot = zw ? zwin.offsetHeight : 0;                      // and from behind the zoom window
+    const bot = zw ? zwin.offsetHeight : trayH; // and from behind the zoom window or the highlights tray
     ty = ch + top <= vh - bot ? (hz ? Math.max(top, (vh - bot - ch) / 2) : top) : clamp(ty, vh - bot - ch, top);
   }
 
@@ -798,6 +806,7 @@ export async function mountEditor(root, docId, opts = {}) {
     saveSoon(250);
     if (panelOpen) refreshThumb(page);
     if (zw && zw.pv.page === page) queueZoom();
+    queueTray();
   }
 
   // Saving copies whole pages on the main thread. Done while the pen is moving it makes the ink stutter, so a
@@ -1000,6 +1009,7 @@ export async function mountEditor(root, docId, opts = {}) {
     if (m !== rec) { docDirty = true; saveSoon(300); }
     orderPages();
     if (pages.map(p => p.id).join() !== before) remoteRebuild();
+    queueTray(); // cards may have come from another device
   }
 
   // Put pages in the notebook's order; pages it does not list yet stay at the end.
@@ -1702,6 +1712,8 @@ export async function mountEditor(root, docId, opts = {}) {
     if (a.map) zoomPaint(); // so the stroke does not blink in the zoom window when the live layer is wiped
     if (!action) clearLive();
     pushUndo({ pageId: page.id, add: items, remove: [] });
+    const hl = items.filter(it => it.tool === 'hl');
+    if (hl.length && prefs.hlCards !== false) autoCard(page, hl);
     dirty(page);
   }
 
@@ -2569,6 +2581,7 @@ export async function mountEditor(root, docId, opts = {}) {
       zpan = null;
       zwin.hidden = true;
       zframe.hidden = true;
+      drawTray(); // the tray comes back once the zoom window is closed
       applyView();
       return;
     }
@@ -2580,6 +2593,7 @@ export async function mountEditor(root, docId, opts = {}) {
     zframe.hidden = false;
     const [vx, vy] = toPage(pv, vpRect.left + 24, vpRect.top + vpRect.height * 0.2);
     zw = { pv, x: clamp(vx, 0, pg.w), y: clamp(vy, 0, pg.h), w: clamp(pg.w * 0.45, 100, pg.w), h: 0, zs: 1, d: 1, rect: null, home: 0, pdfC: null, pdfKey: '', pdfAsk: '', tok: 0 };
+    drawTray(); // the tray gives the bottom of the screen to the zoom window
     zoomLayout();
     zw.home = zw.x;
     zoomReveal();
@@ -4355,17 +4369,8 @@ export async function mountEditor(root, docId, opts = {}) {
     commitText();
     const rows = [];
     for (let i = 0; i < pages.length; i++) {
-      const pg = pages[i], hls = pg.items.filter(it => it.t === 's' && it.tool === 'hl');
-      if (!hls.length) continue;
-      // Strokes that touch (a highlight over several lines, or done in two passes) are one entry.
-      const groups = [];
-      for (const it of hls.map(it => ({ it, b: R.bounds(it) })).sort((m, n) => m.b.y - n.b.y || m.b.x - n.b.x)) {
-        const near = groups.filter(g2 => it.b.x < g2.b.x + g2.b.w + 4 && it.b.x + it.b.w > g2.b.x - 4 && it.b.y < g2.b.y + g2.b.h + 3 && it.b.y + it.b.h > g2.b.y - 3);
-        const g = { items: [it.it, ...near.flatMap(n => n.items)] }; // it may join groups that were apart until now
-        g.b = R.unionBounds(g.items);
-        for (const n of near) groups.splice(groups.indexOf(n), 1);
-        groups.push(g);
-      }
+      const pg = pages[i], groups = hlGroups(pg);
+      if (!groups.length) continue;
       let lines = null;
       if (pg.pdf && !pg.tpl) { try { lines = await pageText(pg.pdf.a, pg.pdf.i); } catch { /* not on this device */ } }
       for (const g of groups) rows.push({ pg, i, ...g, text: lines ? textUnder(pg, lines, g.items) : '' });
@@ -4386,14 +4391,123 @@ export async function mountEditor(root, docId, opts = {}) {
         return h('div', { class: 'tag-row' }, dot,
           h('button', { class: 'tag-go', type: 'button', title: 'Go to it', onclick: () => { m.close(); goToRect(r.pg, r.b); } }, what),
           h('span', { class: 'bk-sub' }, `p. ${r.i + 1}`),
-          h('button', { class: 'ic sm', type: 'button', title: 'Make a flashcard: the highlighted part is hidden on the question side', html: I.cards, onclick: e => { addCard({ p: r.pg.id, r: clozeRegion(r.pg, r.b), mk: boxOf(r.b) }); e.currentTarget.disabled = true; } }));
+          cardToggle(r));
       })),
       actions: [
         all ? { label: 'Copy the text', onClick: async () => { try { await navigator.clipboard.writeText(all); toast('Highlighted text copied'); } catch { toast('This browser would not copy the text.'); } return false; } } : null,
-        { label: `Make ${rows.length} flashcard${rows.length === 1 ? '' : 's'}`, onClick: () => { for (const r of rows) addCard({ p: r.pg.id, r: clozeRegion(r.pg, r.b), mk: boxOf(r.b) }, true); toast(`${rows.length} flashcards added`); } },
+        prefs.hlTray === false ? { label: 'Show them at the bottom', onClick: () => { prefs.hlTray = true; savePrefs(); drawTray(); } } : null,
+        rows.some(r => !groupCard(r)) ? { label: 'Make the missing flashcards', onClick: () => { const n = rows.filter(r => !groupCard(r)); for (const r of n) setGroupCard(r, true); toast(`${n.length} flashcard${n.length === 1 ? '' : 's'} added`); } } : null,
         { label: 'Close', primary: true }
       ].filter(Boolean)
     });
+  }
+
+  // Highlighter strokes that touch (a highlight over several lines, or done in two passes) count as one highlight.
+  function hlGroups(pg) {
+    const groups = [];
+    const hls = pg.items.filter(it => it.t === 's' && it.tool === 'hl').map(it => ({ it, b: R.bounds(it) }));
+    for (const it of hls.sort((m, n) => m.b.y - n.b.y || m.b.x - n.b.x)) {
+      const near = groups.filter(g2 => it.b.x < g2.b.x + g2.b.w + 4 && it.b.x + it.b.w > g2.b.x - 4 && it.b.y < g2.b.y + g2.b.h + 3 && it.b.y + it.b.h > g2.b.y - 3);
+      const g = { items: [it.it, ...near.flatMap(n => n.items)] }; // it may join groups that were apart until now
+      g.b = R.unionBounds(g.items);
+      for (const n of near) groups.splice(groups.indexOf(n), 1);
+      groups.push(g);
+    }
+    return groups;
+  }
+
+  // --- highlight flashcards. A card made from a highlight remembers its strokes (h = their ids) and always
+  // covers wherever they are now, so moving or extending the highlight updates the card.
+  const cardsOf = r => { const ids = new Set(r.items.map(it => it.id)); return (doc.cards || []).filter(c => c.p === r.pg.id && c.h && c.h.some(id => ids.has(id))); };
+  const groupCard = r => cardsOf(r)[0] || null;
+
+  function setGroupCard(r, on) {
+    const old = cardsOf(r), ids = r.items.map(it => it.id);
+    let cards = (doc.cards || []).filter(c => !old.includes(c));
+    if (on) cards = [...cards, old.length ? { ...old[0], h: [...new Set([...old.flatMap(c => c.h), ...ids])] } : { id: uid(), box: 0, due: 0, p: r.pg.id, h: ids }];
+    saveCards(cards);
+  }
+
+  // A new highlight becomes a card, or joins the card of the highlight it touches (the next line, a second pass).
+  function autoCard(pg, items) {
+    const g = hlGroups(pg).find(g2 => g2.items.includes(items[0]));
+    setGroupCard({ pg, items: g ? g.items : items }, true);
+  }
+
+  function cardToggle(r) {
+    const b = h('button', { class: 'ic sm', type: 'button', html: I.cards });
+    const show = () => { const on = !!groupCard(r); b.classList.toggle('on', on); b.title = on ? 'This is a flashcard. Tap to remove the card' : 'Make it a flashcard (the highlighted part is hidden on the question side)'; };
+    b.onclick = e => { e.stopPropagation(); const on = !groupCard(r); setGroupCard(r, on); show(); toast(on ? 'Flashcard added' : 'Flashcard removed', 1400); };
+    show();
+    return b;
+  }
+
+  // Where a card's question and answer are on its page now (null = its page or its highlight is gone).
+  function cardArea(c) {
+    const pg = pages.find(p => p.id === c.p);
+    if (!pg) return null;
+    if (!c.h) return c.r ? { pg, r: c.r, mk: c.mk } : null;
+    const hs = new Set(c.h), its = pg.items.filter(it => hs.has(it.id));
+    if (!its.length) return null;
+    const mk = boxOf(R.unionBounds(its));
+    return { pg, mk, r: clozeRegion(pg, mk) };
+  }
+
+  // --- the tray along the bottom
+  let trayT = 0;
+  const trayChips = new Map(); // highlight key -> its chip, reused while the highlight is unchanged
+  function trayHead() {
+    const on = prefs.hlCards !== false;
+    trayCardsBtn.classList.toggle('on', on);
+    trayCardsBtn.title = on ? 'New highlights become flashcards by themselves (tap to stop)' : 'Tap to make new highlights into flashcards by themselves';
+  }
+  function queueTray() { clearTimeout(trayT); trayT = setTimeout(drawTray, 350); }
+
+  async function drawTray() {
+    clearTimeout(trayT);
+    if (destroyed) return;
+    if (action) { trayT = setTimeout(drawTray, 300); return; } // not while the pen is on the page
+    const rows = [];
+    if (prefs.hlTray !== false && !zw) {
+      pages.forEach((pg, i) => { for (const g of hlGroups(pg)) rows.push({ pg, i, ...g, z: Math.max(...g.items.map(it => it.z || 0)) }); });
+    }
+    const show = rows.length > 0;
+    if (tray.hidden === show) tray.hidden = !show;
+    if (!show) { trayChips.clear(); trayList.replaceChildren(); }
+    else {
+      trayHead();
+      rows.sort((a, b) => b.z - a.z); // newest first
+      const keep = new Map(), out = [];
+      for (const r of rows.slice(0, 80)) {
+        const key = r.pg.id + '|' + (groupCard(r) ? 'c|' : '') + r.items.map(it => it.id + ':' + it.m).join();
+        const chip = trayChips.get(key) || trayChip(r);
+        keep.set(key, chip);
+        out.push(chip);
+      }
+      trayChips.clear();
+      for (const [k, v] of keep) trayChips.set(k, v);
+      trayList.replaceChildren(...out);
+    }
+    const hh = tray.hidden ? 0 : tray.offsetHeight;
+    if (hh !== trayH) { trayH = hh; applyView(); }
+  }
+
+  function trayChip(r) {
+    const what = h('span', { class: 'hlt-what' }, '…');
+    const chip = h('div', { class: 'hlt-chip', title: 'Go to it', onclick: () => goToRect(r.pg, r.b) },
+      h('span', { class: 'tag-dot', style: { background: r.items[0].c } }), what,
+      h('span', { class: 'bk-sub' }, `p. ${r.i + 1}`), cardToggle(r));
+    (async () => {
+      let text = '';
+      if (r.pg.pdf && !r.pg.tpl) { try { text = textUnder(r.pg, await pageText(r.pg.pdf.a, r.pg.pdf.i), r.items); } catch { /* not on this device yet */ } }
+      if (text) { fill(what, text); return; }
+      const src = await regionCanvas(r.pg, r.b, 1.5, 2); // one scale, so chips of a page share one render
+      const c = h('canvas', { class: 'hlt-pic' });
+      c.width = src.width; c.height = src.height;
+      c.getContext('2d').drawImage(src, 0, 0);
+      fill(what, c);
+    })().catch(() => { fill(what, 'Highlight'); });
+    return chip;
   }
 
   // The PDF text lying under a highlight.
@@ -4426,10 +4540,18 @@ export async function mountEditor(root, docId, opts = {}) {
   const boxOf = b => ({ x: Math.round(b.x), y: Math.round(b.y), w: Math.round(b.w), h: Math.round(b.h) });
   // The surroundings shown with a covered highlight: the full width of the page, a few lines above and below.
   const clozeRegion = (pg, b) => { const y = clamp(b.y - 34, 0, pg.h); return { x: 0, y: Math.round(y), w: pg.w, h: Math.round(Math.min(pg.h, b.y + b.h + 34) - y) }; };
-  const dueCards = () => (doc.cards || []).filter(c => (c.due || 0) <= Date.now() && pages.some(p => p.id === c.p));
+  const dueCards = () => (doc.cards || []).filter(c => (c.due || 0) <= Date.now() && cardArea(c));
 
+  // Every changed card is stamped (m) and every removed one noted in cardDels, so sync can merge the cards
+  // of two devices one by one (see mergeCards in sync.js).
   function saveCards(cards) {
-    doc.cards = cards;
+    const now = Date.now(), before = new Map((doc.cards || []).map(c => [c.id, c])), keep = new Set(cards.map(c => c.id));
+    const dels = { ...(doc.cardDels || {}) };
+    for (const id of before.keys()) if (!keep.has(id)) dels[id] = now;
+    for (const id in dels) if (now - dels[id] > 120 * 864e5) delete dels[id];
+    doc.cards = cards.map(c => (before.get(c.id) === c ? c : { ...c, m: now }));
+    doc.cardDels = dels;
+    queueTray();
     docDirty = true;
     changed = true;
     saveSoon(250);
@@ -4450,7 +4572,7 @@ export async function mountEditor(root, docId, opts = {}) {
   }
 
   function cardsDialog() {
-    const cards = (doc.cards || []).filter(c => pages.some(p => p.id === c.p));
+    const cards = (doc.cards || []).filter(c => cardArea(c));
     if (!cards.length) {
       toast('No flashcards yet. Select something and choose More > Make a flashcard, or make them from More > Highlights.', 5000);
       return;
@@ -4498,7 +4620,9 @@ export async function mountEditor(root, docId, opts = {}) {
         fill(foot, h('button', { class: 'btn primary', type: 'button', onclick: () => m.close() }, 'Close'));
         return;
       }
-      const c = queue[i], pg = pages.find(p => p.id === c.p);
+      const c0 = queue[i], A = cardArea(c0);
+      if (!A) { queue.splice(i, 1); draw(); return; } // its highlight was erased since
+      const c = { ...c0, r: A.r, mk: A.mk }, pg = A.pg;
       const head = h('div', { class: 'card-head' }, `Card ${i + 1} of ${queue.length}`,
         h('button', { class: 'ic sm danger', type: 'button', title: 'Delete this card', html: I.trash, onclick: () => { saveCards((doc.cards || []).filter(x => x.id !== c.id)); queue.splice(i, 1); shown = false; draw(); } }));
       const pic = h('canvas', { class: 'card-c' });
@@ -5427,6 +5551,7 @@ export async function mountEditor(root, docId, opts = {}) {
   scrollToPage(startAt);
   ro.observe(vp);
   if (opts.q) { findInp.value = opts.q; openFind(); } // opened from a library search: show the matches
+  drawTray();
 
   return { destroy };
 }

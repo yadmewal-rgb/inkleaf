@@ -203,8 +203,27 @@ export function mergeDoc(L, R, gone) {
   if (nu.deleted || old.deleted) return nu;
   const have = new Set(nu.pages || []);
   const extra = (old.pages || []).filter(id => !have.has(id) && !(gone && gone.has(id)));
-  if (!extra.length) return nu;
-  return { ...nu, pages: [...(nu.pages || []), ...extra], modified: Date.now() };
+  const cards = mergeCards(nu, old);
+  if (!extra.length && !cards) return nu;
+  const out = { ...nu, modified: Date.now() };
+  if (extra.length) out.pages = [...(nu.pages || []), ...extra];
+  if (cards) Object.assign(out, cards);
+  return out;
+}
+
+// Flashcards are merged one by one, so cards made on two devices at once are all kept: per card the later
+// change (m) wins, and cardDels (id -> when deleted) stops a deleted card coming back. null = nu already has it all.
+function mergeCards(nu, old) {
+  const a = nu.cards || [], b = old.cards || [];
+  if (!b.length && !old.cardDels) return null;
+  const dels = { ...(old.cardDels || {}), ...(nu.cardDels || {}) };
+  for (const k in old.cardDels || {}) if (dels[k] < old.cardDels[k]) dels[k] = old.cardDels[k];
+  const by = new Map();
+  for (const c of a) by.set(c.id, c); // nu's order first, so an unchanged merge compares equal
+  for (const c of b) { const o = by.get(c.id); if (!o || (c.m || 0) > (o.m || 0)) by.set(c.id, c); }
+  const cards = [...by.values()].filter(c => !(dels[c.id] >= (c.m || 0)));
+  const same = cards.length === a.length && cards.every((c, i) => c === a[i]) && Object.keys(dels).length === Object.keys(nu.cardDels || {}).length;
+  return same ? null : { cards, cardDels: dels };
 }
 
 async function merge(kind, L, R) {
