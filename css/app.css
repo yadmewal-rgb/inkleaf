@@ -734,3 +734,11 @@ button.pageind:hover { background: var(--surface-2); }
 .vscroll:hover .vs-thumb, .vscroll.drag .vs-thumb { width: 12px; background: rgba(60, 64, 72, .7); }
 .vs-tip { position: absolute; right: 26px; top: 0; padding: 4px 9px; border-radius: 8px; background: var(--accent); color: var(--accent-ink, #fff); font-size: 13px; font-weight: 600; white-space: nowrap; pointer-events: none; }
 @media (pointer: coarse) { .overlay > .vscroll { width: 28px; } .vs-thumb { width: 10px; } }
+
+/* Settings: sync health */
+.health { margin: 4px 0 10px; font-size: 13px; }
+.health .dot { display: inline-block; width: 9px; height: 9px; border-radius: 50%; margin-right: 6px; background: #868e96; vertical-align: 1px; }
+.health .dot.ok { background: #2f9e44; }
+.health .dot.busy { background: #f08c00; }
+.health .dot.bad { background: #e03131; }
+.health .warn { color: #c92a2a; }

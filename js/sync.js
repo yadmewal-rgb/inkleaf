@@ -43,6 +43,16 @@ let chain = Promise.resolve();
 let status = { state: 'off', text: 'Sync is not set up' };
 
 export const syncStatus = () => status;
+
+// What the sync has done lately, for the health line in Settings: when a change last went out, when the service was
+// last checked, and anything waiting or failing.
+const health = { sent: 0, checked: 0, err: null };
+export function syncHealth() {
+  return {
+    ...health, waiting: writeSeq !== pushedSeq,
+    files: assetQ.length + assetActive, retrying: assetRetry.size, live: wsLive, signedIn: !!session && !off
+  };
+}
 function setStatus(state, text) {
   if (status.state === state && status.text === text) return;
   status = { state, text };
@@ -341,6 +351,7 @@ async function pushRecord(kind, rec) {
       const { bytes, gz } = await encode(rec);
       const j = await putBlob(kind, rec.id, bytes, { base: s ? s.s : 0, gz });
       st[name] = { lm: rec.modified, s: j.s };
+      health.sent = Date.now();
       return;
     } catch (e) {
       if (e.conflict === undefined) throw e;
@@ -398,6 +409,7 @@ async function pushAsset(id) {
   }
   if (linked && (a.mime !== 'application/pdf' || (await visibleCopy(a) && visibleOk))) cur.vis = 1;
   st[name] = cur;
+  health.sent = Date.now();
 }
 
 // Fetch a file this device lacks. item: its entry on the sync service, if known; otherwise Drive is asked first.
@@ -467,7 +479,7 @@ function pumpAssets() {
       .then(() => { assetRetry.delete(id); saveState(); })
       .catch(e => {
         assetRetry.set(id, { at: Date.now() + 30000, job });
-        if (!e.signin) console.warn('File transfer failed and will be retried', e);
+        if (!e.signin) { console.warn('File transfer failed and will be retried', e); health.err = { t: Date.now(), msg: 'A file (PDF or picture) could not be transferred; it is tried again shortly. ' + (e.message || '') }; }
       })
       .finally(() => {
         assetBusy.delete(id);
@@ -541,6 +553,7 @@ async function pullChanges() {
     if (j.items.length) cursor = Math.max(cursor, ...j.items.map(i => i.s));
     if (!j.more) break;
   }
+  health.checked = Date.now();
   saveState();
   return changed;
 }
@@ -650,6 +663,7 @@ function pullSoon() {
 const ready = () => !!session && !off && navigator.onLine;
 
 function fail(e, interactive) {
+  if (!e.signin && e.name !== 'TypeError' && navigator.onLine) health.err = { t: Date.now(), msg: e.message };
   if (e.signin) { setStatus('signin', 'Sync paused. Tap to sign in again.'); return; }
   if (e.name === 'TypeError' || !navigator.onLine) { // the request never reached the service
     setStatus('error', 'Offline. Changes are saved here and will sync when you are back online.');
@@ -716,6 +730,12 @@ function pushNow() {
     .then(ok => { if (ok) pushedSeq = Math.max(pushedSeq, seq); else savedPages = null; });
 }
 
+// A full pass also sends everything saved before it started, so those saves no longer count as waiting.
+function fullRun(interactive) {
+  const seq = writeSeq;
+  return run(fullPass, interactive).then(ok => { if (ok) pushedSeq = Math.max(pushedSeq, seq); return ok; });
+}
+
 function pushSoon(delay = PUSH_MS) {
   clearTimeout(pushT);
   pushT = setTimeout(() => { if (ready()) pushNow(); }, delay);
@@ -729,7 +749,7 @@ export async function syncNow(interactive = false) {
     if (!interactive) return;
     try { await signIn(); } catch (e) { fail(e, true); return; }
   }
-  const ok = await run(fullPass, interactive);
+  const ok = await fullRun(interactive);
   if (ok && interactive) toast('Synced');
   openLive();
   schedule();
@@ -754,7 +774,7 @@ export async function initSync() {
     });
     bus.on('editor-open', id => { openDocs.add(id); if (ready()) { run(pullChanges, false); } schedule(); });
     bus.on('editor-close', id => { openDocs.delete(id); schedule(); });
-    window.addEventListener('online', () => { if (ready()) { run(fullPass, false); openLive(); } });
+    window.addEventListener('online', () => { if (ready()) { fullRun(false); openLive(); } });
     setTimeout(() => autoBackup(), 8000);          // weekly snapshot, if one is due
     setInterval(() => autoBackup(), 3600e3);
     document.addEventListener('visibilitychange', () => {
@@ -766,7 +786,7 @@ export async function initSync() {
   closeLive();
   if (off) { setStatus('off', 'Sync is turned off on this device'); clearTimeout(loopT); return; }
   if (!session) { setStatus('signin', 'Tap to sign in with Google once and start live sync.'); clearTimeout(loopT); return; }
-  run(fullPass, false);
+  fullRun(false);
   openLive();
   schedule();
 }
@@ -872,6 +892,24 @@ export async function openSettings() {
       await initSync();
     }
   };
+  // Sync health: when changes last went out and came in, and anything waiting or failing. Refreshed while open.
+  const healthEl = h('div', { class: 'health' });
+  const ago = t => { const s = Math.round((Date.now() - t) / 1000); return s < 10 ? 'just now' : s < 60 ? s + ' s ago' : s < 3600 ? Math.round(s / 60) + ' min ago' : new Date(t).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }); };
+  const drawHealth = () => {
+    const x = syncHealth();
+    if (!x.signedIn) { healthEl.replaceChildren(); return; }
+    const okNow = !x.waiting && !x.files && !x.retrying && !(x.err && x.err.t > Math.max(x.sent, x.checked));
+    const rows = [
+      h('div', null, h('span', { class: 'dot ' + (okNow ? 'ok' : x.err && !x.waiting ? 'bad' : 'busy') }), okNow ? 'All in step.' : x.waiting ? 'Changes waiting to be sent.' : 'Working on it.'),
+      h('div', { class: 'bk-sub' }, `Last change sent: ${x.sent ? ago(x.sent) : 'none since Inkleaf opened'} · Checked for changes: ${x.checked ? ago(x.checked) : 'not yet'} · Live connection: ${x.live ? 'on' : 'off (checking every few seconds)'}`)
+    ];
+    if (x.files) rows.push(h('div', { class: 'bk-sub' }, `${x.files} file${x.files === 1 ? '' : 's'} (PDFs, pictures) being transferred.`));
+    if (x.retrying) rows.push(h('div', { class: 'bk-sub' }, `${x.retrying} file${x.retrying === 1 ? '' : 's'} will be tried again shortly.`));
+    if (x.err && x.err.t > Math.max(x.sent, x.checked) - 60e3) rows.push(h('div', { class: 'bk-sub warn' }, `Last problem (${ago(x.err.t)}): ${x.err.msg}`));
+    healthEl.replaceChildren(...rows);
+  };
+  drawHealth();
+  const healthT = setInterval(() => { if (!healthEl.isConnected) { clearInterval(healthT); return; } drawHealth(); }, 2000);
   // How much of this person's share of the sync service is used, and where PDFs and pictures are kept.
   const usage = h('div', { class: 'usage', hidden: true });
   if (session && !cfg.off && navigator.onLine) {
@@ -905,7 +943,7 @@ export async function openSettings() {
         'Notes are always kept on this device, so they open instantly and work offline. With sync on, every change is also ',
         'sent to Inkleaf\'s own sync service (on Cloudflare) and appears on your other devices within a second or two.'),
       h('p', { class: 'modal-text small' }, who),
-      usage,
+      usage, healthEl,
       h('div', { class: 'row' },
         h('button', {
           class: 'btn primary', type: 'button',

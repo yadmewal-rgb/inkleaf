@@ -7,6 +7,7 @@ import { h, uid, bus, fmtDate, debounce, fill } from './util.js';
 import { I } from './icons.js';
 import { modal, promptText, confirmBox, popMenu, toast, busy, chipGroup, templatePicker, PAPER_OPTS } from './ui.js';
 import { openPdf } from './pdfrender.js';
+import { importGoodnotes } from './goodnotes.js';
 import { pdfPagesText } from './pdftools.js';
 import { exportFlow } from './export.js';
 import { renderPageTo } from './render.js';
@@ -271,6 +272,17 @@ export async function mountLibrary(root, folderId, opts = {}) {
       if (ids.length === 1) location.hash = '#/d/' + ids[0]; else render();
     }
   });
+  // No file type filter: iPads grey out .goodnotes files when one is given.
+  const gnInp = h('input', {
+    type: 'file', hidden: true,
+    onchange: async () => {
+      const f = gnInp.files[0];
+      gnInp.value = '';
+      if (!f) return;
+      const doc = await importGoodnotes(f, folderId);
+      if (doc) location.hash = '#/d/' + doc.id;
+    }
+  });
   const search = h('input', {
     class: 'search', type: 'search', placeholder: 'Search notebooks and pages',
     oninput: () => { query = search.value.trim().toLowerCase(); render(); deepSoon(); }
@@ -288,7 +300,7 @@ export async function mountLibrary(root, folderId, opts = {}) {
       syncBtn, bin ? null : binBtn,
       h('button', { class: 'ic', type: 'button', title: 'Settings', html: I.settings, onclick: () => openSettings() }),
       bin ? null : h('button', { class: 'btn primary new', type: 'button', onclick: e => newMenu(e.currentTarget) }, h('span', { class: 'btn-ic', html: I.plus }), 'New')),
-    crumbs, tools, grid, results, pdfInp, fileInp);
+    crumbs, tools, grid, results, pdfInp, fileInp, gnInp);
   root.append(el);
 
   function newMenu(anchor) {
@@ -296,6 +308,7 @@ export async function mountLibrary(root, folderId, opts = {}) {
       { label: 'Notebook', icon: I.book, onClick: newNotebook },
       { label: 'Folder', icon: I.folder, onClick: newFolder },
       { label: 'Import PDF', icon: I.pdf, onClick: () => pdfInp.click() },
+      { label: 'Import a GoodNotes file', icon: I.book, onClick: () => gnInp.click() },
       { label: 'Open a notebook file', icon: I.share, onClick: () => fileInp.click() }
     ], { align: 'right' });
   }
