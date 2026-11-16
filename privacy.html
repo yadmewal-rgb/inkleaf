@@ -1,0 +1,47 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Inkleaf privacy</title>
+<style>
+  :root { --bg: #f6f5f1; --ink: #1c1d21; --muted: #5c606a; --accent: #2f6f5e; }
+  @media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) { --bg: #16171a; --ink: #eceef1; --muted: #a3a8b1; --accent: #6fbfa6; } }
+  body { margin: 0; background: var(--bg); color: var(--ink); font: 16px/1.55 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+  main { max-width: 720px; margin: 0 auto; padding: 32px 16px 48px; }
+  h1 { font-size: 26px; margin: 0 0 4px; }
+  h2 { font-size: 18px; margin: 28px 0 6px; }
+  p, li { color: var(--ink); }
+  .muted { color: var(--muted); font-size: 14px; }
+  a { color: var(--accent); }
+</style>
+</head>
+<body>
+<main>
+  <h1>Inkleaf privacy</h1>
+  <p class="muted">Inkleaf is a personal notes and PDF annotation app, used by its developer and a few invited friends. Last updated 16 November 2026.</p>
+
+  <h2>What Inkleaf keeps, and where</h2>
+  <ul>
+    <li><b>On your device:</b> all your notebooks, writing, PDFs and pictures, in the browser's own storage.</li>
+    <li><b>Inkleaf's sync service</b> (run on Cloudflare): your notebooks and writing, so they appear on your other devices. Each person's data is kept separately and only their own signed-in devices can reach it.</li>
+    <li><b>Your own Google Drive:</b> your PDFs and pictures, and a daily copy of your notebooks, in Inkleaf's private app folder. This folder is hidden in Drive and only Inkleaf can read it.</li>
+  </ul>
+
+  <h2>What Inkleaf asks Google for</h2>
+  <p>When you sign in with Google, Inkleaf asks for your email address (to know who you are and whether your account is allowed to use the service) and for access to its own app folder in your Google Drive (<code>drive.appdata</code>). It cannot see any other files in your Drive.</p>
+
+  <h2>What Inkleaf does not do</h2>
+  <ul>
+    <li>No advertising, tracking or analytics.</li>
+    <li>Your notes and files are not sold, shared or read by anyone else.</li>
+    <li>Nothing is used to train AI models.</li>
+  </ul>
+
+  <h2>Removing your data</h2>
+  <p>Sign out in Inkleaf's Settings to disconnect a device. You can remove Inkleaf's access to your Google Drive at any time in your Google Account under Security → Third-party apps, and delete its hidden app data in Google Drive → Settings → Manage apps. To have your data on the sync service deleted, ask the person who invited you to Inkleaf, or the developer at the support address shown on the Google sign-in screen.</p>
+
+  <p class="muted"><a href="./">Open Inkleaf</a></p>
+</main>
+</body>
+</html>
