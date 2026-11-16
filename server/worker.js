@@ -69,15 +69,27 @@ export default {
     try {
       if (url.pathname === '/' && req.method === 'GET') return withCors(json({ app: 'inkleaf-sync', ok: true }), cors);
 
+      // Sign-in. {code}: a Google authorization code (the app's normal way): exchanged here for a refresh token
+      // too, so the service can later hand devices fresh Google Drive passes. {access_token}: older app versions.
       if (url.pathname === '/auth' && req.method === 'POST') {
-        const { access_token: at, label } = await req.json().catch(() => ({}));
+        const { access_token: given, code, label } = await req.json().catch(() => ({}));
+        let at = given, rt = null;
+        if (code) {
+          if (!env.GOOGLE_SECRET) return withCors(json({ error: 'no-google-secret' }, 500), cors);
+          const t = await (await fetch('https://oauth2.googleapis.com/token', {
+            method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+            body: new URLSearchParams({ code, client_id: env.CLIENT_ID || CLIENT_ID, client_secret: env.GOOGLE_SECRET, redirect_uri: 'postmessage', grant_type: 'authorization_code' })
+          })).json().catch(() => ({}));
+          at = t.access_token; rt = t.refresh_token || null;
+          if (!at) return withCors(json({ error: 'google-rejected', detail: t.error || '' }, 401), cors);
+        }
         if (!at) return withCors(json({ error: 'no-token' }, 400), cors);
         const who = await googleUser(at, env);
         if (!who) return withCors(json({ error: 'google-rejected' }, 401), cors);
         if (!allowedEmail(who.email, env)) return withCors(json({ error: 'not-allowed', email: who.email }, 403), cors);
         const stub = env.USER.get(env.USER.idFromName(who.sub));
-        const secret = await stub.newSession(who.email, String(label || '').slice(0, 80));
-        return withCors(json({ token: who.sub + '.' + secret, email: who.email }), cors);
+        const r = await stub.newSession(who.email, String(label || '').slice(0, 80), rt);
+        return withCors(json({ token: who.sub + '.' + r.secret, email: who.email, drive: r.drive }), cors);
       }
 
       // Everything else belongs to one person: the device key says whose Durable Object to ask.
@@ -112,13 +124,36 @@ export class User extends DurableObject {
   seq() { return Number(this.kvGet('seq') || 0); }
   nextSeq() { const s = this.seq() + 1; this.kvSet('seq', s); return s; }
 
-  // Called by the Worker after Google confirmed who this is. Returns the secret half of a new device key.
-  async newSession(email, label) {
+  // Called by the Worker after Google confirmed who this is. Returns the secret half of a new device key, and
+  // whether this person's Google Drive is linked (a refresh token is kept, so files can go to their Drive).
+  async newSession(email, label, refreshToken) {
     const secret = randomKey(), now = Date.now();
     this.kvSet('email', email);
+    if (refreshToken) { this.kvSet('grt', refreshToken); this.gat = null; }
     this.sql.exec('INSERT INTO sessions (h, created, seen, label) VALUES (?, ?, ?, ?)', await sha256(secret), now, now, label || '');
-    return secret;
+    return { secret, drive: !!this.kvGet('grt') };
   }
+
+  // A Google access token (an hour long) for this person's Drive app folder, from the kept refresh token.
+  async googleToken() {
+    if (this.gat && Date.now() < this.gexp - 120e3) return this.gat;
+    const rt = this.kvGet('grt');
+    if (!rt || !this.env.GOOGLE_SECRET) return null;
+    const t = await (await fetch('https://oauth2.googleapis.com/token', {
+      method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({ refresh_token: rt, client_id: this.env.CLIENT_ID || CLIENT_ID, client_secret: this.env.GOOGLE_SECRET, grant_type: 'refresh_token' })
+    })).json().catch(() => ({}));
+    if (!t.access_token) {
+      if (t.error === 'invalid_grant') this.sql.exec("DELETE FROM kv WHERE k = 'grt'"); // revoked or expired: sign in again links it anew
+      return null;
+    }
+    this.gat = t.access_token;
+    this.gexp = Date.now() + (Number(t.expires_in) || 3600) * 1000;
+    return this.gat;
+  }
+
+  usedBytes() { return Number(this.sql.exec('SELECT COALESCE(SUM(size), 0) AS b FROM recs WHERE size > 0').toArray()[0].b); }
+  quota() { return (Number(this.env.QUOTA_MB) || 500) * 1048576; }
 
   async session(token) {
     const secret = String(token || '').split('.')[1];
@@ -153,6 +188,18 @@ export class User extends DurableObject {
     const token = ((req.headers.get('Authorization') || '').match(/^Bearer\s+(\S+)$/) || [])[1];
     const sess = await this.session(token);
     if (!sess) return json({ error: 'signin' }, 401);
+
+    // GET /google-token : a fresh pass for this person's Google Drive app folder, where PDFs and pictures are kept.
+    if (p[0] === 'google-token' && req.method === 'GET') {
+      const t = await this.googleToken();
+      return t ? json({ access_token: t, exp: this.gexp }) : json({ error: 'no-google' }, 404);
+    }
+
+    // GET /meta/k/id : one record's entry, if the service holds it.
+    if (p[0] === 'meta' && KINDS.has(p[1]) && p[2] && req.method === 'GET') {
+      const r = this.sql.exec('SELECT k, id, s, size, parts, info, gz FROM recs WHERE k = ? AND id = ?', p[1], p[2]).toArray()[0];
+      return r ? json(r) : json({ error: 'missing' }, 404);
+    }
 
     // GET /changes?since=s : what changed after s, oldest first (metadata only; blobs are fetched one by one).
     if (p[0] === 'changes' && req.method === 'GET') {
@@ -198,8 +245,14 @@ export class User extends DurableObject {
         const have = this.sql.exec('SELECT COUNT(*) AS c FROM pending WHERE up = ?', up).toArray()[0].c;
         if (!up || !parts || have !== parts) return json({ error: 'parts-missing', have }, 400);
       }
-      const q = url.searchParams, cur = this.sql.exec('SELECT s FROM recs WHERE k = ? AND id = ?', k, id).toArray()[0];
+      const q = url.searchParams, cur = this.sql.exec('SELECT s, size FROM recs WHERE k = ? AND id = ?', k, id).toArray()[0];
       if (q.has('base') && Number(q.get('base')) !== (cur ? cur.s : 0)) return json({ error: 'conflict', s: cur ? cur.s : 0 }, 409);
+      // Each person's share of the service is capped (QUOTA_MB, default 500), so the account keeps room for others.
+      const newSize = Number(q.get('size') || (body ? body.byteLength : 0));
+      if (k === 'a' && this.usedBytes() - (cur && cur.size > 0 ? cur.size : 0) + newSize > this.quota()) { // files only: writing always gets through
+        if (up) this.sql.exec('DELETE FROM pending WHERE up = ?', up);
+        return json({ error: 'full', used: this.usedBytes(), quota: this.quota() }, 507);
+      }
       const s = this.nextSeq();
       this.sql.exec('DELETE FROM parts WHERE k = ? AND id = ?', k, id);
       if (body) this.sql.exec('INSERT INTO parts (k, id, n, data) VALUES (?, ?, 0, ?)', k, id, body);
@@ -220,7 +273,8 @@ export class User extends DurableObject {
     // a snapshot just goes.
     if (p[0] === 'blob' && KINDS.has(p[1]) && p[2] && req.method === 'DELETE') {
       this.sql.exec('DELETE FROM parts WHERE k = ? AND id = ?', p[1], p[2]);
-      if (p[1] === 'b') { this.sql.exec('DELETE FROM recs WHERE k = ? AND id = ?', p[1], p[2]); return json({ ok: true }); }
+      // A snapshot just goes; so does a file that moved to the person's Google Drive (?moved=1): it still exists.
+      if (p[1] === 'b' || url.searchParams.get('moved') === '1') { this.sql.exec('DELETE FROM recs WHERE k = ? AND id = ?', p[1], p[2]); return json({ ok: true }); }
       const s = this.nextSeq();
       this.sql.exec(`INSERT INTO recs (k, id, s, size, parts, info, gz) VALUES (?, ?, ?, -1, 0, '', 0)
         ON CONFLICT (k, id) DO UPDATE SET s = excluded.s, size = -1, parts = 0`, p[1], p[2], s);
@@ -230,8 +284,7 @@ export class User extends DurableObject {
 
     if (p[0] === 'me' && req.method === 'GET') {
       const n = this.sql.exec('SELECT COUNT(*) AS c FROM sessions').toArray()[0].c;
-      const used = this.sql.exec('SELECT COALESCE(SUM(size), 0) AS b FROM recs WHERE size > 0').toArray()[0].b;
-      return json({ email: this.kvGet('email'), devices: n, bytes: used, seq: this.seq() });
+      return json({ email: this.kvGet('email'), devices: n, bytes: this.usedBytes(), quota: this.quota(), drive: !!this.kvGet('grt'), seq: this.seq() });
     }
 
     if (p[0] === 'signout' && req.method === 'POST') {

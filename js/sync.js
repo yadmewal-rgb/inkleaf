@@ -15,7 +15,8 @@ import { modal, toast, confirmBox, busy } from './ui.js';
 import { I } from './icons.js';
 
 const SERVER = 'https://inkleaf-sync.yadmewal.workers.dev';
-const SCOPE = 'openid email';
+const SCOPE = 'openid email https://www.googleapis.com/auth/drive.appdata';
+const DRIVE = 'https://www.googleapis.com';
 const STORES = { a: 'assets', f: 'folders', d: 'docs', p: 'pages' };
 const PART = 1_400_000; // pieces of large files (the service keeps at most 1.5 MB per piece)
 const PUSH_MS = 250;    // delay between a local save and its upload
@@ -62,17 +63,20 @@ function saveState() {
 }
 
 // ---------------------------------------------------------------- sign-in
-// Google is asked once, only to prove who this is; the service answers with this device's own key.
-async function googleToken() {
+// Google is asked once per device. The authorization code goes to the sync service, which keeps a long-lasting
+// Google pass for the person's Drive app folder (where PDFs and pictures are stored) and answers with this
+// device's own key.
+async function googleCode() {
   await loadScript('https://accounts.google.com/gsi/client');
   return new Promise((res, rej) => {
-    const client = google.accounts.oauth2.initTokenClient({
+    const client = google.accounts.oauth2.initCodeClient({
       client_id: CLIENT_ID,
       scope: SCOPE,
-      callback: r => { if (r.error) rej(new Error(r.error_description || r.error)); else res(r.access_token); },
+      ux_mode: 'popup',
+      callback: r => { if (r.error) rej(new Error(r.error_description || r.error)); else res(r.code); },
       error_callback: e => rej(new Error(e && e.type === 'popup_closed' ? 'Sign-in was cancelled.' : 'Google sign-in could not open. Allow pop-ups and try again.'))
     });
-    client.requestAccessToken({ prompt: '' });
+    client.requestCode();
   });
 }
 
@@ -83,13 +87,58 @@ const deviceLabel = () => {
 };
 
 async function signIn() {
-  const at = await googleToken();
-  const r = await http(server + '/auth', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ access_token: at, label: deviceLabel() }) });
+  const code = await googleCode();
+  const r = await http(server + '/auth', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ code, label: deviceLabel() }) });
   const j = await r.json().catch(() => ({}));
   if (r.status === 403 && j.error === 'not-allowed') throw new Error(`${j.email} is not on Inkleaf's list of allowed accounts. Add it to ALLOWED in Cloudflare.`);
+  if (j.error === 'no-google-secret') throw new Error('The sync service is missing its Google setting (GOOGLE_SECRET in Cloudflare).');
   if (!r.ok || !j.token) throw new Error(j.error === 'google-rejected' ? 'Google did not confirm the sign-in. Try again.' : 'The sync service did not answer (' + r.status + ').');
   session = { token: j.token, email: j.email };
+  gTok = null; driveOn = null;
   await db.setMeta('cloud', session);
+}
+
+// ---------------------------------------------------------------- PDFs and pictures in the person's Google Drive
+// Attached files are kept in the hidden Inkleaf app folder of the person's own Google Drive (named a_<id>, as the
+// older Drive sync did, so files it uploaded are found and not sent again). The sync service only hands out
+// hour-long Drive passes. If the person's Drive is not linked (signed in with an older version), files stay on
+// the sync service as before.
+let gTok = null, driveOn = null; // {t, exp}; driveOn: null = not asked yet
+async function driveToken() {
+  if (gTok && Date.now() < gTok.exp - 60000) return gTok.t;
+  if (driveOn === false) return null;
+  const r = await http(server + '/google-token', { headers: { Authorization: 'Bearer ' + session.token } });
+  if (r.status === 404) { driveOn = false; return null; }
+  if (r.status === 401) { const e = new Error('Sign-in needed'); e.signin = true; throw e; }
+  if (!r.ok) throw new Error('Could not reach Google Drive just now (' + r.status + ')');
+  const j = await r.json();
+  driveOn = true;
+  gTok = { t: j.access_token, exp: j.exp || Date.now() + 3000e3 };
+  return gTok.t;
+}
+
+async function drive(path, opts = {}) {
+  const t = await driveToken();
+  const r = await http(DRIVE + path, { ...opts, headers: { Authorization: 'Bearer ' + t, ...(opts.headers || {}) } });
+  if (r.status === 401) { gTok = null; throw new Error('Google Drive refused the pass; trying again later'); }
+  if (!r.ok) { const e = new Error(`Google Drive error ${r.status}`); e.status = r.status; throw e; }
+  return r;
+}
+
+async function driveFind(id) {
+  const q = encodeURIComponent(`name = 'a_${id}' and trashed = false`);
+  const j = await (await drive(`/drive/v3/files?spaces=appDataFolder&q=${q}&fields=files(id,size,mimeType,description)`)).json();
+  return (j.files || [])[0] || null;
+}
+
+async function driveUpload(id, data, mime, name, fileName) {
+  const boundary = 'inkleaf' + Math.random().toString(36).slice(2);
+  const meta = JSON.stringify({ name: fileName || 'a_' + id, parents: ['appDataFolder'], mimeType: mime, description: name || '' });
+  const body = new Blob([
+    `--${boundary}\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n${meta}\r\n`,
+    `--${boundary}\r\nContent-Type: ${mime}\r\n\r\n`, data, `\r\n--${boundary}--`
+  ]);
+  return (await drive('/upload/drive/v3/files?uploadType=multipart&fields=id', { method: 'POST', headers: { 'Content-Type': 'multipart/related; boundary=' + boundary }, body })).json();
 }
 
 async function signOut() {
@@ -278,27 +327,61 @@ async function pushRecord(kind, rec) {
   throw new Error('This record keeps changing on another device; it will be sent on the next round.');
 }
 
+// Send a file: to the person's Google Drive when it is linked (and then drop any copy on the sync service, which
+// older versions put there), otherwise to the sync service.
 async function pushAsset(id) {
-  const name = 'a_' + id;
-  if (st[name]) return;
+  const name = 'a_' + id, s = st[name];
+  if (s && (s.drive || (await driveToken()) === null)) return;
   const a = await db.get('assets', id);
   if (!a || a.deleted || !a.data) return;
+  if (await driveToken()) {
+    if (!await driveFind(id)) await driveUpload(id, a.data, a.mime || 'application/octet-stream', a.name || '');
+    st[name] = { drive: 1 };
+    const r = await http(server + '/meta/a/' + encodeURIComponent(id), { headers: { Authorization: 'Bearer ' + session.token } });
+    if (r.ok) await call('/blob/a/' + encodeURIComponent(id) + '?moved=1', { method: 'DELETE' }).catch(() => {});
+    return;
+  }
   const j = await putBlob('a', id, new Uint8Array(a.data), { info: JSON.stringify({ mime: a.mime || '', name: a.name || '' }) });
   st[name] = { lm: a.modified, s: j.s };
 }
 
+// Fetch a file this device lacks. item: its entry on the sync service, if known; otherwise Drive is asked first.
 async function pullAsset(id, item) {
   const name = 'a_' + id;
   const have = await db.get('assets', id);
-  if (have && (have.data || have.deleted)) { st[name] = { lm: have.modified, s: item.s }; return false; }
-  const bytes = await getBlob(item);
-  let info = {};
-  try { info = JSON.parse(item.info || '{}'); } catch { /* none */ }
-  const rec = { id, mime: info.mime || 'application/octet-stream', name: info.name || '', data: bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength), modified: Date.now() };
+  if (have && (have.data || have.deleted)) { if (!st[name]) st[name] = item && item.s ? { s: item.s } : { drive: 1 }; return false; }
+  let rec = null;
+  if (await driveToken()) {
+    const f = await driveFind(id);
+    if (f) {
+      const data = await (await drive(`/drive/v3/files/${f.id}?alt=media`)).arrayBuffer();
+      rec = { id, mime: f.mimeType || 'application/octet-stream', name: f.description || '', data, modified: Date.now() };
+      st[name] = { drive: 1 };
+    }
+  }
+  if (!rec) {
+    if (!item || !item.parts) {
+      const r = await http(server + '/meta/a/' + encodeURIComponent(id), { headers: { Authorization: 'Bearer ' + session.token } });
+      if (!r.ok) return false; // nowhere yet: the device that has it will send it
+      item = await r.json();
+    }
+    const bytes = await getBlob(item);
+    let info = {};
+    try { info = JSON.parse(item.info || '{}'); } catch { /* none */ }
+    rec = { id, mime: info.mime || 'application/octet-stream', name: info.name || '', data: bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength), modified: Date.now() };
+    st[name] = { lm: rec.modified, s: item.s };
+  }
   await db.put('assets', rec, true);
-  st[name] = { lm: rec.modified, s: item.s };
   bus.emit('remote-record', { kind: 'a', rec: { id } });
   return true;
+}
+
+// Files the pages here use but this device does not have yet (they arrive by Drive, not in the change feed).
+async function fetchMissingFiles(pages) {
+  for (const id of assetIdsOf(pages.filter(p => !p.deleted))) {
+    const a = await db.get('assets', id);
+    if (!a || (!a.data && !a.deleted)) queueAsset(id, 'pull');
+  }
 }
 
 // Attached files can be large, so they are moved in the background, two at a time, and never hold up
@@ -364,6 +447,7 @@ async function applyRemote(item) {
   st[name] = { lm: m === R ? R.modified : -1, s: item.s };
   if (m !== R) await pushRecord(kind, m);
   bus.emit('remote-record', { kind, rec: m });
+  if (kind === 'p') fetchMissingFiles([m]).catch(() => {});
   return true;
 }
 
@@ -418,9 +502,18 @@ async function fullPass() {
     });
   }
   const dels = (await db.getMeta('assetDels')) || [];
-  for (const id of dels) { await removeBlob('a', id).catch(() => {}); delete st['a_' + id]; }
+  const gLinked = !!(await driveToken().catch(() => null));
+  for (const id of dels) {
+    await removeBlob('a', id).catch(() => {});
+    if (gLinked) { const f = await driveFind(id).catch(() => null); if (f) await drive('/drive/v3/files/' + f.id, { method: 'DELETE' }).catch(() => {}); }
+    delete st['a_' + id];
+  }
   if (dels.length) await db.setMeta('assetDels', []);
-  for (const id of await db.keys('assets')) if (!st['a_' + id]) queueAsset(id, 'up');
+  // Every file here goes to Drive once it is linked (files older versions put on the sync service move across);
+  // files the pages use but this device lacks are fetched.
+  const linked = !!(await driveToken().catch(() => null));
+  for (const id of await db.keys('assets')) { const s = st['a_' + id]; if (!s || (linked && !s.drive)) queueAsset(id, 'up'); }
+  await fetchMissingFiles(await db.all('pages'));
   saveState();
   return changed;
 }
@@ -723,17 +816,22 @@ export async function openSettings() {
       await initSync();
     }
   };
-  // How much of this person's space on the service is used (Cloudflare's free plan allows each person 1 GB).
+  // How much of this person's share of the sync service is used, and where PDFs and pictures are kept.
   const usage = h('div', { class: 'usage', hidden: true });
   if (session && !cfg.off && navigator.onLine) {
     call('/me').then(r => r.json()).then(j => {
-      const GB = 1024 ** 3, used = Number(j.bytes) || 0, pct = Math.min(100, used / GB * 100);
-      const size = used >= GB ? (used / GB).toFixed(2) + ' GB' : used >= 1048576 ? Math.round(used / 1048576) + ' MB' : Math.max(1, Math.round(used / 1024)) + ' KB';
+      const fmt = b => (b >= 1024 ** 3 ? (b / 1024 ** 3).toFixed(2) + ' GB' : b >= 1048576 ? Math.round(b / 1048576) + ' MB' : Math.max(1, Math.round(b / 1024)) + ' KB');
+      const quota = Number(j.quota) || 500 * 1048576, used = Number(j.bytes) || 0, pct = Math.min(100, used / quota * 100);
       usage.replaceChildren(
-        h('div', { class: 'usage-text' }, `Space used on the sync service: ${size} of 1 GB (${pct < 1 ? pct.toFixed(1) : Math.round(pct)}%)`,
+        h('div', { class: 'usage-text' }, `Space used on the sync service: ${fmt(used)} of ${fmt(quota)} (${pct < 1 ? pct.toFixed(1) : Math.round(pct)}%)`,
           h('span', { class: 'bk-sub' }, ` · ${j.devices} device sign-in${j.devices === 1 ? '' : 's'}`)),
         h('div', { class: 'usage-bar' }, h('div', { class: 'usage-fill' + (pct > 85 ? ' warn' : ''), style: { width: Math.max(pct, 0.5) + '%' } })),
-        pct > 85 ? h('p', { class: 'modal-text small' }, 'Nearly full. Removing PDFs you no longer need (and emptying the bin) frees space; or ask for more space to be set up.') : '');
+        j.drive
+          ? h('p', { class: 'modal-text small' }, 'PDFs and pictures are kept in your own Google Drive, and a full copy of every notebook goes there once a day. The sync service only holds your writing.')
+          : h('div', null,
+            h('p', { class: 'modal-text small' }, 'Your Google Drive is not linked yet, so PDFs and pictures are kept on the sync service. Sign in again to keep them (and a daily full copy) in your Google Drive instead.'),
+            h('button', { class: 'btn sm', type: 'button', onclick: async () => { m.close(); try { await signIn(); toast('Google Drive linked. Files move there in the background.', 3500); syncNow(false); } catch (e) { fail(e, true); } } }, 'Link Google Drive')),
+        pct > 85 ? h('p', { class: 'modal-text small' }, 'Nearly full. Removing notebooks you no longer need (and emptying the bin) frees space.') : '');
       usage.hidden = false;
     }).catch(() => {});
   }
@@ -834,11 +932,37 @@ export async function autoBackup(force) {
       latest.cloud = true;
       await db.setMeta('autobk', list);
     }
+    await driveDaily(force);
   } catch (e) {
     console.warn('Automatic backup failed', e);
   } finally {
     bkBusy = false;
   }
+}
+
+// A whole copy of every notebook (folders, notebooks, pages and writing) goes to the person's own Google Drive
+// once a day, and the last 30 are kept there. With the PDFs and pictures already in Drive, Drive holds a complete
+// copy of the library, independent of the sync service.
+const DRIVE_EVERY = 864e5, DRIVE_KEEP = 30;
+async function driveBackups() {
+  const q = encodeURIComponent("name contains 'zbackup' and trashed = false");
+  const j = await (await drive(`/drive/v3/files?spaces=appDataFolder&pageSize=200&q=${q}&fields=files(id,name,size,description)`)).json();
+  return (j.files || [])
+    .map(f => ({ id: f.id, t: Number((/^zbackup-(\d+)/.exec(f.name) || [])[1]) || 0, bytes: Number(f.size) || 0, docs: Number(f.description) || 0 }))
+    .filter(f => f.t).sort((a, b) => b.t - a.t);
+}
+async function driveDaily(force) {
+  if (!ready() || !(await driveToken().catch(() => null))) return;
+  const last = (await db.getMeta('driveCopy')) || 0;
+  if (!force && Date.now() - last < DRIVE_EVERY) return;
+  const [folders, docs, pages] = await Promise.all(['folders', 'docs', 'pages'].map(s => db.all(s)));
+  const live = r => !r.deleted, D = docs.filter(live);
+  if (!D.some(d => !d.sys)) return;
+  const t = Date.now();
+  const text = JSON.stringify({ app: 'inkleaf', version: 1, kind: 'auto', exported: t, folders: folders.filter(live), docs: D.map(({ thumb, ...d }) => d), pages: pages.filter(live) });
+  await driveUpload(null, new Blob([text]), 'application/json', String(D.filter(d => !d.sys && !d.trashed).length), `zbackup-${t}.json`);
+  for (const f of (await driveBackups()).slice(DRIVE_KEEP)) await drive('/drive/v3/files/' + f.id, { method: 'DELETE' }).catch(() => {});
+  await db.setMeta('driveCopy', t);
 }
 
 // Bring one notebook back from a snapshot, as a new notebook beside whatever is in the library now.
@@ -878,10 +1002,12 @@ async function fillBk() {
   for (const b of (await db.getMeta('autobk')) || []) rows.set(b.t, { ...b, local: true });
   if (ready()) {
     try { for (const f of await cloudBackups()) rows.set(f.t, { ...(rows.get(f.t) || f), item: f.item }); } catch { /* offline: show what is on this device */ }
+    try { if (await driveToken()) for (const f of await driveBackups()) rows.set(f.t, { ...(rows.get(f.t) || f), driveId: f.id }); } catch { /* Drive not reachable */ }
   }
   const all = [...rows.values()].sort((a, b) => b.t - a.t);
   const textOf = async b => {
     if (b.local) return db.getMeta('autobk:' + b.t);
+    if (b.driveId && !b.item) return (await drive('/drive/v3/files/' + b.driveId + '?alt=media')).text();
     const bytes = await getBlob(b.item);
     return new TextDecoder().decode(b.item.gz ? await pipe(bytes, new DecompressionStream('gzip')) : bytes);
   };
@@ -889,7 +1015,7 @@ async function fillBk() {
   bkList.replaceChildren(...(all.length ? all.map(b => h('div', { class: 'bk-row' },
     h('div', { class: 'bk-meta' },
       h('b', null, fmt(b.t)),
-      h('span', { class: 'bk-sub' }, `${b.docs} notebook${b.docs === 1 ? '' : 's'} · ${b.local && b.item ? 'this device and the sync service' : b.local ? 'this device' : 'sync service'}`)),
+      h('span', { class: 'bk-sub' }, `${b.docs} notebook${b.docs === 1 ? '' : 's'} · ${[b.local && 'this device', b.item && 'sync service', b.driveId && 'Google Drive'].filter(Boolean).join(' and ')}`)),
     h('button', {
       class: 'btn sm', type: 'button', onclick: async () => {
         try { snapshotDialog(await textOf(b), fmt(b.t)); } catch (e) { toast('Could not open that snapshot: ' + e.message); }
@@ -923,6 +1049,7 @@ async function dropBackups(items) {
   for (const b of items) {
     if (b.local) await db.setMeta('autobk:' + b.t, null);
     if (b.item) { try { await removeBlob('b', b.item.id); } catch (e) { toast('Could not delete the copy on the sync service: ' + e.message); } }
+    if (b.driveId) { try { await drive('/drive/v3/files/' + b.driveId, { method: 'DELETE' }); } catch (e) { if (e.status !== 404) toast('Could not delete the Google Drive copy: ' + e.message); } }
   }
   list = list.filter(b => !gone.has(b.t));
   await db.setMeta('autobk', list);

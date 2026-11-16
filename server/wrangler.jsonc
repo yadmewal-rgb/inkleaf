@@ -1,6 +1,8 @@
 // Inkleaf sync service. Cloudflare builds this folder when it is connected to the GitHub repo
 // (Workers > Create > Import a repository, root directory "server").
-// The allowed e-mail addresses are set in the Cloudflare dashboard as the secret ALLOWED, never here.
+// Set in the Cloudflare dashboard as secrets, never here: ALLOWED (allowed e-mail addresses, comma separated)
+// and GOOGLE_SECRET (the client secret of Inkleaf's Google OAuth client, so files can be kept in each person's Drive).
+// QUOTA_MB: each person's share of Cloudflare storage.
 {
   "name": "inkleaf-sync",
   "main": "worker.js",
@@ -10,6 +12,7 @@
   },
   "migrations": [{ "tag": "v1", "new_sqlite_classes": ["User"] }],
   "vars": {
-    "ORIGINS": "https://yadmewal-rgb.github.io,http://localhost:8080"
+    "ORIGINS": "https://yadmewal-rgb.github.io,http://localhost:8080",
+    "QUOTA_MB": "500"
   }
 }
