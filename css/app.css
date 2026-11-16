@@ -742,3 +742,11 @@ button.pageind:hover { background: var(--surface-2); }
 .health .dot.busy { background: #f08c00; }
 .health .dot.bad { background: #e03131; }
 .health .warn { color: #c92a2a; }
+
+/* Settings: signed-in devices */
+.devices { margin: 4px 0 12px; }
+.dev-title { display: block; font-size: 13px; margin-bottom: 4px; }
+.dev-row { display: flex; align-items: center; gap: 10px; padding: 6px 0; border-top: 1px solid var(--line); font-size: 13.5px; }
+.dev-meta { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+.dev-me { color: var(--accent); font-weight: 600; }
+.dev-meta .bk-sub { margin-left: 0; text-align: left; }

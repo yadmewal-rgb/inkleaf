@@ -92,10 +92,17 @@ async function googleCode() {
   });
 }
 
+// The name a device shows under in Settings > Signed-in devices, e.g. "iPad · Chrome" or "Windows · Edge (app)".
 const deviceLabel = () => {
   const u = navigator.userAgent;
-  return /iPad|Macintosh.*Mobile|Macintosh(?=.*Safari)(?=.*Version)/.test(u) && navigator.maxTouchPoints > 1 ? 'iPad'
-    : /iPhone/.test(u) ? 'iPhone' : /Android/.test(u) ? (/Mobile/.test(u) ? 'Android phone' : 'Android tablet') : /Windows/.test(u) ? 'Windows' : 'Browser';
+  const dev = /iPad|Macintosh.*Mobile|Macintosh(?=.*Safari)(?=.*Version)/.test(u) && navigator.maxTouchPoints > 1 ? 'iPad'
+    : /iPhone/.test(u) ? 'iPhone' : /Android/.test(u) ? (/Mobile/.test(u) ? 'Android phone' : 'Android tablet')
+      : /Windows/.test(u) ? 'Windows' : /Mac OS X/.test(u) ? 'Mac' : /Linux/.test(u) ? 'Linux' : 'Device';
+  const app = /EdgiOS|EdgA|Edg\//.test(u) ? 'Edge' : /CriOS|Chrome\//.test(u) ? 'Chrome' : /FxiOS|Firefox\//.test(u) ? 'Firefox'
+    : /SamsungBrowser/.test(u) ? 'Samsung Internet' : /Safari\//.test(u) ? 'Safari' : '';
+  let standalone = false;
+  try { standalone = matchMedia('(display-mode: standalone)').matches || navigator.standalone === true; } catch { /* old browser */ }
+  return dev + (app ? ' · ' + app : '') + (standalone ? ' (app)' : '');
 };
 
 async function signIn() {
@@ -105,7 +112,10 @@ async function signIn() {
   if (r.status === 403 && j.error === 'not-allowed') throw new Error(`${j.email} is not on Inkleaf's list of allowed accounts. Add it to ALLOWED in Cloudflare.`);
   if (j.error === 'no-google-secret') throw new Error('The sync service is missing its Google setting (GOOGLE_SECRET in Cloudflare).');
   if (!r.ok || !j.token) throw new Error(j.error === 'google-rejected' ? 'Google did not confirm the sign-in. Try again.' : 'The sync service did not answer (' + r.status + ').');
+  const old = session;
   session = { token: j.token, email: j.email };
+  // Signing in again on this device (e.g. "Link Google Drive") replaces its earlier sign-in instead of adding one.
+  if (old && old.token !== j.token) http(server + '/signout', { method: 'POST', headers: { Authorization: 'Bearer ' + old.token } }).catch(() => {});
   gTok = null; driveOn = null; visibleOk = null; visFolder = null;
   await db.setMeta('cloud', session);
 }
@@ -892,6 +902,30 @@ export async function openSettings() {
       await initSync();
     }
   };
+  // The devices signed in to this account, with a way to sign any of them out (e.g. a lost phone, or an old
+  // sign-in left over on this device).
+  const devicesEl = h('div', { class: 'devices' });
+  const when = t => new Date(t).toLocaleString([], { day: 'numeric', month: 'short', year: 'numeric', hour: 'numeric', minute: '2-digit' });
+  async function drawDevices() {
+    if (!session || cfg.off || !navigator.onLine) { devicesEl.replaceChildren(); return; }
+    let items;
+    try { items = (await (await call('/sessions')).json()).items; } catch { devicesEl.replaceChildren(); return; }
+    devicesEl.replaceChildren(
+      h('b', { class: 'dev-title' }, `Signed-in devices (${items.length})`),
+      ...items.map(d => h('div', { class: 'dev-row' },
+        h('div', { class: 'dev-meta' },
+          h('span', null, d.label, d.current ? h('span', { class: 'dev-me' }, ' · this device') : ''),
+          h('span', { class: 'bk-sub' }, `Signed in ${when(d.created)} · last used ${Date.now() - d.seen < 3600e3 ? 'within the hour' : when(d.seen)}`)),
+        d.current ? null : h('button', {
+          class: 'btn sm', type: 'button', onclick: async e => {
+            if (!await confirmBox('Sign out a device', `Sign out "${d.label}" (signed in ${when(d.created)})? It stops syncing until someone signs in on it again. Notes already on it stay there.`, 'Sign out')) return;
+            const btn = e.target; btn.disabled = true;
+            try { await call('/sessions/' + d.id, { method: 'DELETE' }); toast(`"${d.label}" is signed out`); } catch (err) { toast('Could not sign it out: ' + err.message); }
+            drawDevices();
+          }
+        }, 'Sign out'))));
+  }
+  drawDevices();
   // Sync health: when changes last went out and came in, and anything waiting or failing. Refreshed while open.
   const healthEl = h('div', { class: 'health' });
   const ago = t => { const s = Math.round((Date.now() - t) / 1000); return s < 10 ? 'just now' : s < 60 ? s + ' s ago' : s < 3600 ? Math.round(s / 60) + ' min ago' : new Date(t).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }); };
@@ -918,7 +952,7 @@ export async function openSettings() {
       const quota = Number(j.quota) || 500 * 1048576, used = Number(j.bytes) || 0, pct = Math.min(100, used / quota * 100);
       usage.replaceChildren(
         h('div', { class: 'usage-text' }, `Space used on the sync service: ${fmt(used)} of ${fmt(quota)} (${pct < 1 ? pct.toFixed(1) : Math.round(pct)}%)`,
-          h('span', { class: 'bk-sub' }, ` · ${j.devices} device sign-in${j.devices === 1 ? '' : 's'}`)),
+          ''),
         h('div', { class: 'usage-bar' }, h('div', { class: 'usage-fill' + (pct > 85 ? ' warn' : ''), style: { width: Math.max(pct, 0.5) + '%' } })),
         j.drive
           ? h('div', null,
@@ -943,7 +977,7 @@ export async function openSettings() {
         'Notes are always kept on this device, so they open instantly and work offline. With sync on, every change is also ',
         'sent to Inkleaf\'s own sync service (on Cloudflare) and appears on your other devices within a second or two.'),
       h('p', { class: 'modal-text small' }, who),
-      usage, healthEl,
+      usage, healthEl, devicesEl,
       h('div', { class: 'row' },
         h('button', {
           class: 'btn primary', type: 'button',

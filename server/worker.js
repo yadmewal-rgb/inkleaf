@@ -171,6 +171,14 @@ export class User extends DurableObject {
     return h;
   }
 
+  // End the live connections of one signed-out device (it then shows "sign in again").
+  closeSockets(h) {
+    for (const ws of this.ctx.getWebSockets()) {
+      const a = ws.deserializeAttachment();
+      if (a && a.h === h) { try { ws.close(4001, 'signed out'); } catch { /* closing */ } }
+    }
+  }
+
   // Tell every connected device that something changed (they then ask for the changes).
   broadcast(s) {
     const msg = JSON.stringify({ s });
@@ -295,7 +303,22 @@ export class User extends DurableObject {
 
     if (p[0] === 'signout' && req.method === 'POST') {
       this.sql.exec('DELETE FROM sessions WHERE h = ?', sess);
+      this.closeSockets(sess);
       return json({ ok: true });
+    }
+
+    // GET /sessions : the devices signed in to this account (name, when signed in, when last used, which is this one).
+    // DELETE /sessions/<id> : sign that device out (id = the first 16 characters of its key's hash).
+    if (p[0] === 'sessions' && req.method === 'GET') {
+      const rows = this.sql.exec('SELECT h, created, seen, label FROM sessions ORDER BY seen DESC').toArray();
+      return json({ items: rows.map(r => ({ id: r.h.slice(0, 16), label: r.label || 'Device', created: r.created, seen: r.seen, current: r.h === sess })) });
+    }
+    if (p[0] === 'sessions' && p[1] && req.method === 'DELETE') {
+      const r = this.sql.exec('SELECT h FROM sessions WHERE substr(h, 1, 16) = ?', p[1]).toArray()[0];
+      if (!r) return json({ error: 'missing' }, 404);
+      this.sql.exec('DELETE FROM sessions WHERE h = ?', r.h);
+      this.closeSockets(r.h);
+      return json({ ok: true, self: r.h === sess });
     }
 
     return json({ error: 'not-found' }, 404);
@@ -307,8 +330,9 @@ export class User extends DurableObject {
     if (!m) return;
     const a = ws.deserializeAttachment() || {};
     if (!a.ok) {
-      if (m.token && await this.session(m.token)) {
-        ws.serializeAttachment({ ok: true });
+      const h = m.token ? await this.session(m.token) : null;
+      if (h) {
+        ws.serializeAttachment({ ok: true, h });
         ws.send(JSON.stringify({ hello: true, s: this.seq() }));
       } else ws.close(4001, 'signin');
       return;
