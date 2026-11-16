@@ -2,6 +2,8 @@
 import { db, newPage, createDoc, duplicateDoc, loadPages, trashPage, sysPages, addSysPage, removeSysPage, TRASH_DAYS, dayKey, dayIndex, newDayPage } from './db.js';
 import { chooseNotebook, markOpened, detailsDialog } from './library.js';
 import { openPdf, renderPdfPage } from './pdfrender.js';
+import { straightenScan } from './scan.js';
+import { regionCanvas, textLines, textUnder, hlGroups, hlRegion, hlShot } from './pageshots.js';
 import { h, uid, nextZ, clamp, bus, distSeg, downloadBlob, safeName, debounce, fill, imgReady } from './util.js';
 import * as R from './render.js';
 import { pageLinks, resolveDest, pdfOutline, pageText, textMatches } from './pdftools.js';
@@ -9,60 +11,15 @@ import { I } from './icons.js';
 import { popMenu, popover, confirmBox, promptText, toast, modal, chipGroup, templatePicker, PAPER_OPTS, busy } from './ui.js';
 import { exportFlow, pdfAsPictures } from './export.js';
 import { syncNow, syncStatus, mergePage, mergeDoc, shareNotebook } from './sync.js';
+import {
+  GAP, MIN_S, MAX_S, COARSE, MAXPX, REGION_PX, REGION_PAD, PULL_PX, PALM_MS, INK, INK_ON_DARK, PEN_COLORS, HL_COLORS, SHAPES,
+  MM, mmToPt, TAPE_COLORS, LASER_COLORS, RULER_L, RULER_W, ZOOM_TOOLS, NOTE_COLORS, FILL_COLORS, HIST_GAP, HIST_MAX, HIST_DAYS,
+  TAGS, SEC_COLORS, fmtWhen, TM, DEFAULTS
+} from './editor-consts.js';
 
-const GAP = 14, MIN_S = 0.2, MAX_S = 6;
-const COARSE = matchMedia('(pointer: coarse)').matches;
-const MAXPX = COARSE ? 5.5e6 : 9e6; // cap on pixels per whole-page canvas (memory on tablets)
-const REGION_PX = COARSE ? 6e6 : 12e6; // cap when only the visible part of a page is drawn (zoomed in)
-const REGION_PAD = 0.15;               // extra drawn around the visible part, as a fraction of the screen
-const PULL_PX = 90;                    // how far to drag up past the last page to add a new one
-const PALM_MS = 350;                  // touches this soon after the stylus was seen are treated as the palm
-const INK = '#1c1d21', INK_ON_DARK = '#f1f3f5';
 
-const PEN_COLORS = [INK, '#e03131', '#1971c2', '#2f9e44', '#f08c00', '#9c36b5', '#ffffff'];
-const HL_COLORS = ['#ffd43b', '#8ce99a', '#74c0fc', '#faa2c1', '#ffa94d'];
-const SHAPES = [['rect', 'Rectangle'], ['ellipse', 'Ellipse'], ['line', 'Line'], ['arrow', 'Arrow']];
-
-const MM = 0.3528; // one page unit (a PDF point) in millimetres
-const mmToPt = mm => Math.round(mm / MM * 100) / 100;
-
-const TAPE_COLORS = ['#e9d8a6', '#f4b6c2', '#a9d6e5', '#c9c9c9', '#2b2d42'];
-const LASER_COLORS = ['#ff2d2d', '#22c55e', '#3b82f6'];
-const RULER_L = 170 / MM, RULER_W = 46; // the on-screen ruler: 17 cm long, in page units
-const ZOOM_TOOLS = ['pen', 'hl', 'eraser'];
-
-const NOTE_COLORS = ['#ffe066', '#ffc9c9', '#b2f2bb', '#a5d8ff', '#d0bfff'];
-const FILL_COLORS = ['#ffe3e3', '#fff3bf', '#d3f9d8', '#d0ebff', '#e5dbff', '#dee2e6'];
-const HIST_GAP = 5 * 60e3, HIST_MAX = 25, HIST_DAYS = 14; // page history: one snapshot per 5 minutes of writing
 let activeEd = null; // with two notebooks side by side, the one last touched gets the keyboard
-// Tags that can be put on anything on a page: n = name, c = colour, s = the sign shown in the badge.
-const TAGS = {
-  imp: { n: 'Important', c: '#e03131', s: '!' }, q: { n: 'Question', c: '#1971c2', s: '?' },
-  todo: { n: 'To do', c: '#f08c00', s: '○' }, def: { n: 'Definition', c: '#2f9e44', s: 'D' },
-  done: { n: 'Done', c: '#868e96', s: '✓' }
-};
-const SEC_COLORS = ['#1971c2', '#e8590c', '#2f9e44', '#9c36b5', '#e03131', '#0c8599'];
-const fmtWhen = t => new Date(t).toLocaleString([], { day: 'numeric', month: 'short', hour: 'numeric', minute: '2-digit' });
-const TM = { open: false, running: false, t0: 0, acc: 0, dur: 0 }; // the timer, shared by every notebook (dur 0 = stopwatch)
 
-const DEFAULTS = {
-  noteColor: '#ffe066',
-  tape:{ color: '#e9d8a6', size: mmToPt(7) },
-  laser: { color: '#ff2d2d' },
-  flow: 'v',      // 'v' = pages run down the screen, 'h' = side by side, one at a time
-  tool: 'pen',
-  pen: { color: INK, size: mmToPt(0.7), style: 'fountain' },
-  scribble: true, // a zigzag over ink erases it
-  favs: [],       // favourite pens: [{color, size, style}]
-  hl: { color: '#ffd43b', size: mmToPt(5.5), mode: 'free' }, // mode: free, or follow PDF text as hl / ul / st
-  eraser: { size: mmToPt(5.5), mode: 'stroke', only: 'all' },
-  shape: { kind: 'rect', color: '#1971c2', size: mmToPt(0.8), fill: null },
-  text: { color: INK, size: 16, b: false, i: false, u: false, ff: 'sans', al: 'l' },
-  fingerDraw: null, // null = automatic: fingers draw until a stylus has been seen
-  penSeen: false
-};
-
-// opts: page (1-based page to open at), q (text to find), pane / other (side by side: this pane's index, the other notebook)
 export async function mountEditor(root, docId, opts = {}) {
   const doc = await db.get('docs', docId);
   if (!doc || doc.deleted || doc.trashed) { location.hash = opts.other ? '#/d/' + opts.other : '#/'; return { destroy() {} }; }
@@ -1828,20 +1785,6 @@ export async function mountEditor(root, docId, opts = {}) {
     finishStroke(a, items.length ? items : [freehand]);
   }
 
-  // Text runs of a PDF page grouped into lines (per column), as boxes in page units.
-  function textLines(page, t) {
-    const pb = R.pdfBox(page), lines = [];
-    const parts = t.parts.map(p => ({ x: p.x + pb.x, y: p.y + pb.y, w: p.w, h: p.h })).filter(p => p.w > 0.5 && p.h > 2).sort((m, n) => m.y - n.y || m.x - n.x);
-    for (const p of parts) {
-      const cy = p.y + p.h / 2;
-      const L = lines.find(l => cy > l.y && cy < l.y + l.h && p.x < l.x + l.w + 3 * l.h && p.x + p.w > l.x - 3 * l.h);
-      if (!L) { lines.push({ ...p }); continue; }
-      const x1 = Math.max(L.x + L.w, p.x + p.w), y1 = Math.max(L.y + L.h, p.y + p.h);
-      L.x = Math.min(L.x, p.x); L.y = Math.min(L.y, p.y); L.w = x1 - L.x; L.h = y1 - L.y;
-    }
-    return lines;
-  }
-
   function markupItems(page, t, a, mode) {
     const P = a.pts, n = P.length, r2 = v => Math.round(v * 100) / 100;
     let sx = P[0], sy = P[1], ex = P[n - 3], ey = P[n - 2], x0 = Infinity, x1 = -Infinity;
@@ -3366,73 +3309,7 @@ export async function mountEditor(root, docId, opts = {}) {
     const b = busy('Straightening the page...');
     try {
       await new Promise(r => setTimeout(r, 30));
-      // Work on a copy no bigger than 2400 px.
-      const k = Math.min(1, 2400 / Math.max(src.w, src.h)), SW = Math.round(src.w * k), SH = Math.round(src.h * k);
-      const sc = document.createElement('canvas');
-      sc.width = SW; sc.height = SH;
-      const sx = sc.getContext('2d');
-      sx.drawImage(src.img, 0, 0, SW, SH);
-      const S = sx.getImageData(0, 0, SW, SH).data;
-      const P = q.map(([x, y]) => [x * SW, y * SH]);
-      const len = (a, c) => Math.hypot(a[0] - c[0], a[1] - c[1]);
-      let W = (len(P[0], P[1]) + len(P[3], P[2])) / 2, H = (len(P[0], P[3]) + len(P[1], P[2])) / 2;
-      const f = 1800 / Math.max(W, H);
-      W = Math.max(50, Math.round(W * f)); H = Math.max(50, Math.round(H * f));
-      // Unit square -> the chosen corners (projective mapping).
-      const [x0, y0] = P[0], [x1, y1] = P[1], [x2, y2] = P[2], [x3, y3] = P[3];
-      const dx1 = x1 - x2, dx2 = x3 - x2, dx3 = x0 - x1 + x2 - x3, dy1 = y1 - y2, dy2 = y3 - y2, dy3 = y0 - y1 + y2 - y3;
-      let a, bb, c, d, e2, f2, g = 0, hh = 0;
-      if (Math.abs(dx3) < 1e-9 && Math.abs(dy3) < 1e-9) { a = x1 - x0; bb = x2 - x1; c = x0; d = y1 - y0; e2 = y2 - y1; f2 = y0; }
-      else {
-        const det = dx1 * dy2 - dx2 * dy1;
-        g = (dx3 * dy2 - dx2 * dy3) / det; hh = (dx1 * dy3 - dx3 * dy1) / det;
-        a = x1 - x0 + g * x1; bb = x3 - x0 + hh * x3; c = x0; d = y1 - y0 + g * y1; e2 = y3 - y0 + hh * y3; f2 = y0;
-      }
-      const out = document.createElement('canvas');
-      out.width = W; out.height = H;
-      const ox = out.getContext('2d'), O = ox.createImageData(W, H), D = O.data;
-      const lum = new Float32Array(W * H);
-      for (let j = 0; j < H; j++) {
-        const v = (j + 0.5) / H;
-        for (let i = 0; i < W; i++) {
-          const u = (i + 0.5) / W, z = g * u + hh * v + 1;
-          const X = clamp((a * u + bb * v + c) / z, 0, SW - 1.001), Y = clamp((d * u + e2 * v + f2) / z, 0, SH - 1.001);
-          const xi = X | 0, yi = Y | 0, fx = X - xi, fy = Y - yi, p = (yi * SW + xi) * 4, o = (j * W + i) * 4;
-          for (let ch = 0; ch < 3; ch++) {
-            const top = S[p + ch] * (1 - fx) + S[p + 4 + ch] * fx, bot = S[p + SW * 4 + ch] * (1 - fx) + S[p + SW * 4 + 4 + ch] * fx;
-            D[o + ch] = top * (1 - fy) + bot * fy;
-          }
-          D[o + 3] = 255;
-          lum[j * W + i] = 0.299 * D[o] + 0.587 * D[o + 1] + 0.114 * D[o + 2];
-        }
-      }
-      if (mode !== 'color') {
-        // Even out shadows: estimate the paper's brightness in blocks, then divide it out.
-        const B = 40, bw = Math.ceil(W / B), bh = Math.ceil(H / B), bgv = new Float32Array(bw * bh);
-        for (let by = 0; by < bh; by++) for (let bx = 0; bx < bw; bx++) {
-          const hist = new Uint32Array(64);
-          let n = 0;
-          for (let y = by * B; y < Math.min(H, by * B + B); y += 2) for (let x = bx * B; x < Math.min(W, bx * B + B); x += 2) { hist[lum[y * W + x] >> 2]++; n++; }
-          let acc = 0, k2 = 63;
-          for (; k2 > 0; k2--) { acc += hist[k2]; if (acc >= n * 0.2) break; }
-          bgv[by * bw + bx] = Math.max(40, k2 * 4 + 2);
-        }
-        const bgAt = (x, y) => {
-          const fx = clamp(x / B - 0.5, 0, bw - 1), fy = clamp(y / B - 0.5, 0, bh - 1), ix = Math.min(bw - 2, fx | 0), iy = Math.min(bh - 2, fy | 0);
-          if (bw < 2 || bh < 2) return bgv[0];
-          const tx2 = fx - ix, ty2 = fy - iy;
-          return (bgv[iy * bw + ix] * (1 - tx2) + bgv[iy * bw + ix + 1] * tx2) * (1 - ty2) + (bgv[(iy + 1) * bw + ix] * (1 - tx2) + bgv[(iy + 1) * bw + ix + 1] * tx2) * ty2;
-        };
-        for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) {
-          const o = (y * W + x) * 4;
-          let r = lum[y * W + x] / bgAt(x, y);
-          if (mode === 'doc') r = r > 0.9 ? 1 : Math.pow(Math.max(0, (r - 0.2) / 0.7), 1.4);
-          const val = clamp(Math.round(r * 255), 0, 255);
-          D[o] = D[o + 1] = D[o + 2] = val;
-        }
-      }
-      ox.putImageData(O, 0, 0);
-      const blob = await new Promise(res => out.toBlob(res, 'image/jpeg', 0.86));
+      const { blob, W, H } = await straightenScan(src, q, mode);
       const asset = { id: uid(), mime: 'image/jpeg', name: 'scan.jpg', data: await blob.arrayBuffer(), modified: Date.now() };
       await db.put('assets', asset);
       await R.loadImage(asset.id);
@@ -4408,35 +4285,6 @@ export async function mountEditor(root, docId, opts = {}) {
     if (moved) applyView();
   }
 
-  // A piece of a page as a picture (k = pixels per page unit, pad = extra around it). One page render is reused
-  // for several pieces of the same page.
-  let regionCache = null;
-  async function regionCanvas(pg, r, k = 2, pad = 6, mask) {
-    const key = pg.id + ':' + pg.modified + ':' + k;
-    if (!regionCache || regionCache.key !== key) {
-      const whole = document.createElement('canvas');
-      if (regionCache) regionCache.p.then(c => { c.width = c.height = 0; }).catch(() => {});
-      regionCache = { key, p: R.renderPageTo(pg, whole, pg.w * k).then(() => whole) };
-    }
-    const whole = await regionCache.p;
-    const x = clamp(r.x - pad, 0, pg.w), y = clamp(r.y - pad, 0, pg.h), w = Math.min(pg.w, r.x + r.w + pad) - x, hgt = Math.min(pg.h, r.y + r.h + pad) - y;
-    const c = document.createElement('canvas');
-    c.width = Math.max(1, Math.round(w * k));
-    c.height = Math.max(1, Math.round(hgt * k));
-    const g = c.getContext('2d');
-    g.drawImage(whole, -Math.round(x * k), -Math.round(y * k));
-    if (mask) { // a covered patch: the question side of a flashcard made from a highlight
-      g.fillStyle = '#e9d8a6';
-      g.fillRect((mask.x - x) * k, (mask.y - y) * k, mask.w * k, mask.h * k);
-      g.fillStyle = 'rgba(0,0,0,.35)';
-      g.font = `700 ${Math.min(mask.h * k * 0.8, 30)}px system-ui, sans-serif`;
-      g.textAlign = 'center';
-      g.textBaseline = 'middle';
-      g.fillText('?', (mask.x - x + mask.w / 2) * k, (mask.y - y + mask.h / 2) * k);
-    }
-    return c;
-  }
-
   // --- excerpt: a boxed part of a page, copied as a picture that links back to where it came from
   function setOneShot(v) {
     oneShot = v;
@@ -4515,20 +4363,6 @@ export async function mountEditor(root, docId, opts = {}) {
     el.append(view);
     document.addEventListener('keydown', onEsc, true);
     if (target) requestAnimationFrame(() => target.scrollIntoView({ block: 'center' }));
-  }
-
-  // Highlighter strokes that touch (a highlight over several lines, or done in two passes) count as one highlight.
-  function hlGroups(pg) {
-    const groups = [];
-    const hls = pg.items.filter(it => it.t === 's' && it.tool === 'hl').map(it => ({ it, b: R.bounds(it) }));
-    for (const it of hls.sort((m, n) => m.b.y - n.b.y || m.b.x - n.b.x)) {
-      const near = groups.filter(g2 => it.b.x < g2.b.x + g2.b.w + 4 && it.b.x + it.b.w > g2.b.x - 4 && it.b.y < g2.b.y + g2.b.h + 3 && it.b.y + it.b.h > g2.b.y - 3);
-      const g = { items: [it.it, ...near.flatMap(n => n.items)] }; // it may join groups that were apart until now
-      g.b = R.unionBounds(g.items);
-      for (const n of near) groups.splice(groups.indexOf(n), 1);
-      groups.push(g);
-    }
-    return groups;
   }
 
   // --- highlight flashcards. A card made from a highlight remembers its strokes (h = their ids) and always
@@ -4627,38 +4461,6 @@ export async function mountEditor(root, docId, opts = {}) {
       fill(what, c);
     }).catch(() => { fill(what, 'Highlight'); });
     return chip;
-  }
-
-  // The part of the page that shows a highlight: the highlighted lines plus one line above and one below.
-  // On PDF pages the real text lines are used; elsewhere the highlighter's width stands in for a line.
-  async function hlRegion(pg, items) {
-    const b = R.unionBounds(items), w = Math.max(...items.map(it => it.w || 12));
-    // bounds reach a whole stroke width past the ink's middle; the ink itself covers half of that
-    let y0 = b.y + w / 2 - w * 1.15, y1 = b.y + b.h - w / 2 + w * 1.15;
-    // Every picture spans the page's whole text width, so all of them come out the same width and the same size
-    // of writing: on a PDF page from its leftmost to its rightmost text, elsewhere the whole page.
-    let x0 = 0, x1 = pg.w;
-    if (pg.pdf && !pg.tpl) {
-      try {
-        const all = textLines(pg, await pageText(pg.pdf.a, pg.pdf.i));
-        if (all.length) { x0 = Math.min(...all.map(l => l.x)) - 16; x1 = Math.max(...all.map(l => l.x + l.w)) + 16; } // the same margin for every highlight
-        const L = all.filter(l => l.x < b.x + b.w && l.x + l.w > b.x);
-        const mid = l => l.y + l.h / 2, inside = L.filter(l => mid(l) > b.y && mid(l) < b.y + b.h);
-        if (inside.length) {
-          const top = Math.min(...inside.map(l => l.y)), bot = Math.max(...inside.map(l => l.y + l.h));
-          const lh = inside.reduce((s, l) => s + l.h, 0) / inside.length;
-          const above = L.filter(l => mid(l) < top).sort((p, q) => mid(q) - mid(p))[0];
-          const below = L.filter(l => mid(l) > bot).sort((p, q) => mid(p) - mid(q))[0];
-          // a line far away (the gap before the next question) is not "the line above": show a line's worth of space
-          y0 = above && top - (above.y + above.h) < lh * 2.5 ? above.y - 2 : top - lh * 1.4;
-          y1 = below && below.y - bot < lh * 2.5 ? below.y + below.h + 2 : bot + lh * 1.4;
-          y0 = Math.min(y0, b.y + w / 2 - 2); y1 = Math.max(y1, b.y + b.h - w / 2 + 2); // never cut the highlight itself
-        }
-      } catch { /* PDF text not on this device yet: keep the estimate */ }
-    }
-    x0 = clamp(x0, 0, pg.w); x1 = clamp(x1, 0, pg.w);
-    y0 = clamp(y0, 0, pg.h); y1 = clamp(y1, 0, pg.h);
-    return { x: Math.round(x0), y: Math.round(y0), w: Math.max(1, Math.round(x1 - x0)), h: Math.max(1, Math.round(y1 - y0)) };
   }
 
   // Pictures of highlights are made one at a time at one scale, so those of the same page share one page render.
@@ -4794,37 +4596,6 @@ export async function mountEditor(root, docId, opts = {}) {
       console.error(e);
       toast('Could not make the highlights notebook: ' + (e.message || e), 5000);
     }
-  }
-
-  let shotChain = Promise.resolve();
-  function hlShot(pg, items, mask) {
-    const p = shotChain.then(async () => regionCanvas(pg, await hlRegion(pg, items), 3.5, 0, mask)); // sharp at full screen width
-    shotChain = p.catch(() => {});
-    return p;
-  }
-
-  // The PDF text lying under a highlight.
-  function textUnder(pg, t, items) {
-    const pb = R.pdfBox(pg), out = [];
-    for (const p of t.parts) {
-      const px = p.x + pb.x, py = p.y + pb.y, cy = py + p.h / 2;
-      let a = 1, b = 0; // the covered stretch of this run, as fractions of its width
-      for (const it of items) {
-        const ib = R.bounds(it), m = it.w * 0.5; // bounds carry a margin all round: take it off sideways
-        if (cy < ib.y || cy > ib.y + ib.h) continue;
-        const f0 = clamp((ib.x + m - px) / p.w, 0, 1), f1 = clamp((ib.x + ib.w - m - px) / p.w, 0, 1);
-        if (f1 > f0) { a = Math.min(a, f0); b = Math.max(b, f1); }
-      }
-      if (b - a < 0.04) continue;
-      const s = p.t, i0 = Math.round(a * s.length), i1 = Math.round(b * s.length);
-      // Snap to whole words.
-      let s0 = i0, s1 = i1;
-      while (s0 > 0 && /\S/.test(s[s0 - 1]) && i0 - s0 < 12) s0--;
-      while (s1 < s.length && /\S/.test(s[s1]) && s1 - i1 < 12) s1++;
-      const piece = s.slice(s0, s1).trim();
-      if (piece) out.push(piece);
-    }
-    return out.join(' ').replace(/\s+/g, ' ').slice(0, 600);
   }
 
   // --- flashcards: no AI involved. A card is a question (typed, or a picture with a covered patch) and an answer
