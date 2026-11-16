@@ -361,6 +361,7 @@ export async function mountEditor(root, docId, opts = {}) {
         updateVisible();
         positionOverlays();
         updateIndicator();
+        updateScrollbar();
       });
     }
   }
@@ -418,14 +419,24 @@ export async function mountEditor(root, docId, opts = {}) {
     // Tablets and phones allow a web page only so much canvas memory, after which canvases silently go blank
     // (writing "disappears"). So fewer pages are kept drawn there.
     const near = COARSE ? 0.25 : 0.5, far = COARSE ? 0.7 : 1.5;
+    const need = [];
     for (const pv of pvs) {
       if (inRange(pv, vh * near)) {
-        if (!pv.rs || stale(pv)) renderPv(pv);
+        if (!pv.rs || stale(pv)) need.push(pv);
       } else if (pv.rs && !inRange(pv, vh * far) && !(sel && sel.pv === pv) && !(action && action.pv === pv) && !(textEd && textEd.pv === pv)) {
         releasePv(pv);
       }
     }
+    if (!need.length) return;
+    // One page per frame, the one nearest the middle of the screen first: drawing several pages in the same
+    // frame is what made scrolling jump now and then.
+    const mid = hz ? (-tx + vpRect.width / 2) / scale : (-ty + vpRect.height / 2) / scale;
+    const dist = pv => Math.abs((hz ? pv.x + pv.page.w / 2 : pv.y + pv.page.h / 2) - mid);
+    need.sort((a, b) => dist(a) - dist(b));
+    renderPv(need[0]);
+    if (need.length > 1 && !visRaf) visRaf = requestAnimationFrame(() => { visRaf = 0; if (!destroyed) updateVisible(); });
   }
+  let visRaf = 0;
 
   // Position a layer canvas over the part of the page it covers.
   function place(c, pv) {
@@ -765,6 +776,57 @@ export async function mountEditor(root, docId, opts = {}) {
     zoomT = setTimeout(() => { zooming = false; if (!destroyed) applyView(); }, 180);
     applyView();
   }
+
+  // --- scroll bar along the right edge: drag it to travel through a long notebook quickly, or tap the track to
+  // jump there. While dragging, a bubble shows the page number.
+  const sbThumb = h('div', { class: 'vs-thumb' }), sbTip = h('div', { class: 'vs-tip', hidden: true });
+  const sbar = h('div', { class: 'vscroll', hidden: true }, sbThumb, sbTip);
+  overlay.append(sbar);
+  let sbShown = { top: -1, hgt: -1 }, sbDrag = null;
+  const sbGeom = () => {
+    const vh = vpRect.height - (zw ? zwin.offsetHeight : trayH), ch = worldH * scale, range = Math.max(1, ch - vh + 24);
+    const th = Math.max(40, Math.min(vh, vh * vh / Math.max(ch, 1)));
+    return { vh, ch, range, th, room: Math.max(1, vh - th) };
+  };
+  function updateScrollbar() {
+    const g = sbGeom(), show = !hz && g.ch > g.vh + 4;
+    if (sbar.hidden === show) sbar.hidden = !show;
+    if (!show) return;
+    sbar.style.height = g.vh + 'px';
+    const top = Math.round(clamp(-ty / g.range, 0, 1) * g.room), hgt = Math.round(g.th);
+    if (top !== sbShown.top || hgt !== sbShown.hgt) {
+      sbShown = { top, hgt };
+      sbThumb.style.height = hgt + 'px';
+      sbThumb.style.transform = `translateY(${top}px)`;
+      if (sbDrag) { sbTip.style.transform = `translateY(${top + hgt / 2 - 14}px)`; sbTip.textContent = `${pvs.indexOf(currentPv()) + 1} / ${pvs.length}`; }
+    }
+  }
+  function sbTo(frac) {
+    const g = sbGeom();
+    stopInertia();
+    ty = -clamp(frac, 0, 1) * g.range;
+    applyView();
+  }
+  sbar.addEventListener('pointerdown', e => {
+    e.preventDefault();
+    e.stopPropagation();
+    const g = sbGeom(), r = sbar.getBoundingClientRect(), y = e.clientY - r.top;
+    let top0 = sbShown.top;
+    if (e.target !== sbThumb) { top0 = clamp(y - g.th / 2, 0, g.room); sbTo(top0 / g.room); } // a tap on the track jumps there
+    try { sbar.setPointerCapture(e.pointerId); } catch { /* synthetic pointer */ }
+    sbDrag = { id: e.pointerId, y0: e.clientY, top0 };
+    sbar.classList.add('drag');
+    sbTip.hidden = false;
+    sbShown.top = -1;
+    updateScrollbar();
+  });
+  sbar.addEventListener('pointermove', e => {
+    if (!sbDrag || e.pointerId !== sbDrag.id) return;
+    sbTo((sbDrag.top0 + e.clientY - sbDrag.y0) / sbGeom().room);
+  });
+  const sbEnd = e => { if (sbDrag && e.pointerId === sbDrag.id) { sbDrag = null; sbar.classList.remove('drag'); sbTip.hidden = true; } };
+  sbar.addEventListener('pointerup', sbEnd);
+  sbar.addEventListener('pointercancel', sbEnd);
 
   // Runs on every frame while scrolling, so it only touches the page (and storage) when something changed.
   let indShown = '', posSaved = -1;
@@ -1204,9 +1266,20 @@ export async function mountEditor(root, docId, opts = {}) {
 
   function onWheel(e) {
     e.preventDefault(); // (no measure() here: the resize observer keeps vpRect current, and measuring forces a layout per wheel tick)
-    stopInertia();
-    if (e.ctrlKey || e.metaKey) { zoomAt(e.clientX, e.clientY, Math.exp(-e.deltaY * 0.01)); return; }
+    if (inertiaRaf) { cancelAnimationFrame(inertiaRaf); inertiaRaf = 0; }
+    if (e.ctrlKey || e.metaKey) { stopInertia(); zoomAt(e.clientX, e.clientY, Math.exp(-e.deltaY * 0.01)); return; }
     const k = e.deltaMode === 1 ? 32 : 1;
+    // A mouse wheel (big, whole steps) glides and goes a little further per step; a touchpad (many small steps)
+    // already moves smoothly, so it is followed directly.
+    const notch = e.deltaMode === 1 || Math.max(Math.abs(e.deltaX), Math.abs(e.deltaY)) >= 50;
+    if (notch && !(hz && !e.shiftKey && currentPv() && currentPv().page.w * scale <= vpRect.width + 2)) {
+      const f = k * 1.3;
+      if (hz) { if (e.shiftKey) glideBy(0, -e.deltaY * f); else glideBy(-(e.deltaX + e.deltaY) * f, 0); }
+      else if (e.shiftKey && !e.deltaX) glideBy(-e.deltaY * f, 0);
+      else glideBy(-e.deltaX * f, -e.deltaY * f);
+      return;
+    }
+    if (glide) { cancelAnimationFrame(glide.raf); glide = null; }
     if (hz) {
       const cur = currentPv();
       if (!e.shiftKey && cur && cur.page.w * scale <= vpRect.width + 2) {
@@ -1227,6 +1300,28 @@ export async function mountEditor(root, docId, opts = {}) {
   // --- pan / pinch
   function stopInertia() {
     if (inertiaRaf) { cancelAnimationFrame(inertiaRaf); inertiaRaf = 0; }
+    if (glide) { cancelAnimationFrame(glide.raf); glide = null; }
+  }
+
+  // A mouse wheel moves in big steps; each step glides over a few frames instead of jumping.
+  let glide = null; // {x, y: where the view is heading, raf}
+  function glideBy(dx, dy) {
+    if (!glide) glide = { x: tx, y: ty, raf: 0 };
+    glide.x += dx;
+    glide.y += dy;
+    if (!glide.raf) glide.raf = requestAnimationFrame(glideStep);
+  }
+  function glideStep() {
+    const g = glide;
+    if (!g || destroyed) return;
+    g.raf = 0;
+    const wx = tx + (g.x - tx) * 0.3, wy = ty + (g.y - ty) * 0.3;
+    tx = wx; ty = wy;
+    applyView();
+    if (tx !== wx) g.x = tx; // reached an end: stop heading past it
+    if (ty !== wy) g.y = ty;
+    if (Math.abs(g.x - tx) < 0.5 && Math.abs(g.y - ty) < 0.5) { glide = null; return; }
+    g.raf = requestAnimationFrame(glideStep);
   }
 
   function startPan(p) {
@@ -5069,6 +5164,9 @@ export async function mountEditor(root, docId, opts = {}) {
       h('b', null, n ? `${n} selected` : 'Tap pages'),
       h('div', { class: 'pick-row' },
         h('button', { class: 'chip sm', type: 'button', onclick: () => { if (all) picked.clear(); else for (const p of pages) picked.add(p.id); updatePick(); } }, all ? 'None' : 'All'),
+        // Every other page, e.g. papers with Hindi on even pages and English on odd ones (page numbers start at 1).
+        h('button', { class: 'chip sm', type: 'button', title: 'Pages 1, 3, 5...', onclick: () => { picked.clear(); pages.forEach((p, i) => { if (i % 2 === 0) picked.add(p.id); }); updatePick(); } }, 'Odd'),
+        h('button', { class: 'chip sm', type: 'button', title: 'Pages 2, 4, 6...', onclick: () => { picked.clear(); pages.forEach((p, i) => { if (i % 2 === 1) picked.add(p.id); }); updatePick(); } }, 'Even'),
         h('button', { class: 'btn sm primary', type: 'button', onclick: e => pickMenu(e.currentTarget) }, 'Actions')));
   }
 
@@ -5094,6 +5192,7 @@ export async function mountEditor(root, docId, opts = {}) {
       { label: 'Copy to another notebook', icon: I.book, onClick: need(() => pickedToNotebook(false)) },
       { label: 'Move to another notebook', icon: I.move, onClick: need(() => pickedToNotebook(true)) },
       { label: 'Export as PDF', icon: I.share, onClick: need(async () => { commitText(); await flush().catch(saveFailed); exportFlow(doc.id, pickedPages().map(p => p.id)); }) },
+      { label: 'Print', icon: I.print, onClick: need(() => printPages(pickedPages())) },
       { label: pickedPages().every(p => p.bm) && n ? 'Remove bookmarks' : 'Bookmark', icon: I.star, onClick: need(bookmarkPicked) },
       '-',
       { label: `Delete ${n || ''} page${s}`.replace('  ', ' '), icon: I.trash, danger: true, onClick: need(deletePicked) }
