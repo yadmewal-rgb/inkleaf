@@ -1,0 +1,15 @@
+// Inkleaf sync service. Cloudflare builds this folder when it is connected to the GitHub repo
+// (Workers > Create > Import a repository, root directory "server").
+// The allowed e-mail addresses are set in the Cloudflare dashboard as the secret ALLOWED, never here.
+{
+  "name": "inkleaf-sync",
+  "main": "worker.js",
+  "compatibility_date": "2025-09-01",
+  "durable_objects": {
+    "bindings": [{ "name": "USER", "class_name": "User" }]
+  },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["User"] }],
+  "vars": {
+    "ORIGINS": "https://yadmewal-rgb.github.io,http://localhost:8080"
+  }
+}
