@@ -723,6 +723,20 @@ export async function openSettings() {
       await initSync();
     }
   };
+  // How much of this person's space on the service is used (Cloudflare's free plan allows each person 1 GB).
+  const usage = h('div', { class: 'usage', hidden: true });
+  if (session && !cfg.off && navigator.onLine) {
+    call('/me').then(r => r.json()).then(j => {
+      const GB = 1024 ** 3, used = Number(j.bytes) || 0, pct = Math.min(100, used / GB * 100);
+      const size = used >= GB ? (used / GB).toFixed(2) + ' GB' : used >= 1048576 ? Math.round(used / 1048576) + ' MB' : Math.max(1, Math.round(used / 1024)) + ' KB';
+      usage.replaceChildren(
+        h('div', { class: 'usage-text' }, `Space used on the sync service: ${size} of 1 GB (${pct < 1 ? pct.toFixed(1) : Math.round(pct)}%)`,
+          h('span', { class: 'bk-sub' }, ` · ${j.devices} device sign-in${j.devices === 1 ? '' : 's'}`)),
+        h('div', { class: 'usage-bar' }, h('div', { class: 'usage-fill' + (pct > 85 ? ' warn' : ''), style: { width: Math.max(pct, 0.5) + '%' } })),
+        pct > 85 ? h('p', { class: 'modal-text small' }, 'Nearly full. Removing PDFs you no longer need (and emptying the bin) frees space; or ask for more space to be set up.') : '');
+      usage.hidden = false;
+    }).catch(() => {});
+  }
   const who = session && !cfg.off
     ? `This device is signed in as ${session.email}. It stays signed in; nothing needs doing again.`
     : cfg.off ? 'Sync is turned off on this device.' : 'This device is not signed in yet.';
@@ -735,6 +749,7 @@ export async function openSettings() {
         'Notes are always kept on this device, so they open instantly and work offline. With sync on, every change is also ',
         'sent to Inkleaf\'s own sync service (on Cloudflare) and appears on your other devices within a second or two.'),
       h('p', { class: 'modal-text small' }, who),
+      usage,
       h('div', { class: 'row' },
         h('button', {
           class: 'btn primary', type: 'button',

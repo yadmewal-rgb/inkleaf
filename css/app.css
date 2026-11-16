@@ -720,3 +720,10 @@ button.pageind:hover { background: var(--surface-2); }
 .hlv-bar { display: flex; align-items: center; gap: 8px; padding: 6px 8px 6px 12px; border-bottom: 1px solid var(--line); }
 .hlv-bar .tag-dot { width: 12px; height: 12px; }
 .hlv-pic { display: block; width: 100%; height: auto; background: #fff; }
+
+/* Settings: space used on the sync service */
+.usage { margin: 6px 0 10px; }
+.usage-text { font-size: 13px; margin-bottom: 5px; }
+.usage-bar { height: 8px; border-radius: 4px; background: var(--line); overflow: hidden; }
+.usage-fill { height: 100%; background: var(--accent); border-radius: 4px; }
+.usage-fill.warn { background: #e03131; }
