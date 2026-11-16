@@ -29,7 +29,9 @@ async function annotOverlay(pg) {
   return bytes;
 }
 
-export async function buildPdf(doc, pages, progress) {
+// front = { cards: [{ bytes (PNG), w, h (page units), label, pageId }] }: pictures of highlights laid out on pages of
+// their own before the notebook; each card is a link to its page when that page is in the file too.
+export async function buildPdf(doc, pages, progress, front) {
   await loadScript('vendor/pdf-lib.min.js');
   const L = window.PDFLib;
   const { PDFDocument, LineCapStyle, LineJoinStyle, BlendMode } = L;
@@ -98,11 +100,36 @@ export async function buildPdf(doc, pages, progress) {
     return im;
   }
 
+  const links = [], pageOut = new Map();
+  if (front && front.cards.length) {
+    const bold = await out.embedFont(L.StandardFonts.HelveticaBold), font = await out.embedFont(L.StandardFonts.Helvetica);
+    const W = 595, H = 842, M = 36, grey = L.rgb(0.42, 0.44, 0.48), line = L.rgb(0.82, 0.84, 0.87);
+    let sheet = null, y = 0;
+    const newSheet = () => { sheet = out.addPage([W, H]); y = H - M; };
+    newSheet();
+    sheet.drawText(`Highlights (${front.cards.length})`, { x: M, y: y - 16, size: 16, font: bold });
+    y -= 36;
+    for (let n = 0; n < front.cards.length; n++) {
+      const c = front.cards[n];
+      if (progress) progress(n + 1, front.cards.length, 'highlight');
+      let w = Math.min(W - 2 * M, c.w), hh = c.h * w / c.w;
+      if (hh > H - 2 * M - 40) { hh = H - 2 * M - 40; w = c.w * hh / c.h; }
+      if (y - 14 - hh - 6 < M) newSheet();
+      sheet.drawText(c.label, { x: M, y: y - 10, size: 9, font, color: grey });
+      y -= 15;
+      sheet.drawRectangle({ x: M - 4, y: y - hh - 4, width: w + 8, height: hh + 8, color: L.rgb(1, 1, 1), borderColor: line, borderWidth: 0.8 });
+      sheet.drawImage(await out.embedPng(c.bytes), { x: M, y: y - hh, width: w, height: hh });
+      links.push({ sheet, rect: [M - 4, y - hh - 4, M + w + 4, y + 4], to: c.pageId });
+      y -= hh + 20;
+    }
+  }
+
   for (let n = 0; n < pages.length; n++) {
     const pg = pages[n];
     if (progress) progress(n + 1, pages.length);
     const H = pg.h, pap = R.paperOf(pg);
     const page = out.addPage([pg.w, H]);
+    pageOut.set(pg.id, page);
     page.drawRectangle({ x: 0, y: 0, width: pg.w, height: H, color: hex(pap.bg) });
 
     if (pg.pdf) {
@@ -206,19 +233,29 @@ export async function buildPdf(doc, pages, progress) {
     }
   }
 
+  // Highlight cards link to their pages (a tap in any PDF viewer jumps there).
+  for (const l of links) {
+    const to = pageOut.get(l.to);
+    if (!to) continue;
+    const annot = out.context.obj({ Type: 'Annot', Subtype: 'Link', Rect: l.rect, Border: [0, 0, 0], Dest: [to.ref, 'Fit'] });
+    l.sheet.node.addAnnot(out.context.register(annot));
+  }
+
   const bytes = await out.save();
   return new Blob([bytes], { type: 'application/pdf' });
 }
 
-export async function exportFlow(docId, onlyIds) {
+// front: highlight cards to put first (see buildPdf); frontOnly: just those, without the notebook's pages.
+export async function exportFlow(docId, onlyIds, front, frontOnly) {
   const b = busy('Preparing PDF...');
   let blob, name;
   try {
     const doc = await db.get('docs', docId);
     let pages = await loadPages(doc);
     if (onlyIds) pages = pages.filter(p => onlyIds.includes(p.id)); // just the chosen pages
-    name = safeName(doc.title) + (onlyIds ? ` (${pages.length} page${pages.length === 1 ? '' : 's'})` : '') + '.pdf';
-    blob = await buildPdf(doc, pages, (i, n) => b.set(`Preparing PDF... page ${i} of ${n}`));
+    if (frontOnly) pages = [];
+    name = safeName(doc.title) + (frontOnly ? ' (highlights)' : onlyIds ? ` (${pages.length} page${pages.length === 1 ? '' : 's'})` : '') + '.pdf';
+    blob = await buildPdf(doc, pages, (i, n, what) => b.set(`Preparing PDF... ${what || 'page'} ${i} of ${n}`), front);
   } catch (e) {
     console.error(e);
     b.done();

@@ -1,5 +1,5 @@
 // The notebook editor: page layout, pan/zoom, stylus/finger/mouse input, tools, selection, undo.
-import { db, newPage, loadPages, trashPage, sysPages, addSysPage, removeSysPage, TRASH_DAYS, dayKey, dayIndex, newDayPage } from './db.js';
+import { db, newPage, createDoc, loadPages, trashPage, sysPages, addSysPage, removeSysPage, TRASH_DAYS, dayKey, dayIndex, newDayPage } from './db.js';
 import { chooseNotebook, markOpened, detailsDialog } from './library.js';
 import { openPdf, renderPdfPage } from './pdfrender.js';
 import { h, uid, nextZ, clamp, bus, distSeg, downloadBlob, safeName, debounce, fill, imgReady } from './util.js';
@@ -1348,7 +1348,7 @@ export async function mountEditor(root, docId, opts = {}) {
     if (tool !== 'lasso' && sel) clearSel();
     action = {
       tool, pid: e.pointerId, ptype: e.pointerType, pv, x0: x, y0: y, cx0: e.clientX, cy0: e.clientY, far: false,
-      map: map || null, sc: map ? zw.zs : scale // sc = screen pixels per page unit where the pointer is
+      map: map || null, sc: map ? zw.zs : scale, t0: performance.now() // sc = screen pixels per page unit where the pointer is
     };
     if (tool === 'pen' || tool === 'hl') beginStroke(e, x, y);
     else if (tool === 'eraser') beginErase(e, x, y);
@@ -1665,6 +1665,11 @@ export async function mountEditor(root, docId, opts = {}) {
   function endStroke(a, e) {
     const page = a.pv.page;
     clearTimeout(a.holdT);
+    // A quick tap on a linked item (a picture in a highlights notebook, an excerpt) follows the link, leaving no dot.
+    if (e && !a.far && !a.map && performance.now() - a.t0 < 350) {
+      const lk = itemLinkAt(a.pv, a.x0, a.y0);
+      if (lk) { clearLive(); followItemLink(lk); return; }
+    }
     if (e && !a.line && !a.snap) {
       // Smoothing trails slightly behind the tip, so finish exactly where the pen lifted.
       let [ex, ey] = apt(a, e);
@@ -4393,6 +4398,8 @@ export async function mountEditor(root, docId, opts = {}) {
       actions: [
         all ? { label: 'Copy the text', onClick: async () => { try { await navigator.clipboard.writeText(all); toast('Highlighted text copied'); } catch { toast('This browser would not copy the text.'); } return false; } } : null,
         prefs.hlTray === false ? { label: 'Show them at the bottom', onClick: () => { prefs.hlTray = true; savePrefs(); drawTray(); } } : null,
+        { label: 'Highlights notebook', onClick: () => { highlightsNotebook(); } },
+        { label: 'Export as PDF', onClick: () => { exportPdf(); } },
         rows.some(r => !groupCard(r)) ? { label: 'Make the missing flashcards', onClick: () => { const n = rows.filter(r => !groupCard(r)); for (const r of n) setGroupCard(r, true); toast(`${n.length} flashcard${n.length === 1 ? '' : 's'} added`); } } : null,
         { label: 'Close', primary: true }
       ].filter(Boolean)
@@ -4510,6 +4517,7 @@ export async function mountEditor(root, docId, opts = {}) {
     const b = R.unionBounds(items), w = Math.max(...items.map(it => it.w || 12));
     // bounds reach a whole stroke width past the ink's middle; the ink itself covers half of that
     let y0 = b.y + w / 2 - w * 1.15, y1 = b.y + b.h - w / 2 + w * 1.15;
+    let x0 = b.x + w * 0.3 - 6, x1 = b.x + b.w - w * 0.3 + 6;
     if (pg.pdf && !pg.tpl) {
       try {
         const L = textLines(pg, await pageText(pg.pdf.a, pg.pdf.i)).filter(l => l.x < b.x + b.w && l.x + l.w > b.x);
@@ -4523,15 +4531,100 @@ export async function mountEditor(root, docId, opts = {}) {
           y0 = above && top - (above.y + above.h) < lh * 2.5 ? above.y - 2 : top - lh * 1.4;
           y1 = below && below.y - bot < lh * 2.5 ? below.y + below.h + 2 : bot + lh * 1.4;
           y0 = Math.min(y0, b.y + w / 2 - 2); y1 = Math.max(y1, b.y + b.h - w / 2 + 2); // never cut the highlight itself
+          // whole lines, as far as they go, so no sentence is cut off at the side
+          const shown = L.filter(l => mid(l) > y0 && mid(l) < y1);
+          x0 = Math.min(x0, ...shown.map(l => l.x - 4));
+          x1 = Math.max(x1, ...shown.map(l => l.x + l.w + 4));
         }
       } catch { /* PDF text not on this device yet: keep the estimate */ }
     }
-    const x0 = clamp(b.x + w * 0.3 - 6, 0, pg.w), x1 = clamp(b.x + b.w - w * 0.3 + 6, 0, pg.w);
+    x0 = clamp(x0, 0, pg.w); x1 = clamp(x1, 0, pg.w);
     y0 = clamp(y0, 0, pg.h); y1 = clamp(y1, 0, pg.h);
     return { x: Math.round(x0), y: Math.round(y0), w: Math.max(1, Math.round(x1 - x0)), h: Math.max(1, Math.round(y1 - y0)) };
   }
 
   // Pictures of highlights are made one at a time at one scale, so those of the same page share one page render.
+  // --- the highlights as a document of their own (like an Evernote annotation summary)
+  // Every highlight in reading order, as a PNG picture with its size in page units.
+  async function highlightCards(say) {
+    const rows = [];
+    pages.forEach((pg, i) => { for (const g of hlGroups(pg).sort((a, b) => a.b.y - b.b.y || a.b.x - b.b.x)) rows.push({ pg, i, ...g }); });
+    const out = [];
+    for (let n = 0; n < rows.length; n++) {
+      const r = rows[n];
+      if (say) say(n + 1, rows.length);
+      const reg = await hlRegion(r.pg, r.items), c = await hlShot(r.pg, r.items);
+      const blob = await new Promise(res => c.toBlob(res, 'image/png'));
+      if (!blob) continue;
+      out.push({ bytes: new Uint8Array(await blob.arrayBuffer()), w: reg.w, h: reg.h, label: `Page ${r.i + 1}`, pageId: r.pg.id });
+    }
+    return out;
+  }
+
+  async function exportPdf() {
+    commitText();
+    await flush().catch(saveFailed);
+    if (!pages.some(pg => pg.items.some(it => it.t === 's' && it.tool === 'hl'))) { exportFlow(doc.id); return; }
+    const go = async only => {
+      const b = busy('Collecting highlights...');
+      let cards;
+      try { cards = await highlightCards((i, n) => b.set(`Collecting highlights... ${i} of ${n}`)); } catch (e) { b.done(); toast('Could not collect the highlights: ' + (e.message || e)); return; }
+      b.done();
+      exportFlow(doc.id, null, { cards }, only);
+    };
+    modal({
+      title: 'Export as PDF',
+      body: h('p', { class: 'modal-text' }, 'This notebook has highlights. Put pictures of them on pages of their own at the front? Tapping one in the PDF jumps to its page.'),
+      actions: [
+        { label: 'Notebook only', onClick: () => { exportFlow(doc.id); } },
+        { label: 'Highlights only', onClick: () => { go(true); } },
+        { label: 'Highlights first', primary: true, onClick: () => { go(false); } }
+      ]
+    });
+  }
+
+  // A new notebook holding a picture card of every highlight; tapping a card opens that spot in this notebook.
+  async function highlightsNotebook() {
+    commitText();
+    await flush().catch(saveFailed);
+    const b = busy('Collecting highlights...');
+    try {
+      const cards = await highlightCards((i, n) => b.set(`Collecting highlights... ${i} of ${n}`));
+      if (!cards.length) { b.done(); toast('Nothing is highlighted in this notebook yet.'); return; }
+      const nd = await createDoc({ title: `Highlights – ${doc.title}`, folderId: doc.folderId || null, template: 'blank', paper: 'white' });
+      const W = nd.w, H = nd.h, M = 36, t = Date.now();
+      const list = [await db.get('pages', nd.pages[0])];
+      let pg = list[0], y = M;
+      pg.items.push({ id: uid(), t: 'tx', x: M, y, w: W - 2 * M, s: `Highlights of “${doc.title}” (${cards.length})`, fs: 18, b: 1, c: INK, z: nextZ(), m: t });
+      y += 40;
+      for (const c of cards) {
+        let w = Math.min(W - 2 * M, c.w), hh = c.h * w / c.w;
+        if (hh > H - 2 * M - 30) { hh = H - 2 * M - 30; w = c.w * hh / c.h; }
+        if (y + 16 + hh > H - M) {
+          pg = newPage(nd.id, { w: W, h: H, template: 'blank', paper: 'white' });
+          list.push(pg);
+          y = M;
+        }
+        pg.items.push({ id: uid(), t: 'tx', x: M, y, w: 200, s: c.label, fs: 10, c: '#6b7078', z: nextZ(), m: t });
+        y += 16;
+        const asset = { id: uid(), mime: 'image/png', name: 'highlight.png', data: c.bytes.buffer, modified: t };
+        await db.put('assets', asset);
+        const r2 = v => Math.round(v * 100) / 100;
+        pg.items.push({ id: uid(), t: 'im', a: asset.id, x: M, y: r2(y), w: r2(w), h: r2(hh), z: nextZ(), m: t, lk: { d: doc.id, p: c.pageId } });
+        y += hh + 18;
+      }
+      for (const p of list) p.modified = Date.now();
+      await db.putMany('pages', list);
+      await db.put('docs', { ...nd, pages: list.map(p => p.id), modified: Date.now() });
+      b.done();
+      if (await confirmBox('Highlights notebook made', `“${nd.title}” is in your library, ${list.length} page${list.length === 1 ? '' : 's'}. Tap a picture there (with the pen or a finger) to come back to the spot. Open it now?`, 'Open')) openDoc(nd.id, 1);
+    } catch (e) {
+      b.done();
+      console.error(e);
+      toast('Could not make the highlights notebook: ' + (e.message || e), 5000);
+    }
+  }
+
   let shotChain = Promise.resolve();
   function hlShot(pg, items, mask) {
     const p = shotChain.then(async () => regionCanvas(pg, await hlRegion(pg, items), 2.5, 0, mask));
@@ -5316,7 +5409,7 @@ export async function mountEditor(root, docId, opts = {}) {
     popMenu(anchor, [
       { label: 'Add a page', icon: I.addPage, onClick: () => addPageAfter(currentPv()) },
       '-',
-      { label: 'Export as PDF', icon: I.pdf, onClick: async () => { commitText(); await flush().catch(saveFailed); exportFlow(doc.id); } },
+      { label: 'Export as PDF', icon: I.pdf, onClick: exportPdf },
       { label: 'Send a copy to a friend', icon: I.send, onClick: async () => { commitText(); await flush().catch(saveFailed); shareNotebook(doc.id); } },
       { label: 'This page as a picture', icon: I.image, onClick: pagePicture },
       { label: 'Print', icon: I.print, onClick: printDialog },
