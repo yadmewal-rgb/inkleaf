@@ -1,6 +1,6 @@
 # Handoff
 
-**Written:** 2026-11-17 18:08 by agy (Antigravity). **Next:** agy or Claude Code.
+**Written:** 2026-11-17 18:14 by agy (Antigravity). **Next:** agy or Claude Code.
 
 ## What the owner asked last
 1. "now check the whole code thoroughly and examine it , suggest , compare with top applications"
@@ -12,6 +12,7 @@
 7. "yessss"
 8. "follow same practice, show everything here with screenshots and also make doing everything visible"
 9. "no i splited the screen and installed DEV tool proceed with Phase 1: Cloudflare R2 fast PDF streaming / Phase 2: Lasso Free Rotation"
+10. "go live"
 
 ## Done
 - **Phase 1: Cloudflare R2 High-Speed PDF Streaming & Edge Storage**:
@@ -24,15 +25,17 @@
   - Implemented rotation hit detection in `selHit` with coordinate transformation.
   - Added live rotation tracking in `moveLasso` with automatic 90-degree magnetic snapping.
   - Added live rotation canvas rendering in `drawSelLive` and undoable commit via `R.rotateBy` in `commitSelTransform`.
-- **Service Worker**:
+- **Service Worker & Release**:
   - Bumped cache version to `inkleaf-v41` in `sw.js`.
+  - Tested module loading with Edge headless (`http://localhost:8080`).
+  - Pushed to `main` (commit `8a8d62f`): published live on GitHub Pages and triggered Cloudflare Worker deployment.
 
 ## Half-done
-None. Both Phase 1 and Phase 2 are implemented and verified.
+None. Both phases are fully implemented, verified, and live.
 
 ## Live now
-- Website on GitHub Pages from `main` (commit a38909c, sw cache v40). Local test server running on `http://localhost:8080`.
-- Sync service on Cloudflare Worker (`inkleaf-sync.yadmewal.workers.dev`).
+- Website on GitHub Pages from `main` (commit `8a8d62f`, service worker cache `inkleaf-v41`).
+- Sync service on Cloudflare Worker (`inkleaf-sync.yadmewal.workers.dev`) with R2 asset streaming.
 
 ## Next step
-Commit locally and push to `main` when ready to release live to GitHub Pages and Cloudflare.
+Test lasso rotation and large PDF streaming on the iPad and phone. Next planned features: Phase 3 (Native PDF Table of Contents / Outline) and Phase 4 (Stroke Velocity Tapering).
