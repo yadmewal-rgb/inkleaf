@@ -581,8 +581,8 @@ button.pageind:hover { background: var(--surface-2); }
 .rot-handle {
   position: absolute; left: 50%; top: -30px; width: 20px; height: 20px;
   margin-left: -10px; border-radius: 50%; background: var(--surface);
-  border: 2px solid var(--accent); cursor: grab; box-shadow: var(--shadow);
-  pointer-events: auto;
+  border: 2px solid var(--accent); box-shadow: var(--shadow);
+  pointer-events: none;
 }
 .handle {
   position: absolute; right: -9px; bottom: -9px; width: 18px; height: 18px;

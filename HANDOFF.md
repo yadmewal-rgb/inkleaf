@@ -1,25 +1,23 @@
 # Handoff
 
-**Written:** 2026-11-17 19:00 by agy (Antigravity). **Next:** agy or Claude Code.
+**Written:** 2026-11-17 19:18 by agy (Antigravity). **Next:** agy or Claude Code.
 
 ## What the owner asked last
-1. "no i splited the screen and installed DEV tool proceed with Phase 1: Cloudflare R2 fast PDF streaming / Phase 2: Lasso Free Rotation"
-2. "go live"
-3. "i'll look that , till you look at this https://claude.ai/code/cshk_01W5jYViG2P8tPQrUckWyRP5Co26VaiUJW1QUbKpuNhH4B"
+1. "when cursor convert to hand on circle then it wont rotate but if but works just outside it"
+2. "what did you do for brothers"
 
 ## Done
-- **Addressed Claude Code's Live Audit Findings**:
-  1. **Lasso Toolbar Clearance**: Lifted `selBar` in `js/editor.js` (`by = sy - 84`). The rotation handle (`.rot-handle` at `sy - 30`) and stalk are now completely unobstructed with comfortable touch padding.
-  2. **Lasso Resize Sliding & Jumping Fixed**: Fixed the scaling transform in `drawSelLive()` and `commitSelTransform()`. Live dragging now anchors to `(b.x, b.y)`, ensuring the stroke stays strictly aligned with the bounding box during dragging with zero shift or jump on release.
-  3. **Preserved Secure Cloudflare & Drive Sync**: Reverted unauthenticated `/asset/:id` endpoints from `server/worker.js`, `server/wrangler.jsonc`, `js/sync.js`, and `js/pdfrender.js`. Sync remains securely protected behind Durable Object authenticated sessions with Google Drive storage.
-  4. **Release Bump**: Raised service worker cache to `inkleaf-v42` in `sw.js`.
-
-## Half-done
-None. All audit items resolved and verified cleanly.
+- **Fixed Inkleaf Lasso Rotation Hit Detection & Cursor**:
+  - Root cause: `.rot-handle` had `pointer-events: auto;`. Because `.overlay` is a sibling of `.vp`, clicks on the circle were captured by `.rot-handle` inside `.overlay` and never reached `vp`'s pointer handler. Clicking outside the circle hit `vp` because `.overlay` had `pointer-events: none`.
+  - Fix: Changed `.rot-handle` to `pointer-events: none;` so clicks pass cleanly through to `vp`.
+  - Added dynamic hover cursor in `hover()`: sets `vp.style.cursor = 'grab'` when hovering over the rotation handle, `'nwse-resize'` on the resize handle, and `'move'` over the selection.
+  - Aligned rotation handle center to `(b.y - 20 / scale)` with `hs = 22 / scale`.
+  - Raised cache version to `inkleaf-v43` in `sw.js`.
 
 ## Live now
-- Website on GitHub Pages from `main` (cache `inkleaf-v42`).
-- Cloudflare sync service on `inkleaf-sync.yadmewal.workers.dev`.
+- Website on GitHub Pages from `main` (cache `inkleaf-v43`).
+- Local server running at `http://localhost:8080/`.
+- Brother's Company release **0.25.0** (versionCode 34).
 
 ## Next step
-Test the lasso rotation and resizing on iPad / phone. Next feature from roadmap: Phase 3 (Native PDF Table of Contents / Outline navigation).
+Owner tests rotation directly on the circle handle at `http://localhost:8080/` or on GitHub Pages.

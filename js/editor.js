@@ -1214,6 +1214,13 @@ export async function mountEditor(root, docId, opts = {}) {
   function hover(e) {
     if (prefs.tool === 'eraser' && e.pointerType !== 'touch') showEraserCur(e.clientX, e.clientY);
     else eraserCur.hidden = true;
+    if (prefs.tool === 'lasso' && sel) {
+      const [x, y] = toPage(sel.pv, e.clientX, e.clientY);
+      const hit = selHit(sel.pv, x, y);
+      vp.style.cursor = hit === 'rotate' ? 'grab' : hit === 'scale' ? 'nwse-resize' : hit === 'move' ? 'move' : '';
+    } else if (prefs.tool !== 'eraser') {
+      vp.style.cursor = '';
+    }
   }
 
   function showEraserCur(cx, cy) {
@@ -1386,7 +1393,7 @@ export async function mountEditor(root, docId, opts = {}) {
 
   function selHit(pv, x, y) {
     if (!sel || sel.pv !== pv) return null;
-    const b = sel.b, hs = 18 / scale;
+    const b = sel.b, hs = 22 / scale;
     const cx = b.x + b.w / 2, cy = b.y + b.h / 2;
     const ang = sel.ang || 0;
     let lx = x - (sel.dx || 0), ly = y - (sel.dy || 0);
@@ -1396,7 +1403,7 @@ export async function mountEditor(root, docId, opts = {}) {
       lx = cx + (rx * cos - ry * sin);
       ly = cy + (rx * sin + ry * cos);
     }
-    if (Math.hypot(lx - cx, ly - (b.y - 24 / scale)) < hs) return 'rotate';
+    if (Math.hypot(lx - cx, ly - (b.y - 20 / scale)) < hs) return 'rotate';
     const bw = b.w * (sel.k || 1), bh = b.h * (sel.k || 1);
     if (Math.abs(lx - (b.x + bw)) < hs && Math.abs(ly - (b.y + bh)) < hs) return 'scale';
     if (lx >= b.x && lx <= b.x + bw && ly >= b.y && ly <= b.y + bh) return 'move';
