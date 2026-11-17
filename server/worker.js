@@ -92,6 +92,36 @@ export default {
         return withCors(json({ token: who.sub + '.' + r.secret, email: who.email, drive: r.drive }), cors);
       }
 
+      // High-speed asset streaming via Cloudflare R2 (supports HTTP Range 206 for large PDFs)
+      if (url.pathname.startsWith('/asset/') && env.BUCKET) {
+        const id = url.pathname.slice(7);
+        if (req.method === 'GET' || req.method === 'HEAD') {
+          const range = req.headers.get('range');
+          const obj = await env.BUCKET.get(id, range ? { range: req.headers } : undefined);
+          if (!obj) return withCors(json({ error: 'not-found' }, 404), cors);
+          const headers = new Headers();
+          obj.writeHttpMetadata(headers);
+          headers.set('etag', obj.httpEtag);
+          headers.set('accept-ranges', 'bytes');
+          headers.set('cache-control', 'public, max-age=31536000, immutable');
+          return withCors(new Response(req.method === 'HEAD' ? null : obj.body, {
+            status: obj.range ? 206 : 200,
+            headers
+          }), cors);
+        }
+        if (req.method === 'PUT') {
+          const key = ((req.headers.get('Authorization') || '').match(/^Bearer\s+([^.\s]+)\./) || [])[1] || '';
+          if (!/^[0-9]{5,40}$/.test(key)) return withCors(json({ error: 'signin' }, 401), cors);
+          const mime = req.headers.get('content-type') || 'application/pdf';
+          await env.BUCKET.put(id, req.body, { httpMetadata: { contentType: mime } });
+          return withCors(json({ ok: true, id }), cors);
+        }
+        if (req.method === 'DELETE') {
+          await env.BUCKET.delete(id);
+          return withCors(json({ ok: true }), cors);
+        }
+      }
+
       // Everything else belongs to one person: the device key says whose Durable Object to ask.
       let key = '';
       if (url.pathname === '/ws') key = url.searchParams.get('u') || '';

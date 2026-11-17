@@ -51,7 +51,11 @@ export async function mountEditor(root, docId, opts = {}) {
   const overlay = h('div', { class: 'overlay' });
   const live = h('canvas', { class: 'live' });
   const eraserCur = h('div', { class: 'eraser-cur', hidden: true });
-  const selBox = h('div', { class: 'selbox', hidden: true }, h('div', { class: 'handle' }));
+  const selBox = h('div', { class: 'selbox', hidden: true },
+    h('div', { class: 'rot-stalk' }),
+    h('div', { class: 'rot-handle', title: 'Rotate' }),
+    h('div', { class: 'handle', title: 'Resize' })
+  );
   const selBar = h('div', { class: 'selbar', hidden: true });
   const panel = h('aside', { class: 'panel', hidden: true });
   // The notebook's name in its tab: a plain tap does nothing, holding it (or a right-click) renames.
@@ -1383,8 +1387,19 @@ export async function mountEditor(root, docId, opts = {}) {
   function selHit(pv, x, y) {
     if (!sel || sel.pv !== pv) return null;
     const b = sel.b, hs = 18 / scale;
-    if (Math.abs(x - (b.x + b.w)) < hs && Math.abs(y - (b.y + b.h)) < hs) return 'scale';
-    if (x >= b.x && x <= b.x + b.w && y >= b.y && y <= b.y + b.h) return 'move';
+    const cx = b.x + b.w / 2, cy = b.y + b.h / 2;
+    const ang = sel.ang || 0;
+    let lx = x - (sel.dx || 0), ly = y - (sel.dy || 0);
+    if (ang) {
+      const cos = Math.cos(-ang), sin = Math.sin(-ang);
+      const rx = lx - cx, ry = ly - cy;
+      lx = cx + (rx * cos - ry * sin);
+      ly = cy + (rx * sin + ry * cos);
+    }
+    if (Math.hypot(lx - cx, ly - (b.y - 24 / scale)) < hs) return 'rotate';
+    const bw = b.w * (sel.k || 1), bh = b.h * (sel.k || 1);
+    if (Math.abs(lx - (b.x + bw)) < hs && Math.abs(ly - (b.y + bh)) < hs) return 'scale';
+    if (lx >= b.x && lx <= b.x + bw && ly >= b.y && ly <= b.y + bh) return 'move';
     return null;
   }
 
@@ -1907,6 +1922,13 @@ export async function mountEditor(root, docId, opts = {}) {
     if (a.mode === 'move') {
       sel.dx = x - a.x0;
       sel.dy = y - a.y0;
+    } else if (a.mode === 'rotate') {
+      const b = sel.b, cx = b.x + b.w / 2, cy = b.y + b.h / 2;
+      let ang = Math.atan2(y - cy, x - cx) + Math.PI / 2;
+      const snapStep = Math.PI / 2;
+      const nearest = Math.round(ang / snapStep) * snapStep;
+      if (Math.abs(ang - nearest) < 0.08) ang = nearest;
+      sel.ang = ang;
     } else {
       const b = sel.b;
       sel.k = clamp(Math.max((x - b.x) / b.w, (y - b.y) / b.h), 0.1, 12);
@@ -1933,7 +1955,7 @@ export async function mountEditor(root, docId, opts = {}) {
     sel = {
       pv, items, ids: new Set(items.map(i => i.id)),
       b: { x: u.x - pad, y: u.y - pad, w: u.w + 2 * pad, h: u.h + 2 * pad },
-      k: 1, dx: 0, dy: 0
+      k: 1, dx: 0, dy: 0, ang: 0
     };
     live.classList.toggle('plain', items.every(it => it.t === 'im' || it.t === 'tp'));
     paintInk(pv);
@@ -1946,11 +1968,16 @@ export async function mountEditor(root, docId, opts = {}) {
 
   function drawSelLive() {
     if (!sel) return;
-    const pv = sel.pv, b = sel.b, k = sel.k;
+    const pv = sel.pv, b = sel.b, k = sel.k, ang = sel.ang || 0;
     const c = useLive(pv);
     clearLive();
     const ox = pv.clip ? pv.clip.x : 0, oy = pv.clip ? pv.clip.y : 0;
-    c.setTransform(pv.rs * k, 0, 0, pv.rs * k, pv.rs * (b.x * (1 - k) + sel.dx - ox), pv.rs * (b.y * (1 - k) + sel.dy - oy));
+    const cx = b.x + b.w / 2, cy = b.y + b.h / 2;
+    c.setTransform(pv.rs, 0, 0, pv.rs, -ox * pv.rs, -oy * pv.rs);
+    c.translate(cx + sel.dx, cy + sel.dy);
+    if (ang) c.rotate(ang);
+    if (k !== 1) c.scale(k, k);
+    c.translate(-cx, -cy);
     R.drawItems(c, sel.items);
     R.drawTapes(c, sel.items);
     xf(c, pv);
@@ -1958,10 +1985,17 @@ export async function mountEditor(root, docId, opts = {}) {
 
   function commitSelTransform() {
     if (!sel) return;
-    const { k, dx, dy, b, pv } = sel;
-    if (k === 1 && !dx && !dy) return;
+    const { k, dx, dy, b, pv, ang = 0 } = sel;
+    if (k === 1 && !dx && !dy && !ang) return;
     const old = sel.items;
-    const nu = old.map(it => R.transformItem(it, k, b.x, b.y, dx, dy));
+    const cx = b.x + b.w / 2, cy = b.y + b.h / 2;
+    const nu = old.map(it => {
+      let cur = it;
+      if (k !== 1) cur = R.transformItem(cur, k, b.x, b.y, 0, 0);
+      if (ang) cur = R.rotateBy(cur, cx, cy, ang);
+      if (dx || dy) cur = R.transformItem(cur, 1, 0, 0, dx, dy);
+      return cur;
+    });
     replaceSel(old, nu);
   }
 
@@ -1982,6 +2016,7 @@ export async function mountEditor(root, docId, opts = {}) {
     clearLive();
     live.classList.remove('plain');
     paintInk(pv);
+    selBox.style.transform = 'none';
     selBox.hidden = true;
     selBar.hidden = true;
   }
@@ -2227,7 +2262,12 @@ export async function mountEditor(root, docId, opts = {}) {
       const b = sel.b;
       const [sx, sy] = toScreen(sel.pv, b.x + sel.dx, b.y + sel.dy);
       const w = b.w * sel.k * scale, hgt = b.h * sel.k * scale;
-      Object.assign(selBox.style, { left: sx + 'px', top: sy + 'px', width: w + 'px', height: hgt + 'px' });
+      const ang = sel.ang || 0;
+      Object.assign(selBox.style, {
+        left: sx + 'px', top: sy + 'px', width: w + 'px', height: hgt + 'px',
+        transform: ang ? `rotate(${ang}rad)` : 'none',
+        transformOrigin: `${w / 2}px ${hgt / 2}px`
+      });
       const bw = selBar.offsetWidth || 150;
       const by = sy - 50 > 4 ? sy - 50 : Math.min(vpRect.height - 50, sy + hgt + 10);
       Object.assign(selBar.style, { left: clamp(sx + w / 2 - bw / 2, 4, Math.max(4, vpRect.width - bw - 4)) + 'px', top: by + 'px' });
