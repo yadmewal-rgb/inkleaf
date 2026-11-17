@@ -1972,12 +1972,18 @@ export async function mountEditor(root, docId, opts = {}) {
     const c = useLive(pv);
     clearLive();
     const ox = pv.clip ? pv.clip.x : 0, oy = pv.clip ? pv.clip.y : 0;
-    const cx = b.x + b.w / 2, cy = b.y + b.h / 2;
-    c.setTransform(pv.rs, 0, 0, pv.rs, -ox * pv.rs, -oy * pv.rs);
-    c.translate(cx + sel.dx, cy + sel.dy);
-    if (ang) c.rotate(ang);
-    if (k !== 1) c.scale(k, k);
-    c.translate(-cx, -cy);
+    if (ang) {
+      const bw = b.w * k, bh = b.h * k;
+      const cx = b.x + sel.dx + bw / 2, cy = b.y + sel.dy + bh / 2;
+      c.setTransform(pv.rs, 0, 0, pv.rs, -ox * pv.rs, -oy * pv.rs);
+      c.translate(cx, cy);
+      c.rotate(ang);
+      c.translate(-cx, -cy);
+      c.translate(b.x * (1 - k) + sel.dx, b.y * (1 - k) + sel.dy);
+      c.scale(k, k);
+    } else {
+      c.setTransform(pv.rs * k, 0, 0, pv.rs * k, pv.rs * (b.x * (1 - k) + sel.dx - ox), pv.rs * (b.y * (1 - k) + sel.dy - oy));
+    }
     R.drawItems(c, sel.items);
     R.drawTapes(c, sel.items);
     xf(c, pv);
@@ -1988,12 +1994,12 @@ export async function mountEditor(root, docId, opts = {}) {
     const { k, dx, dy, b, pv, ang = 0 } = sel;
     if (k === 1 && !dx && !dy && !ang) return;
     const old = sel.items;
-    const cx = b.x + b.w / 2, cy = b.y + b.h / 2;
+    const bw = b.w * k, bh = b.h * k;
+    const cx = b.x + sel.dx + bw / 2, cy = b.y + sel.dy + bh / 2;
     const nu = old.map(it => {
       let cur = it;
-      if (k !== 1) cur = R.transformItem(cur, k, b.x, b.y, 0, 0);
+      if (k !== 1 || dx || dy) cur = R.transformItem(cur, k, b.x, b.y, dx, dy);
       if (ang) cur = R.rotateBy(cur, cx, cy, ang);
-      if (dx || dy) cur = R.transformItem(cur, 1, 0, 0, dx, dy);
       return cur;
     });
     replaceSel(old, nu);
@@ -2269,7 +2275,7 @@ export async function mountEditor(root, docId, opts = {}) {
         transformOrigin: `${w / 2}px ${hgt / 2}px`
       });
       const bw = selBar.offsetWidth || 150;
-      const by = sy - 50 > 4 ? sy - 50 : Math.min(vpRect.height - 50, sy + hgt + 10);
+      const by = sy - 84 > 4 ? sy - 84 : Math.min(vpRect.height - 50, sy + hgt + 16);
       Object.assign(selBar.style, { left: clamp(sx + w / 2 - bw / 2, 4, Math.max(4, vpRect.width - bw - 4)) + 'px', top: by + 'px' });
     }
     if (textEd) {

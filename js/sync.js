@@ -404,21 +404,6 @@ async function pushAsset(id) {
   if (!a || a.deleted || !a.data) return;
   const cur = { ...(st[name] || {}), sz: a.data.byteLength };
   const info = JSON.stringify({ mime: a.mime || '', name: a.name || '' });
-
-  // Fast upload to Cloudflare R2 storage
-  if (session && session.token && !cur.r2) {
-    try {
-      const res = await http(server + '/asset/' + encodeURIComponent(id), {
-        method: 'PUT',
-        headers: { Authorization: 'Bearer ' + session.token, 'Content-Type': a.mime || 'application/pdf' },
-        body: a.data
-      });
-      if (res.ok) cur.r2 = 1;
-    } catch (e) {
-      console.warn('R2 edge upload bypassed:', e);
-    }
-  }
-
   if ((cur.sz < BIG || !linked) && !cur.s && !cur.full) {
     try { cur.s = (await putBlob('a', id, new Uint8Array(a.data), { info })).s; }
     catch (e) { if (e.status !== 507 || !linked) throw e; cur.full = 1; } // the service is full: Drive takes it
@@ -443,22 +428,7 @@ async function pullAsset(id, item) {
   const have = await db.get('assets', id);
   if (have && (have.data || have.deleted)) { if (!st[name]) st[name] = item && item.s ? { s: item.s } : { drive: 1 }; return false; }
   let rec = null;
-
-  // Try high-speed fetch from Cloudflare R2 edge first
-  if (!rec && session && session.token) {
-    try {
-      const r2 = await http(server + '/asset/' + encodeURIComponent(id), {
-        headers: { Authorization: 'Bearer ' + session.token }
-      });
-      if (r2.ok) {
-        const data = await r2.arrayBuffer();
-        rec = { id, mime: r2.headers.get('content-type') || 'application/pdf', name: '', data, modified: Date.now() };
-        st[name] = { r2: 1 };
-      }
-    } catch {}
-  }
-
-  if (!rec && !(item && item.parts) && await driveToken()) { // a file listed on the service comes from there
+  if (!(item && item.parts) && await driveToken()) { // a file listed on the service comes from there
     const f = await driveFind(id);
     if (f) {
       const data = await (await drive(`/drive/v3/files/${f.id}?alt=media`)).arrayBuffer();

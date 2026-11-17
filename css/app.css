@@ -575,13 +575,14 @@ button.pageind:hover { background: var(--surface-2); }
 .eraser-cur { border: 1.5px solid rgba(90, 90, 90, .9); background: rgba(255, 255, 255, .35); border-radius: 50%; }
 .selbox { border: 1.5px dashed var(--accent); border-radius: 4px; }
 .rot-stalk {
-  position: absolute; left: 50%; top: -22px; width: 1.5px; height: 22px;
-  background: var(--accent); transform: translateX(-50%);
+  position: absolute; left: 50%; top: -20px; width: 1.5px; height: 20px;
+  background: var(--accent); transform: translateX(-50%); pointer-events: none;
 }
 .rot-handle {
-  position: absolute; left: 50%; top: -31px; width: 18px; height: 18px;
-  margin-left: -9px; border-radius: 50%; background: var(--surface);
+  position: absolute; left: 50%; top: -30px; width: 20px; height: 20px;
+  margin-left: -10px; border-radius: 50%; background: var(--surface);
   border: 2px solid var(--accent); cursor: grab; box-shadow: var(--shadow);
+  pointer-events: auto;
 }
 .handle {
   position: absolute; right: -9px; bottom: -9px; width: 18px; height: 18px;

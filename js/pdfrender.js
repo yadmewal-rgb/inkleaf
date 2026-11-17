@@ -19,9 +19,8 @@ export function pdfLib() {
 
 export async function openPdf(bytes) {
   const L = await pdfLib();
-  const src = typeof bytes === 'string' ? { url: bytes, rangeChunkSize: 65536, disableAutoFetch: false } : { data: bytes };
   return L.getDocument({
-    ...src,
+    data: bytes,
     cMapUrl: CDN + 'cmaps/', cMapPacked: true,
     standardFontDataUrl: CDN + 'standard_fonts/'
   }).promise;

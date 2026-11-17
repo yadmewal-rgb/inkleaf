@@ -10,9 +10,6 @@
   "durable_objects": {
     "bindings": [{ "name": "USER", "class_name": "User" }]
   },
-  "r2_buckets": [
-    { "binding": "BUCKET", "bucket_name": "inkleaf-assets" }
-  ],
   "migrations": [{ "tag": "v1", "new_sqlite_classes": ["User"] }],
   "vars": {
     "ORIGINS": "https://yadmewal-rgb.github.io,http://localhost:8080",

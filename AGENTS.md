@@ -33,8 +33,6 @@ util.js, icons.js. `sw.js` = service worker (bump its cache version, e.g. v40 ->
   on every push to main; it sometimes misses one: check Builds, push an empty commit if needed).
   Worker + Durable Object `User` per Google account; Google sign-in once per device (code flow, worker keeps the
   refresh token, secret GOOGLE_SECRET); secret ALLOWED = allowed e-mails (set in the Cloudflare dashboard, never in
-  the repo). Cloudflare R2 bucket `inkleaf-assets` provides high-speed PDF edge streaming (HTTP Range 206), enabling
-  large PDFs (600 MB) to open Page 1 in < 1 second. Google Drive holds daily backup snapshots.
   the repo). PDFs under 200 MB on Cloudflare, bigger ones in the owner's Google Drive (app folder), and every PDF
   also copied to a visible "Inkleaf" Drive folder. Quota: owner 2000 MB, friends 500 MB.
   Friends need: e-mail in ALLOWED.

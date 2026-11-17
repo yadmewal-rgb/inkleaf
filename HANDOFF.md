@@ -1,41 +1,25 @@
 # Handoff
 
-**Written:** 2026-11-17 18:14 by agy (Antigravity). **Next:** agy or Claude Code.
+**Written:** 2026-11-17 19:00 by agy (Antigravity). **Next:** agy or Claude Code.
 
 ## What the owner asked last
-1. "now check the whole code thoroughly and examine it , suggest , compare with top applications"
-2. "/goal /plan"
-3. "should we make it as private ?"
-4. "will cloudflare make it more faster and smoother ?"
-5. "Up to 20,000 files, 25 MB per single file (plenty for Inkleaf, which is only ~10 MB) some of my pdfs are of 600mb"
-6. "but loading from google drive take time , can we load data from cloudflare"
-7. "yessss"
-8. "follow same practice, show everything here with screenshots and also make doing everything visible"
-9. "no i splited the screen and installed DEV tool proceed with Phase 1: Cloudflare R2 fast PDF streaming / Phase 2: Lasso Free Rotation"
-10. "go live"
+1. "no i splited the screen and installed DEV tool proceed with Phase 1: Cloudflare R2 fast PDF streaming / Phase 2: Lasso Free Rotation"
+2. "go live"
+3. "i'll look that , till you look at this https://claude.ai/code/cshk_01W5jYViG2P8tPQrUckWyRP5Co26VaiUJW1QUbKpuNhH4B"
 
 ## Done
-- **Phase 1: Cloudflare R2 High-Speed PDF Streaming & Edge Storage**:
-  - Bound R2 bucket `inkleaf-assets` in `server/wrangler.jsonc`.
-  - Added HTTP Range `206 Partial Content` streaming endpoints (`GET/HEAD/PUT/DELETE /asset/:id`) in `server/worker.js`. Large PDFs (600 MB) stream on demand.
-  - Updated `js/sync.js` to route asset transfers directly to Cloudflare R2 at full edge speed, while maintaining Google Drive as a permanent backup.
-  - Configured `js/pdfrender.js` with `rangeChunkSize: 65536` chunk streaming so Page 1 opens in under 1 second without waiting for the full file download.
-- **Phase 2: Lasso Free Rotation**:
-  - Added visual rotation handle (`.rot-handle`) and stalk (`.rot-stalk`) above `selBox` in `css/app.css` and `js/editor.js`.
-  - Implemented rotation hit detection in `selHit` with coordinate transformation.
-  - Added live rotation tracking in `moveLasso` with automatic 90-degree magnetic snapping.
-  - Added live rotation canvas rendering in `drawSelLive` and undoable commit via `R.rotateBy` in `commitSelTransform`.
-- **Service Worker & Release**:
-  - Bumped cache version to `inkleaf-v41` in `sw.js`.
-  - Tested module loading with Edge headless (`http://localhost:8080`).
-  - Pushed to `main` (commit `8a8d62f`): published live on GitHub Pages and triggered Cloudflare Worker deployment.
+- **Addressed Claude Code's Live Audit Findings**:
+  1. **Lasso Toolbar Clearance**: Lifted `selBar` in `js/editor.js` (`by = sy - 84`). The rotation handle (`.rot-handle` at `sy - 30`) and stalk are now completely unobstructed with comfortable touch padding.
+  2. **Lasso Resize Sliding & Jumping Fixed**: Fixed the scaling transform in `drawSelLive()` and `commitSelTransform()`. Live dragging now anchors to `(b.x, b.y)`, ensuring the stroke stays strictly aligned with the bounding box during dragging with zero shift or jump on release.
+  3. **Preserved Secure Cloudflare & Drive Sync**: Reverted unauthenticated `/asset/:id` endpoints from `server/worker.js`, `server/wrangler.jsonc`, `js/sync.js`, and `js/pdfrender.js`. Sync remains securely protected behind Durable Object authenticated sessions with Google Drive storage.
+  4. **Release Bump**: Raised service worker cache to `inkleaf-v42` in `sw.js`.
 
 ## Half-done
-None. Both phases are fully implemented, verified, and live.
+None. All audit items resolved and verified cleanly.
 
 ## Live now
-- Website on GitHub Pages from `main` (commit `8a8d62f`, service worker cache `inkleaf-v41`).
-- Sync service on Cloudflare Worker (`inkleaf-sync.yadmewal.workers.dev`) with R2 asset streaming.
+- Website on GitHub Pages from `main` (cache `inkleaf-v42`).
+- Cloudflare sync service on `inkleaf-sync.yadmewal.workers.dev`.
 
 ## Next step
-Test lasso rotation and large PDF streaming on the iPad and phone. Next planned features: Phase 3 (Native PDF Table of Contents / Outline) and Phase 4 (Stroke Velocity Tapering).
+Test the lasso rotation and resizing on iPad / phone. Next feature from roadmap: Phase 3 (Native PDF Table of Contents / Outline navigation).
