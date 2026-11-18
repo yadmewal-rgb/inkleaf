@@ -66,14 +66,11 @@ export function setHwModel(m) {
 export const hwOn = () => { try { return localStorage.getItem(KEY) === '1'; } catch { return false; } };
 export function setHwOn(on) {
   try { localStorage.setItem(KEY, on ? '1' : '0'); } catch { /* private mode */ }
-  if (on) { status.state = 'idle'; indexAll(); } else { queue.clear(); stopWorker(); status.state = 'off'; }
+  if (on) { status.state = 'idle'; failCount = 0; indexAll(); } else { queue.clear(); status.state = 'off'; }
   bus.emit('hw-status', status);
 }
 
-// ---------- the model, in a worker
-let worker = null, seq = 0, idleT = 0;
-const waiting = new Map();
-export const status = { state: hwOn() ? 'idle' : 'off', done: 0, left: 0, loaded: 0, total: 0, err: '' };
+export const status = { state: hwOn() ? 'idle' : 'off', done: 0, left: 0, err: '' };
 
 let cloudOcrFn = null;
 export const setCloudOcr = fn => { cloudOcrFn = fn; };
@@ -89,43 +86,16 @@ function imgToBase64(img) {
   return dataUrl.split(',')[1] || '';
 }
 
-function startWorker() {
-  if (worker) return worker;
-  worker = new Worker(new URL('./hw-worker.js', import.meta.url), { type: 'module' });
-  worker.onmessage = e => {
-    const m = e.data;
-    if (m.progress) {
-      status.state = 'loading';
-      status.loaded = m.loaded; status.total = m.total;
-      bus.emit('hw-status', status);
-      return;
-    }
-    const w = waiting.get(m.id);
-    if (!w) return;
-    waiting.delete(m.id);
-    if (m.error) w.rej(new Error(m.error)); else w.res(m.text);
-  };
-  worker.onerror = e => {
-    for (const w of waiting.values()) w.rej(new Error(e.message || 'The handwriting reader stopped'));
-    waiting.clear();
-    stopWorker();
-  };
-  return worker;
-}
-
-function stopWorker() {
-  if (worker) worker.terminate();
-  worker = null;
-  for (const w of waiting.values()) w.rej(new Error('stopped'));
-  waiting.clear();
-}
-
 export function batchedPicture(runs) {
   if (!runs.length) return null;
   const rows = runs.map((r, i) => {
-    const k = Math.min(44 / r.lh, 5), pad = 0.4 * r.lh;
-    const rw = Math.min(1500, Math.ceil((r.b.x1 - r.b.x0 + 2 * pad) * k));
-    const rh = Math.max(50, Math.min(120, Math.ceil((r.b.y1 - r.b.y0 + 2 * pad) * k)));
+    let k = Math.min(44 / r.lh, 5), pad = 0.4 * r.lh;
+    const rawW = r.b.x1 - r.b.x0 + 2 * pad;
+    const rawH = r.b.y1 - r.b.y0 + 2 * pad;
+    if (rawW * k > 1500) k = 1500 / rawW;
+    if (rawH * k > 120) k = 120 / rawH;
+    const rw = Math.max(8, Math.ceil(rawW * k));
+    const rh = Math.max(40, Math.min(120, Math.ceil(rawH * k)));
     return { r, i: i + 1, k, pad, rw, rh };
   });
 
@@ -249,15 +219,7 @@ async function readBatch(runs) {
 }
 
 async function read(img) {
-  if (!img) {
-    const wk = startWorker(), id = ++seq;
-    return new Promise(res => {
-      waiting.set(id, { res: () => res(''), rej: () => res('') });
-      wk.postMessage({ id });
-    });
-  }
-
-  // 1. Try Cloud AI first when online
+  if (!img) return '';
   if (navigator.onLine && canMakeHwCall()) {
     try {
       const b64 = imgToBase64(img);
@@ -296,17 +258,10 @@ async function read(img) {
         }
       }
     } catch (e) {
-      console.warn('Cloud handwriting OCR skipped, using offline backup:', e);
+      console.warn('Cloud handwriting OCR error:', e);
     }
   }
-
-  // 2. Offline backup (TrOCR Web Worker)
-  clearTimeout(idleT);
-  const wk = startWorker(), id = ++seq;
-  return new Promise((res, rej) => {
-    waiting.set(id, { res, rej });
-    wk.postMessage({ id, w: img.width, h: img.height, data: img.data.buffer }, [img.data.buffer]);
-  }).finally(() => { clearTimeout(idleT); idleT = setTimeout(() => { if (!waiting.size) stopWorker(); }, IDLE_MS); });
+  return '';
 }
 
 // ---------- splitting a page's ink into lines, words and runs of words
@@ -423,8 +378,19 @@ function sig(ids) {
 const mem = new Map(); // pageId -> saved index, for searches that must answer at once (pages panel)
 const keyOf = id => 'hw:' + id;
 
+const partialMem = new Map(); // pageId -> Map of signature -> run data (keeps partial work if a subsequent chunk fails)
+
 export async function pageIndex(pageId) {
   if (mem.has(pageId)) return mem.get(pageId);
+  // 1. Check if the page record itself has synced handwriting index from cloud:
+  try {
+    const pg = await db.get('pages', pageId);
+    if (pg && pg.hw && pg.hw.v === VER && pg.hw.pm === (pg.modified || 0)) {
+      mem.set(pageId, pg.hw);
+      return pg.hw;
+    }
+  } catch {}
+  // 2. Check local meta
   const x = await db.getMeta(keyOf(pageId));
   const v = x && x.v === VER ? x : null;
   mem.set(pageId, v);
@@ -433,15 +399,37 @@ export async function pageIndex(pageId) {
 
 const upToDate = (x, pg) => x && x.v === VER && x.pm === (pg.modified || 0);
 
+async function saveHw(pg, x) {
+  // Save in local meta & memory
+  await db.setMeta(keyOf(pg.id), x);
+  mem.set(pg.id, x);
+
+  // Sync to other devices (iPad/phone) by attaching to the page record WITHOUT changing modified time:
+  try {
+    const fresh = await db.get('pages', pg.id);
+    if (fresh && !fresh.deleted && !fresh.trashed) {
+      fresh.hw = x;
+      await db.put('pages', fresh);
+    }
+  } catch (e) {
+    console.warn('Could not sync hw index on page record:', e);
+  }
+}
+
 async function indexPage(pg) {
   const old = await pageIndex(pg.id);
   if (upToDate(old, pg)) return false;
+
   const known = new Map((old ? old.r : []).map(r => [r.k, r]));
+  const partial = partialMem.get(pg.id);
+  if (partial) {
+    for (const [k, r] of partial) known.set(k, r);
+  }
+
   const runs = segment(pg);
   if (!runs.length) {
     const x = { v: VER, pm: pg.modified || 0, r: [] };
-    await db.setMeta(keyOf(pg.id), x);
-    mem.set(pg.id, x);
+    await saveHw(pg, x);
     return true;
   }
 
@@ -470,17 +458,15 @@ async function indexPage(pg) {
         };
         known.set(chunk[j].k, r);
       }
+      // Keep partial work in memory so subsequent chunk failure won't re-transcribe this chunk
+      partialMem.set(pg.id, known);
     }
   }
 
+  partialMem.delete(pg.id);
   const out = runs.map(run => known.get(sig(run.ids))).filter(Boolean);
-  // Don't save empty results if the page actually had ink runs (e.g. if transcription completely failed)
-  if (runs.length > 0 && out.every(r => !r.t)) {
-    throw new Error('Transcriptions empty, will retry later');
-  }
   const x = { v: VER, pm: pg.modified || 0, r: out };
-  await db.setMeta(keyOf(pg.id), x);
-  mem.set(pg.id, x);
+  await saveHw(pg, x);
   return true;
 }
 
@@ -550,6 +536,14 @@ export async function matchPage(pg, q) {
 // ---------- reading pages in the background
 const queue = new Map(); // pageId -> priority (lower first)
 let running = false;
+let failCount = 0;
+
+if (typeof window !== 'undefined') {
+  window.addEventListener('online', () => {
+    failCount = 0;
+    if (hwOn() && queue.size) run();
+  });
+}
 
 export function queuePages(ids, pri = 5) {
   if (!hwOn()) return;
@@ -558,11 +552,27 @@ export function queuePages(ids, pri = 5) {
   run();
 }
 
+export function retryHw() {
+  failCount = 0;
+  status.err = '';
+  run();
+}
+
 async function run() {
   if (running) return;
+  if (typeof navigator !== 'undefined' && !navigator.onLine) {
+    status.state = 'idle';
+    status.err = 'Offline. Indexing will resume when online.';
+    bus.emit('hw-status', status);
+    return;
+  }
   running = true;
   try {
     while (queue.size && hwOn()) {
+      if (typeof navigator !== 'undefined' && !navigator.onLine) {
+        status.err = 'Offline. Indexing will resume when online.';
+        break;
+      }
       if (document.visibilityState === 'hidden') { await new Promise(r => setTimeout(r, 3000)); continue; }
       if (!canMakeHwCall()) {
         status.err = 'Daily AI request limit reached. Will resume tomorrow.';
@@ -579,20 +589,32 @@ async function run() {
       try {
         if (!pg.items.some(isInk)) {
           const x = { v: VER, pm: pg.modified || 0, r: [] };
-          if (!upToDate(await pageIndex(id), pg)) { await db.setMeta(keyOf(id), x); mem.set(id, x); }
+          if (!upToDate(await pageIndex(id), pg)) await saveHw(pg, x);
           continue;
         }
         status.state = 'working';
         bus.emit('hw-status', status);
-        if (await indexPage(pg)) { status.done++; bus.emit('hw-page', { id, docId: pg.docId }); }
+        if (await indexPage(pg)) {
+          status.done++;
+          bus.emit('hw-page', { id, docId: pg.docId });
+        }
         status.err = '';
+        failCount = 0; // Success resets back-off
       } catch (e) {
         if (e.message === 'stopped') break;
+        failCount++;
         status.err = e.message;
         console.warn('Handwriting search:', e);
         if (e.message.includes('limit reached')) break;
         queue.set(id, 9); // retry later
-        await new Promise(r => setTimeout(r, 5000));
+
+        // Exponential back-off: 5s, 30s. Pause after 3 failures to protect quota.
+        if (failCount >= 3) {
+          status.err = `Paused after 3 errors (${e.message}). Will retry when connection or notes change.`;
+          break;
+        }
+        const delay = failCount === 1 ? 5000 : 30000;
+        await new Promise(r => setTimeout(r, delay));
       }
       await new Promise(r => setTimeout(r, 30)); // give the page a breath between pages
     }

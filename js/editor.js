@@ -206,6 +206,9 @@ export async function mountEditor(root, docId, opts = {}) {
   let readOnly = false; // read-only view: nothing that touches the page draws on it
   if (hwOn()) {
     pages.forEach(p => pageIndex(p.id).catch(() => {}));
+    const curId = (pages[0] && pages[0].id);
+    if (curId) queuePages([curId], 1);
+    if (pages[1]) queuePages([pages[1].id], 2);
     queuePages(pages.map(p => p.id), 3);
   }
   // Notebooks can open in view-only, so a phone held in the hand does not draw stray lines. Automatic (null):
@@ -684,6 +687,7 @@ export async function mountEditor(root, docId, opts = {}) {
     stopInertia();
     if (hz) tx = pageTx(pv); else ty = -(pv.y - GAP) * scale;
     applyView();
+    if (hwOn() && pv && pv.page) queuePages([pv.page.id], 1);
   }
 
   // Glide the view to a position (used to settle on a page when they are side by side).

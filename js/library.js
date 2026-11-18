@@ -575,18 +575,47 @@ export async function mountLibrary(root, folderId, opts = {}) {
   }
 
   // Search inside pages, a moment after typing stops.
+  let searchFilter = lsGet('inkleaf.searchFilter', 'all');
+
   const deepSoon = debounce(async () => {
     const tok = ++searchTok, q = query;
-    if (!q || q.length < 2) { fill(results, ); return; }
+    if (!q || q.length < 2) { fill(results); return; }
     fill(results, h('h3', { class: 'res-head' }, 'In pages'), h('p', { class: 'muted-line' }, 'Searching...'));
     const hits = await searchPages(q, sortDocs(await liveDocs()), () => tok !== searchTok);
     if (!hits || tok !== searchTok) return;
-    fill(results, 
-      h('h3', { class: 'res-head' }, hits.length ? `In pages (${hits.length}${hits.length >= 300 ? '+' : ''})` : 'In pages'),
-      hits.length ? null : h('p', { class: 'muted-line' }, 'No typed text, page names, PDF text or handwriting match.'),
-      hits.map(r => h('a', { class: 'res', href: `#/d/${r.d.id}?p=${r.i + 1}&q=${encodeURIComponent(q)}` },
-        h('div', { class: 'res-top' }, h('b', null, r.d.title), h('span', null, `page ${r.i + 1} · ${r.where}`)),
-        h('div', { class: 'res-snip' }, r.s.pre, h('mark', null, r.s.hit), r.s.post))));
+
+    const renderHits = () => {
+      const hwHits = hits.filter(r => r.where === 'Handwriting');
+      const txtHits = hits.filter(r => r.where !== 'Handwriting');
+      const shown = searchFilter === 'hw' ? hwHits : searchFilter === 'txt' ? txtHits : hits;
+
+      const makeChip = (id, label) => h('button', {
+        class: 'chip sm' + (searchFilter === id ? ' on' : ''),
+        type: 'button',
+        onclick: () => {
+          searchFilter = id;
+          lsSet('inkleaf.searchFilter', id);
+          renderHits();
+        }
+      }, label);
+
+      const chips = hits.length ? h('div', { class: 'chips', style: 'margin: 6px 0 10px;' },
+        makeChip('all', `All (${hits.length}${hits.length >= 300 ? '+' : ''})`),
+        makeChip('hw', `Handwriting (${hwHits.length})`),
+        makeChip('txt', `Text (${txtHits.length})`)
+      ) : null;
+
+      fill(results,
+        h('h3', { class: 'res-head' }, hits.length ? `In pages (${shown.length})` : 'In pages'),
+        chips,
+        shown.length ? null : h('p', { class: 'muted-line' }, hits.length ? 'No matches under this filter.' : 'No typed text, page names, PDF text or handwriting match.'),
+        shown.map(r => h('a', { class: 'res', href: `#/d/${r.d.id}?p=${r.i + 1}&q=${encodeURIComponent(q)}` },
+          h('div', { class: 'res-top' }, h('b', null, r.d.title), h('span', null, `page ${r.i + 1} · ${r.where}`)),
+          h('div', { class: 'res-snip' }, r.s.pre, h('mark', null, r.s.hit), r.s.post)))
+      );
+    };
+
+    renderHits();
   }, 350);
 
   // ---------- the recycle bin

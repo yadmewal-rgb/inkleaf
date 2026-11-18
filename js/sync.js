@@ -1211,7 +1211,6 @@ export async function openSettings() {
     const txt = !on ? 'Turn on to search handwritten notes by typing in the find bar.'
       : st.err ? `Status: ${st.err}`
       : st.state === 'working' ? `Reading handwriting (${st.left} left)...`
-      : st.state === 'loading' ? 'Loading offline reader backup...'
       : 'Ready. Uses fast Cloud AI (Gemini) with page batching when online.';
     const gemKey = localStorage.getItem('inkleaf.geminiKey') || '';
     const curModel = getHwModel();
@@ -1307,7 +1306,7 @@ export async function openSettings() {
     body: h('div', null,
       h('h3', null, 'Handwriting search'),
       h('p', { class: 'modal-text' },
-        'Search your handwritten notes as you type. Uses fast Cloud AI (Gemini Flash) when online, with an offline reader on this device when not.'),
+        'Search your handwritten notes as you type. Uses fast Cloud AI (Gemini Flash) with 1 call per page when online, and syncs search index across devices.'),
       hwBox,
       h('h3', null, 'Live sync'),
       h('p', { class: 'modal-text' },
