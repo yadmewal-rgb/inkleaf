@@ -1,5 +1,51 @@
 # Handoff
 
+## FIRST: v48 handwriting search review (Claude Code, 2026-11-18)
+
+Tested v48 on the live site with the owner's notes. Working: `gemini-3.5-flash-lite`, 1 request per page,
+VER 2 re-read, yellow boxes (`unionBounds`), library search. Fix these, in order:
+
+1. **All-blank pages retry forever and burn quota (urgent).** `indexPage` in `js/hwsearch.js` throws
+   "Transcriptions empty, will retry later" when every row comes back `""`, but `readBatch` already succeeded and
+   `recordHwCall` counted it. Pages of ticks/crosses/lines go back in the queue at priority 9 and are re-sent every
+   ~5 s. Measured live: 23 requests for 11 pages in 2 minutes. Fix: if `readBatch` returned, save the result even
+   when all blank. Throw only for real failures (network, 429, 5xx, bad JSON).
+2. **No back-off on real failures.** With no key, offline, or a 501 from the Worker, `run()` loops forever, re-drawing
+   the page picture every 5 s. Fix: back off (e.g. 5 s, 30 s, 2 min). After ~3 failures in a row, stop the loop and
+   show the error in Settings. Resume on `online`, notebook open, or new ink. Don't start at all if `!navigator.onLine`.
+3. **Rows are clipped.** `batchedPicture` clamps `rh` to 120 and `rw` to 1500 but still draws at scale `k`, so tall
+   writing spills into the next row. Pick `k` so the run fits: `k = min(44/lh, 5, (120 - 2*pad*k0)/h, 1500/w)`, or
+   just shrink `k` until `(h + 2*pad)*k <= 120` and `(w + 2*pad)*k <= 1500`.
+4. **Paid answers thrown away.** In `indexPage`, chunks of 35 runs are read one after another. If chunk 2 fails,
+   chunk 1's answer is lost. Save after each chunk (or keep the partial `known` map in `mem` for the retry).
+5. **Worker `/ocr` takes any `model` string.** Allow only the 4 models in the Settings list; otherwise use
+   `gemini-3.5-flash-lite`. Also cap `n` (e.g. 1..40). Low risk because only ALLOWED emails sign in.
+6. **"Current page first" is not done.** `editor.js` queues all pages at priority 3. Queue the open page at 1 and its
+   neighbours at 2.
+7. **Dead offline reader.** `indexPage` no longer uses `read()`/`hw-worker.js`, and `vendor/hw/` is not deployed.
+   Remove `read()`'s worker fallback, `js/hw-worker.js`, the `HW_CACHE`/`/vendor/hw/` code in `sw.js`, and the
+   "Loading offline reader backup" text in Settings (`js/sync.js`).
+8. **Every device re-reads every page.** The index lives only in local meta `hw:<pageId>` and is not synced. The
+   owner's iPad and laptop each spend requests on the same ~380 pages against the same Google key. Fix: sync the
+   index (e.g. store `{v, pm, r}` on the page record as `hw`, or as its own synced record kind) so a page is read
+   once and every device can search it. Keep stroke ids in `r[].ids` so highlights still work on other devices.
+   Don't bump `pm`/`modified` when writing it, or it will look like an edit and trigger re-reads.
+9. **Search filter buttons (owner's request, drawn on a screenshot).** In the library, while a search has text, show
+   filter buttons in the All/Favourites row with counts: **All (37) · Handwriting (1) · Text (36)**.
+   - Handwriting = results with `where === 'Handwriting'`.
+   - Text = everything else (typed text, page names, PDF text).
+   - Remember the last choice in localStorage. When the search box is cleared, go back to the normal All/Favourites.
+   - Filter `hits` in `mountLibrary` (`js/library.js` ~line 583); no new reading needed.
+
+Still the owner's call: `GEMINI_KEY` is not set on the Worker. Today only devices with the key typed into Settings
+read handwriting.
+
+Test: open the live site with handwriting search on. In the console, watch `getHwUsage().calls` versus pages done for
+5 minutes; calls should not exceed pages by more than a few. Search a word you wrote and check the yellow box. Check
+the filter buttons on the iPad. Bump `sw.js` to `inkleaf-v49`.
+
+---
+
 **Written:** 2026-11-18 by agy (Antigravity). **Next:** Claude Code or agy.
 
 ## What the owner asked
