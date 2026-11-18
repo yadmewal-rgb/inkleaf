@@ -268,6 +268,15 @@ export class User extends DurableObject {
       // Guest blob retrieval: /live/:shareId/blob/:k/:id/:n
       if (p[2] === 'blob' && p[3] && p[4] && req.method === 'GET') {
         const k = p[3], id = p[4], n = Number(p[5] || 0);
+        // Security check: restrict guest access to the shared doc, its pages, and assets
+        if (k !== 'd' && k !== 'p' && k !== 'a') return json({ error: 'forbidden' }, 403);
+        if (k === 'd' && id !== sh.docId) return json({ error: 'forbidden' }, 403);
+        if (k === 'p') {
+          const pr = this.sql.exec("SELECT info FROM recs WHERE k = 'p' AND id = ?", id).toArray()[0];
+          let docMatches = false;
+          try { docMatches = JSON.parse(pr?.info || '{}').docId === sh.docId; } catch {}
+          if (!docMatches) return json({ error: 'forbidden' }, 403);
+        }
         const r = this.sql.exec('SELECT s, parts, gz FROM recs WHERE k = ? AND id = ?', k, id).toArray()[0];
         const part = this.sql.exec('SELECT data FROM parts WHERE k = ? AND id = ? AND n = ?', k, id, n).toArray()[0];
         if (!r || !part) return json({ error: 'missing' }, 404);
@@ -343,11 +352,14 @@ export class User extends DurableObject {
     if (p[0] === 'ocr' && req.method === 'POST') {
       const apiKey = this.env.GEMINI_KEY;
       if (!apiKey) return json({ error: 'no-gemini-key' }, 501);
-      const { image, mimeType = 'image/jpeg' } = await req.json().catch(() => ({}));
+      const { image, mimeType = 'image/jpeg', n = 1, model = 'gemini-3.5-flash-lite' } = await req.json().catch(() => ({}));
       if (!image) return json({ error: 'no-image' }, 400);
 
-      const prompt = 'Transcribe all handwritten words and notes in this image. Return ONLY the transcribed text. Do not add quotes, markdown, or commentary.';
-      const geminiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${apiKey}`;
+      const prompt = n > 1
+        ? `This image has ${n} numbered rows of handwriting (red number at the left of each row). Transcribe each row exactly as written. Reply with a JSON array of ${n} strings, one per row, in order. Use "" for a row with only ticks, crosses, lines or marks.`
+        : 'Transcribe all handwritten words and notes in this image. Return ONLY the transcribed text. Do not add quotes, markdown, or commentary.';
+
+      const geminiUrl = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`;
 
       const res = await fetch(geminiUrl, {
         method: 'POST',
@@ -360,7 +372,8 @@ export class User extends DurableObject {
             ]
           }],
           generationConfig: {
-            temperature: 0.1
+            temperature: 0,
+            responseMimeType: n > 1 ? 'application/json' : 'text/plain'
           }
         })
       });
@@ -371,7 +384,11 @@ export class User extends DurableObject {
       }
 
       const data = await res.json();
-      const text = (data?.candidates?.[0]?.content?.parts?.[0]?.text || '').trim();
+      const raw = (data?.candidates?.[0]?.content?.parts?.[0]?.text || '').trim();
+      let text = raw;
+      if (n > 1) {
+        try { text = JSON.parse(raw); } catch { text = []; }
+      }
       return json({ ok: true, text });
     }
 

@@ -5,9 +5,63 @@
 import { db } from './db.js';
 import { bus } from './util.js';
 
-const VER = 1;
+const VER = 2;
 const KEY = 'inkleaf.hw';
+const USAGE_KEY = 'inkleaf.hwUsage';
+const DEFAULT_LIMIT = 1500;
+export const DEFAULT_MODEL = 'gemini-3.5-flash-lite';
 const IDLE_MS = 45e3; // the worker (and the memory the model takes) is let go after this long without work
+
+function todayKey() {
+  const d = new Date();
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+}
+
+export function getHwUsage() {
+  const tk = todayKey();
+  let u = null;
+  try { u = JSON.parse(localStorage.getItem(USAGE_KEY) || '{}'); } catch {}
+  const limit = Number(localStorage.getItem('inkleaf.hwLimit')) || DEFAULT_LIMIT;
+  if (!u || u.date !== tk) {
+    u = { date: tk, calls: 0, pages: 0, limit };
+    try { localStorage.setItem(USAGE_KEY, JSON.stringify(u)); } catch {}
+  } else {
+    u.limit = limit;
+  }
+  return u;
+}
+
+export function canMakeHwCall() {
+  const u = getHwUsage();
+  return (u.calls || 0) < (u.limit || DEFAULT_LIMIT);
+}
+
+export function recordHwCall(pages = 1) {
+  const u = getHwUsage();
+  u.calls = (u.calls || 0) + 1;
+  u.pages = (u.pages || 0) + pages;
+  try { localStorage.setItem(USAGE_KEY, JSON.stringify(u)); } catch {}
+  bus.emit('hw-usage', u);
+  return u;
+}
+
+export function setHwLimit(n) {
+  const lim = Math.max(1, Math.min(10000, Number(n) || DEFAULT_LIMIT));
+  try { localStorage.setItem('inkleaf.hwLimit', String(lim)); } catch {}
+  const u = getHwUsage();
+  u.limit = lim;
+  try { localStorage.setItem(USAGE_KEY, JSON.stringify(u)); } catch {}
+  bus.emit('hw-usage', u);
+}
+
+export function getHwModel() {
+  return localStorage.getItem('inkleaf.geminiModel') || DEFAULT_MODEL;
+}
+
+export function setHwModel(m) {
+  if (m) localStorage.setItem('inkleaf.geminiModel', m.trim());
+  else localStorage.removeItem('inkleaf.geminiModel');
+}
 
 export const hwOn = () => { try { return localStorage.getItem(KEY) === '1'; } catch { return false; } };
 export function setHwOn(on) {
@@ -66,6 +120,134 @@ function stopWorker() {
   waiting.clear();
 }
 
+export function batchedPicture(runs) {
+  if (!runs.length) return null;
+  const rows = runs.map((r, i) => {
+    const k = Math.min(44 / r.lh, 5), pad = 0.4 * r.lh;
+    const rw = Math.min(1500, Math.ceil((r.b.x1 - r.b.x0 + 2 * pad) * k));
+    const rh = Math.max(50, Math.min(120, Math.ceil((r.b.y1 - r.b.y0 + 2 * pad) * k)));
+    return { r, i: i + 1, k, pad, rw, rh };
+  });
+
+  const labelW = 55;
+  const totalW = Math.max(400, Math.min(1600, labelW + Math.max(...rows.map(row => row.rw))));
+  const totalH = rows.reduce((acc, row) => acc + row.rh, 0);
+
+  const cv = document.createElement('canvas');
+  cv.width = totalW; cv.height = totalH;
+  const g = cv.getContext('2d');
+  g.fillStyle = '#ffffff';
+  g.fillRect(0, 0, totalW, totalH);
+
+  let curY = 0;
+  for (const row of rows) {
+    // Red row number label
+    g.fillStyle = '#d32f2f';
+    g.font = 'bold 22px sans-serif';
+    g.textAlign = 'center';
+    g.textBaseline = 'middle';
+    g.fillText(String(row.i), labelW / 2, curY + row.rh / 2);
+
+    // Separator line
+    g.strokeStyle = '#e0e0e0';
+    g.lineWidth = 1;
+    g.beginPath();
+    g.moveTo(0, curY + row.rh);
+    g.lineTo(totalW, curY + row.rh);
+    g.stroke();
+
+    // Draw handwriting strokes
+    g.strokeStyle = '#000000';
+    g.fillStyle = '#000000';
+    g.lineCap = g.lineJoin = 'round';
+    const ox = row.r.b.x0 - row.pad, oy = row.r.b.y0 - row.pad;
+    for (const { it } of row.r.s) {
+      const p = it.p;
+      g.lineWidth = Math.max(2, Math.min(it.w || 1.5, row.r.lh / 5) * row.k);
+      g.beginPath();
+      const sx0 = labelW + (p[0] - ox) * row.k;
+      const sy0 = curY + (p[1] - oy) * row.k;
+      g.moveTo(sx0, sy0);
+      if (p.length === 3) g.lineTo(sx0 + 0.1, sy0);
+      for (let j = 3; j < p.length; j += 3) {
+        g.lineTo(labelW + (p[j] - ox) * row.k, curY + (p[j + 1] - oy) * row.k);
+      }
+      g.stroke();
+    }
+    curY += row.rh;
+  }
+
+  const dataUrl = cv.toDataURL('image/jpeg', 0.85);
+  cv.width = cv.height = 0;
+  return dataUrl.split(',')[1] || '';
+}
+
+async function readBatch(runs) {
+  if (!runs.length) return [];
+  if (!canMakeHwCall()) {
+    throw new Error('Daily AI request limit reached. Indexing paused.');
+  }
+
+  const b64 = batchedPicture(runs);
+  if (!b64) return runs.map(() => '');
+
+  const N = runs.length;
+  const prompt = `This image has ${N} numbered rows of handwriting (red number at the left of each row). Transcribe each row exactly as written. Reply with a JSON array of ${N} strings, one per row, in order. Use "" for a row with only ticks, crosses, lines or marks.`;
+  const model = getHwModel();
+  const directKey = localStorage.getItem('inkleaf.geminiKey');
+
+  let resultStrings = null;
+
+  if (navigator.onLine) {
+    if (directKey) {
+      const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${directKey}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          contents: [{
+            parts: [
+              { text: prompt },
+              { inline_data: { mime_type: 'image/jpeg', data: b64 } }
+            ]
+          }],
+          generationConfig: {
+            temperature: 0,
+            responseMimeType: 'application/json'
+          }
+        })
+      });
+
+      if (!res.ok) {
+        const err = await res.text().catch(() => '');
+        throw new Error(`Gemini API error (${res.status}): ${err.slice(0, 120)}`);
+      }
+
+      const j = await res.json();
+      const raw = (j?.candidates?.[0]?.content?.parts?.[0]?.text || '').trim();
+      if (raw) {
+        try {
+          const arr = JSON.parse(raw);
+          if (Array.isArray(arr) && arr.length === N) {
+            resultStrings = arr.map(s => String(s || '').trim());
+          }
+        } catch {}
+      }
+    } else if (cloudOcrFn) {
+      const raw = await cloudOcrFn(b64, N, model);
+      if (Array.isArray(raw) && raw.length === N) {
+        resultStrings = raw.map(s => String(s || '').trim());
+      }
+    }
+  }
+
+  if (resultStrings) {
+    recordHwCall(1);
+    return resultStrings;
+  }
+
+  throw new Error('AI transcription returned invalid format or failed');
+}
+
 async function read(img) {
   if (!img) {
     const wk = startWorker(), id = ++seq;
@@ -75,15 +257,15 @@ async function read(img) {
     });
   }
 
-  // 1. Try Cloud AI first when online (Gemini Flash)
-  if (navigator.onLine) {
+  // 1. Try Cloud AI first when online
+  if (navigator.onLine && canMakeHwCall()) {
     try {
       const b64 = imgToBase64(img);
       if (b64) {
-        // Direct key if set in settings
         const directKey = localStorage.getItem('inkleaf.geminiKey');
+        const model = getHwModel();
         if (directKey) {
-          const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${directKey}`, {
+          const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${directKey}`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
@@ -99,13 +281,18 @@ async function read(img) {
           if (res.ok) {
             const j = await res.json();
             const txt = (j?.candidates?.[0]?.content?.parts?.[0]?.text || '').trim();
-            if (txt) return txt;
+            if (txt) {
+              recordHwCall(0);
+              return txt;
+            }
           }
         }
-        // Cloudflare sync service /ocr
         if (cloudOcrFn) {
-          const txt = await cloudOcrFn(b64);
-          if (txt) return txt.trim();
+          const txt = await cloudOcrFn(b64, 1, model);
+          if (txt) {
+            recordHwCall(0);
+            return typeof txt === 'string' ? txt.trim() : String(txt[0] || '').trim();
+          }
         }
       }
     } catch (e) {
@@ -250,16 +437,46 @@ async function indexPage(pg) {
   const old = await pageIndex(pg.id);
   if (upToDate(old, pg)) return false;
   const known = new Map((old ? old.r : []).map(r => [r.k, r]));
-  const out = [];
-  for (const run of segment(pg)) {
+  const runs = segment(pg);
+  if (!runs.length) {
+    const x = { v: VER, pm: pg.modified || 0, r: [] };
+    await db.setMeta(keyOf(pg.id), x);
+    mem.set(pg.id, x);
+    return true;
+  }
+
+  // Find runs that are not yet in known
+  const needed = [];
+  for (const run of runs) {
     const k = sig(run.ids);
-    let r = known.get(k);
-    if (!r) {
-      const text = (await read(picture(run))).replace(/\s+/g, ' ').trim();
-      const toks = text ? text.split(' ') : [];
-      r = { k, t: text, w: toks.length === run.words.length ? run.words.map((ids, i) => ({ ids, t: toks[i] })) : null, ids: run.ids };
+    if (!known.has(k)) needed.push({ k, run });
+  }
+
+  if (needed.length > 0) {
+    // Batch in chunks of up to 35 runs if page is huge
+    const CHUNK = 35;
+    for (let i = 0; i < needed.length; i += CHUNK) {
+      const chunk = needed.slice(i, i + CHUNK);
+      const texts = await readBatch(chunk.map(c => c.run));
+      for (let j = 0; j < chunk.length; j++) {
+        const text = (texts[j] || '').replace(/\s+/g, ' ').trim();
+        const toks = text ? text.split(' ') : [];
+        const run = chunk[j].run;
+        const r = {
+          k: chunk[j].k,
+          t: text,
+          w: toks.length === run.words.length ? run.words.map((ids, idx) => ({ ids, t: toks[idx] })) : null,
+          ids: run.ids
+        };
+        known.set(chunk[j].k, r);
+      }
     }
-    out.push(r);
+  }
+
+  const out = runs.map(run => known.get(sig(run.ids))).filter(Boolean);
+  // Don't save empty results if the page actually had ink runs (e.g. if transcription completely failed)
+  if (runs.length > 0 && out.every(r => !r.t)) {
+    throw new Error('Transcriptions empty, will retry later');
   }
   const x = { v: VER, pm: pg.modified || 0, r: out };
   await db.setMeta(keyOf(pg.id), x);
@@ -347,6 +564,12 @@ async function run() {
   try {
     while (queue.size && hwOn()) {
       if (document.visibilityState === 'hidden') { await new Promise(r => setTimeout(r, 3000)); continue; }
+      if (!canMakeHwCall()) {
+        status.err = 'Daily AI request limit reached. Will resume tomorrow.';
+        status.state = 'idle';
+        bus.emit('hw-status', status);
+        break;
+      }
       let id = null, p = Infinity;
       for (const [k, v] of queue) if (v < p) { p = v; id = k; }
       queue.delete(id);
@@ -367,6 +590,8 @@ async function run() {
         if (e.message === 'stopped') break;
         status.err = e.message;
         console.warn('Handwriting search:', e);
+        if (e.message.includes('limit reached')) break;
+        queue.set(id, 9); // retry later
         await new Promise(r => setTimeout(r, 5000));
       }
       await new Promise(r => setTimeout(r, 30)); // give the page a breath between pages

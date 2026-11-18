@@ -1,5 +1,5 @@
 // Offline support: network first, falling back to the cached copy.
-const CACHE = 'inkleaf-v47';
+const CACHE = 'inkleaf-v48';
 // The handwriting reader (vendor/hw/, about 90 MB) has its own cache that releases leave alone, so it is
 // downloaded once; it only changes when this name does.
 const HW_CACHE = 'inkleaf-hw-1';

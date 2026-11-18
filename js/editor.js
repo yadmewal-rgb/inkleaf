@@ -11,7 +11,7 @@ import { I } from './icons.js';
 import { popMenu, popover, confirmBox, promptText, toast, modal, chipGroup, templatePicker, PAPER_OPTS, busy } from './ui.js';
 import { exportFlow, pdfAsPictures } from './export.js';
 import { syncNow, syncStatus, mergePage, mergeDoc, shareNotebook, sendLiveDelta, sendGuestLiveDelta } from './sync.js';
-import { matchPage, matchSync, hwOn } from './hwsearch.js';
+import { matchPage, matchSync, hwOn, pageIndex, queuePages } from './hwsearch.js';
 import {
   GAP, MIN_S, MAX_S, COARSE, MAXPX, REGION_PX, REGION_PAD, PULL_PX, PALM_MS, INK, INK_ON_DARK, PEN_COLORS, HL_COLORS, SHAPES,
   MM, mmToPt, TAPE_COLORS, LASER_COLORS, RULER_L, RULER_W, ZOOM_TOOLS, NOTE_COLORS, FILL_COLORS, HIST_GAP, HIST_MAX, HIST_DAYS,
@@ -204,6 +204,10 @@ export async function mountEditor(root, docId, opts = {}) {
 
   let oneShot = null;     // 'excerpt' while the next drag marks out a part of the page to copy
   let readOnly = false; // read-only view: nothing that touches the page draws on it
+  if (hwOn()) {
+    pages.forEach(p => pageIndex(p.id).catch(() => {}));
+    queuePages(pages.map(p => p.id), 3);
+  }
   // Notebooks can open in view-only, so a phone held in the hand does not draw stray lines. Automatic (null):
   // on touch devices where fingers would draw (no stylus seen, e.g. phones); an iPad with Apple Pencil opens for writing.
   const openRead = () => prefs.openRead === true || (prefs.openRead == null && COARSE && !prefs.penSeen && prefs.fingerDraw !== false);
@@ -2517,7 +2521,7 @@ export async function mountEditor(root, docId, opts = {}) {
           for (const hh of hwHits) {
             const strokes = pg.items.filter(it => hh.ids.includes(it.id));
             if (strokes.length) {
-              const b = R.bounds(strokes);
+              const b = R.unionBounds(strokes);
               hits.push({ pg, rects: [b], hw: true });
             }
           }
@@ -5655,7 +5659,12 @@ export async function mountEditor(root, docId, opts = {}) {
     el.remove();
   }
 
-  const offs = [bus.on('remote-record', onRemote), bus.on('sync-status', showSync), bus.on('live-message', onLive)];
+  const offs = [
+    bus.on('remote-record', onRemote),
+    bus.on('sync-status', showSync),
+    bus.on('live-message', onLive),
+    bus.on('hw-page', e => { if (e && e.docId === doc.id) { if (!findBar.hidden) runFind(); if (panelOpen) fillPanel(); } })
+  ];
 
   function onLive(m) {
     if (m.docId !== doc.id) return;

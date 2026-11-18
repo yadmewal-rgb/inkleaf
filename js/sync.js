@@ -13,7 +13,7 @@ import { db, assetIdsOf } from './db.js';
 import { h, uid, bus, loadScript, downloadBlob, bufToB64, b64ToBuf } from './util.js';
 import { modal, toast, confirmBox, busy } from './ui.js';
 import { I } from './icons.js';
-import { hwOn, setHwOn, status as hwStatus, setCloudOcr } from './hwsearch.js';
+import { hwOn, setHwOn, status as hwStatus, setCloudOcr, getHwUsage, setHwLimit, getHwModel, setHwModel } from './hwsearch.js';
 
 const SERVER = 'https://inkleaf-sync.yadmewal.workers.dev';
 // drive.appdata: Inkleaf's hidden app folder (files it syncs); drive.file: only files Inkleaf itself creates, used
@@ -226,13 +226,13 @@ async function call(path, opts = {}) {
   return r;
 }
 
-export async function syncOcr(imageB64) {
+export async function syncOcr(imageB64, n = 1, model = 'gemini-3.5-flash-lite') {
   if (!session || !navigator.onLine) return null;
   try {
     const r = await call('/ocr', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ image: imageB64 })
+      body: JSON.stringify({ image: imageB64, n, model })
     });
     if (!r.ok) return null;
     const j = await r.json().catch(() => null);
@@ -1209,10 +1209,15 @@ export async function openSettings() {
     const on = hwOn();
     const st = hwStatus;
     const txt = !on ? 'Turn on to search handwritten notes by typing in the find bar.'
+      : st.err ? `Status: ${st.err}`
       : st.state === 'working' ? `Reading handwriting (${st.left} left)...`
       : st.state === 'loading' ? 'Loading offline reader backup...'
-      : 'Ready. Uses Cloud AI (Gemini Flash) when online, offline reader when not.';
+      : 'Ready. Uses fast Cloud AI (Gemini) with page batching when online.';
     const gemKey = localStorage.getItem('inkleaf.geminiKey') || '';
+    const curModel = getHwModel();
+    const usage = getHwUsage();
+    const pct = Math.min(100, Math.round(((usage.calls || 0) / (usage.limit || 1500)) * 100));
+
     const keyInp = h('input', {
       type: 'password', class: 'inp sm', placeholder: 'Optional Gemini API Key (or leave blank for Cloudflare)', value: gemKey,
       style: 'margin-top: 4px; width: 100%;',
@@ -1222,6 +1227,45 @@ export async function openSettings() {
         else localStorage.removeItem('inkleaf.geminiKey');
       }
     });
+
+    const modelSelect = h('select', {
+      class: 'inp sm',
+      style: 'margin-top: 4px; width: 100%;',
+      onchange: e => setHwModel(e.target.value)
+    }, [
+      h('option', { value: 'gemini-3.5-flash-lite', selected: curModel === 'gemini-3.5-flash-lite' }, 'Gemini 3.5 Flash Lite (Recommended · fast & low quota)'),
+      h('option', { value: 'gemini-3.5-flash', selected: curModel === 'gemini-3.5-flash' }, 'Gemini 3.5 Flash'),
+      h('option', { value: 'gemini-3.1-flash-lite', selected: curModel === 'gemini-3.1-flash-lite' }, 'Gemini 3.1 Flash Lite'),
+      h('option', { value: 'gemini-2.5-flash', selected: curModel === 'gemini-2.5-flash' }, 'Gemini 2.5 Flash')
+    ]);
+
+    const limitInp = h('input', {
+      type: 'number', class: 'inp sm', min: '10', max: '10000', step: '50',
+      value: String(usage.limit || 1500),
+      style: 'width: 85px; text-align: center;',
+      onchange: e => {
+        setHwLimit(parseInt(e.target.value, 10));
+        drawHw();
+      }
+    });
+
+    const usageCard = h('div', { class: 'field', style: 'margin-top: 10px; padding: 10px 12px; background: var(--surface-2); border-radius: 8px;' },
+      h('div', { class: 'row', style: 'align-items: center; justify-content: space-between; margin-bottom: 4px;' },
+        h('b', { style: 'font-size: 13px;' }, 'Daily AI Request Usage:'),
+        h('span', { class: 'bk-sub' }, `${usage.calls || 0} / ${usage.limit || 1500} requests`)
+      ),
+      h('div', { class: 'usage-bar', style: 'margin: 6px 0;' },
+        h('div', { class: 'usage-fill' + (pct > 85 ? ' warn' : ''), style: { width: Math.max(pct, 1) + '%' } })
+      ),
+      h('div', { class: 'row', style: 'align-items: center; justify-content: space-between; font-size: 12px; color: var(--muted); margin-top: 4px;' },
+        h('span', null, `${usage.pages || 0} pages transcribed today (1 page = 1 request)`),
+        h('div', { class: 'row', style: 'align-items: center; gap: 6px;' },
+          h('span', null, 'Daily limit:'),
+          limitInp
+        )
+      )
+    );
+
     hwBox.replaceChildren(
       ...[
         h('div', { class: 'row', style: 'align-items: center; justify-content: space-between; margin-bottom: 6px;' },
@@ -1239,18 +1283,27 @@ export async function openSettings() {
         ),
         h('p', { class: 'modal-text small', style: 'margin-bottom: 6px;' }, txt),
         on ? h('div', { class: 'field', style: 'margin-top: 6px;' },
+          h('label', { class: 'small' }, 'Model:'),
+          modelSelect
+        ) : null,
+        on ? h('div', { class: 'field', style: 'margin-top: 8px;' },
           h('label', { class: 'small' }, 'Direct Gemini API Key (optional):'),
           keyInp,
           h('span', { class: 'bk-sub' }, 'Leave blank to use your Cloudflare server automatically.')
-        ) : null
+        ) : null,
+        on ? usageCard : null
       ].filter(Boolean)
     );
   };
   drawHw();
 
+  const offUsage = bus.on('hw-usage', () => drawHw());
+  const offHwStatus = bus.on('hw-status', () => drawHw());
+
   const m = modal({
     title: 'Settings',
     wide: true,
+    onClose: () => { offUsage(); offHwStatus(); },
     body: h('div', null,
       h('h3', null, 'Handwriting search'),
       h('p', { class: 'modal-text' },

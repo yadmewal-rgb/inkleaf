@@ -12,6 +12,7 @@ import { pdfPagesText } from './pdftools.js';
 import { exportFlow } from './export.js';
 import { renderPageTo } from './render.js';
 import { openSettings, syncNow, syncStatus, shareNotebook, importBackup } from './sync.js';
+import { pageIndex, matchIndex, hwOn } from './hwsearch.js';
 
 const SIZE_OPTS = [{ v: 'a4', label: 'A4 portrait' }, { v: 'a4l', label: 'A4 landscape' }, { v: 'letter', label: 'Letter' }];
 const SORTS = [['edited', 'Last edited'], ['opened', 'Last opened'], ['name', 'Name'], ['created', 'Date created']];
@@ -231,6 +232,15 @@ async function searchPages(q, docs, isStale) {
         if (it.t === 'tx' || it.t === 'nt') found = add(it.t === 'nt' ? 'Sticky note' : 'Typed text', it.s || '');
         else if (it.t === 'tb') found = add('Table', (it.cells || []).map(r => r.join('  ')).join('  '));
         if (found) break;
+      }
+      if (hwOn()) {
+        try {
+          const hw = await pageIndex(pg.id);
+          if (hw) {
+            const hm = matchIndex(hw, q);
+            if (hm.length) { add('Handwriting', hm.map(h => h.text).join(' · ')); found = true; }
+          }
+        } catch {}
       }
       if (found || !pg.pdf || pg.tpl) continue;
       try {
@@ -573,7 +583,7 @@ export async function mountLibrary(root, folderId, opts = {}) {
     if (!hits || tok !== searchTok) return;
     fill(results, 
       h('h3', { class: 'res-head' }, hits.length ? `In pages (${hits.length}${hits.length >= 300 ? '+' : ''})` : 'In pages'),
-      hits.length ? null : h('p', { class: 'muted-line' }, 'No typed text, page names or PDF text match. Handwriting is not searchable yet.'),
+      hits.length ? null : h('p', { class: 'muted-line' }, 'No typed text, page names, PDF text or handwriting match.'),
       hits.map(r => h('a', { class: 'res', href: `#/d/${r.d.id}?p=${r.i + 1}&q=${encodeURIComponent(q)}` },
         h('div', { class: 'res-top' }, h('b', null, r.d.title), h('span', null, `page ${r.i + 1} · ${r.where}`)),
         h('div', { class: 'res-snip' }, r.s.pre, h('mark', null, r.s.hit), r.s.post))));
