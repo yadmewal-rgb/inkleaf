@@ -44,10 +44,13 @@ export const DEFAULTS = {
   scribble: true, // a zigzag over ink erases it
   favs: [],       // favourite pens: [{color, size, style}]
   hl: { color: '#ffd43b', size: mmToPt(5.5), mode: 'free' }, // mode: free, or follow PDF text as hl / ul / st
+  hlTray: false,  // false = keep highlights tray closed by default; open on demand from More > Highlights
+  hlCards: false, // automatic flashcards from highlights
   eraser: { size: mmToPt(5.5), mode: 'stroke', only: 'all' },
   shape: { kind: 'rect', color: '#1971c2', size: mmToPt(0.8), fill: null },
   text: { color: INK, size: 16, b: false, i: false, u: false, ff: 'sans', al: 'l' },
   fingerDraw: null, // null = automatic: fingers draw until a stylus has been seen
+  openRead: null,
   penSeen: false
 };
 

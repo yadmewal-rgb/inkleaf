@@ -613,6 +613,10 @@ button.pageind:hover { background: var(--surface-2); }
 .pop {
   position: fixed; z-index: 50; background: var(--surface);
   border: 1px solid var(--line); border-radius: 12px; box-shadow: var(--shadow);
+  max-height: calc(100dvh - 20px);
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+  overscroll-behavior: contain;
 }
 .menu { padding: 6px; min-width: 190px; display: flex; flex-direction: column; }
 .menu.flat { padding: 0; }

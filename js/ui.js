@@ -85,8 +85,17 @@ export function popover(anchor, content, { align = 'left' } = {}) {
   const r = anchor.getBoundingClientRect();
   const pw = pop.offsetWidth, ph = pop.offsetHeight;
   const x = clamp(align === 'right' ? r.right - pw : r.left, 8, Math.max(8, innerWidth - pw - 8));
+  const spaceBelow = innerHeight - r.bottom - 14;
+  const spaceAbove = r.top - 14;
   let y = r.bottom + 6;
-  if (y + ph > innerHeight - 8) y = Math.max(8, r.top - ph - 6);
+  if (ph > spaceBelow && spaceAbove > spaceBelow) {
+    const maxH = Math.min(ph, Math.max(120, spaceAbove));
+    y = Math.max(8, r.top - maxH - 6);
+    pop.style.maxHeight = maxH + 'px';
+  } else {
+    const maxH = Math.min(ph, Math.max(120, spaceBelow));
+    pop.style.maxHeight = maxH + 'px';
+  }
   pop.style.left = x + 'px';
   pop.style.top = y + 'px';
   const onDoc = e => { if (!pop.contains(e.target)) close(); };

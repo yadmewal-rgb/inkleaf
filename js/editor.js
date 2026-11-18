@@ -4430,7 +4430,7 @@ export async function mountEditor(root, docId, opts = {}) {
         h('b', { class: 'hlv-title' }, `Highlights (${rows.length})`),
         h('div', { class: 'hlv-acts' },
           all ? btn('Copy the text', async () => { try { await navigator.clipboard.writeText(all); toast('Highlighted text copied'); } catch { toast('This browser would not copy the text.'); } }) : null,
-          prefs.hlTray === false ? btn('Show them on screen', () => { prefs.hlTray = true; savePrefs(); drawTray(); }) : null,
+          prefs.hlTray ? btn('Hide from screen', () => { prefs.hlTray = false; savePrefs(); drawTray(); }) : btn('Show them on screen', () => { prefs.hlTray = true; savePrefs(); drawTray(); }),
           btn('Highlights notebook', () => { close(); highlightsNotebook(); }),
           btn('Export as PDF', () => { close(); exportPdf(); }),
           rows.some(r => !groupCard(r)) ? btn('Make the missing flashcards', e => { const n = rows.filter(r => !groupCard(r)); for (const r of n) setGroupCard(r, true); toast(`${n.length} flashcard${n.length === 1 ? '' : 's'} added`); e.currentTarget.remove(); close(); highlightsDialog(); }) : null),
