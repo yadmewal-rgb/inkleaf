@@ -1,6 +1,6 @@
 import { mountLibrary } from './library.js';
 import { mountEditor } from './editor.js';
-import { initSync, openSettings, fetchLiveDoc, openLiveGuestSocket } from './sync.js';
+import { initSync, openSettings, fetchLiveDoc, openLiveGuestSocket, closeLiveGuestSocket } from './sync.js';
 import { toast } from './ui.js';
 import { h } from './util.js';
 
@@ -33,10 +33,21 @@ async function route() {
   } else if (/^\/live\//.test(hash)) {
     const liveMatch = /^\/live\/([^?]+)$/.exec(hash);
     const shareId = liveMatch ? liveMatch[1] : '';
+    root.replaceChildren(h('div', { class: 'empty', style: 'padding: 80px 20px; text-align: center;' },
+      h('h2', null, 'Connecting to live notebook...'),
+      h('p', { class: 'modal-text' }, 'Fetching annotations and page data.')
+    ));
     try {
       const { doc: liveDoc, canWrite } = await fetchLiveDoc(shareId);
       openLiveGuestSocket(shareId);
-      current = await mountEditor(root, liveDoc.id, { liveShare: shareId, readOnly: !canWrite });
+      root.replaceChildren();
+      const ed = await mountEditor(root, liveDoc.id, { liveShare: shareId, readOnly: !canWrite });
+      current = {
+        destroy: async () => {
+          closeLiveGuestSocket();
+          if (ed && ed.destroy) await ed.destroy();
+        }
+      };
     } catch (e) {
       root.replaceChildren(h('div', { class: 'empty', style: 'padding: 60px 20px; text-align: center;' },
         h('h2', null, 'Could not open live notebook'),

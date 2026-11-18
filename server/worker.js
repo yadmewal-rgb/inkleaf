@@ -25,7 +25,7 @@ function corsHeaders(req, env) {
     'Access-Control-Allow-Origin': origin,
     'Access-Control-Allow-Headers': 'Authorization, Content-Type',
     'Access-Control-Allow-Methods': 'GET, PUT, POST, DELETE, OPTIONS',
-    'Access-Control-Expose-Headers': 'X-Seq',
+    'Access-Control-Expose-Headers': 'X-Seq, X-Parts, X-Gz',
     'Access-Control-Max-Age': '86400',
     Vary: 'Origin'
   };
@@ -99,11 +99,7 @@ export default {
         const [sub, secret] = shareId.split('_');
         if (!sub || !secret || !/^\d+$/.test(sub)) return withCors(json({ error: 'invalid-share-id' }, 400), cors);
         const stub = env.USER.get(env.USER.idFromName(sub));
-        const subPath = segs.slice(1).join('/');
-        const forwardUrl = new URL(req.url);
-        forwardUrl.pathname = '/share-guest/' + (subPath || 'doc');
-        forwardUrl.searchParams.set('secret', secret);
-        return withCors(await stub.fetch(new Request(forwardUrl, req)), cors);
+        return withCors(await stub.fetch(req), cors);
       }
 
       // Everything else belongs to one person: the device key says whose Durable Object to ask.
@@ -122,6 +118,8 @@ export default {
 export class User extends DurableObject {
   constructor(ctx, env) {
     super(ctx, env);
+    this.ctx = ctx;
+    this.env = env;
     this.sql = ctx.storage.sql;
     this.sql.exec(`
       CREATE TABLE IF NOT EXISTS kv (k TEXT PRIMARY KEY, v TEXT);
@@ -131,6 +129,7 @@ export class User extends DurableObject {
       CREATE TABLE IF NOT EXISTS parts (k TEXT, id TEXT, n INTEGER, data BLOB, PRIMARY KEY (k, id, n));
       CREATE TABLE IF NOT EXISTS pending (up TEXT, n INTEGER, data BLOB, t INTEGER, PRIMARY KEY (up, n));
       CREATE TABLE IF NOT EXISTS shares (secret TEXT PRIMARY KEY, docId TEXT, canWrite INTEGER, created INTEGER);
+      CREATE INDEX IF NOT EXISTS shares_docId ON shares (docId);
     `);
   }
 
@@ -215,15 +214,16 @@ export class User extends DurableObject {
       return new Response(null, { status: 101, webSocket: pair[0] });
     }
 
-    // Unauthenticated Guest Routes for Live Share: /share-guest/...
-    if (p[0] === 'share-guest') {
-      const secret = url.searchParams.get('secret');
+    // Unauthenticated Guest Routes for Live Share: /live/:shareId/...
+    if (p[0] === 'live' && p[1]) {
+      const shareId = p[1];
+      const [, secret] = shareId.split('_');
       if (!secret) return json({ error: 'no-secret' }, 400);
       const sh = this.sql.exec('SELECT docId, canWrite FROM shares WHERE secret = ?', secret).toArray()[0];
       if (!sh) return json({ error: 'invalid-share' }, 404);
 
-      // WebSocket connection for live guest: /share-guest/ws
-      if (p[1] === 'ws') {
+      // WebSocket connection for live guest: /live/:shareId/ws
+      if (p[2] === 'ws') {
         if (req.headers.get('Upgrade') !== 'websocket') return json({ error: 'websocket' }, 426);
         const pair = new WebSocketPair();
         this.ctx.acceptWebSocket(pair[1]);
@@ -232,14 +232,30 @@ export class User extends DurableObject {
         return new Response(null, { status: 101, webSocket: pair[0] });
       }
 
-      // Guest metadata & doc structure: /share-guest/doc
-      if (p[1] === 'doc' && req.method === 'GET') {
+      // Guest metadata & doc structure: /live/:shareId/doc (or /live/:shareId)
+      if (!p[2] || p[2] === 'doc') {
         const docRec = this.sql.exec("SELECT id, s, size, parts, info, gz FROM recs WHERE k = 'd' AND id = ?", sh.docId).toArray()[0];
         if (!docRec) return json({ error: 'doc-missing' }, 404);
-        const pageRecs = this.sql.exec("SELECT id, s, size, parts, info, gz FROM recs WHERE k = 'p' AND size >= 0").toArray()
-          .filter(r => {
-            try { const inf = JSON.parse(r.info || '{}'); return inf.docId === sh.docId; } catch { return false; }
-          });
+        const docPart = this.sql.exec("SELECT data FROM parts WHERE k = 'd' AND id = ? AND n = 0", sh.docId).toArray()[0];
+        let pageIds = [];
+        if (docPart && docPart.data) {
+          try {
+            const res = new Response(docPart.data);
+            const stream = docRec.gz ? res.body.pipeThrough(new DecompressionStream('gzip')) : res.body;
+            const docObj = await new Response(stream).json();
+            pageIds = docObj.pages || [];
+          } catch (e) {}
+        }
+        let pageRecs = [];
+        if (pageIds.length > 0) {
+          const placeholders = pageIds.map(() => '?').join(',');
+          pageRecs = this.sql.exec(`SELECT id, s, size, parts, info, gz FROM recs WHERE k = 'p' AND id IN (${placeholders})`, ...pageIds).toArray();
+        } else {
+          pageRecs = this.sql.exec("SELECT id, s, size, parts, info, gz FROM recs WHERE k = 'p' AND size >= 0").toArray()
+            .filter(r => {
+              try { const inf = JSON.parse(r.info || '{}'); return inf.docId === sh.docId; } catch { return false; }
+            });
+        }
         return json({
           ok: true,
           docId: sh.docId,
@@ -249,19 +265,29 @@ export class User extends DurableObject {
         });
       }
 
-      // Guest blob retrieval (doc, page, or attached PDF/image): /share-guest/blob/:k/:id/:n
-      if (p[1] === 'blob' && p[2] && p[3] && req.method === 'GET') {
-        const k = p[2], id = p[3], n = Number(p[4] || 0);
-        const r = this.sql.exec('SELECT s FROM recs WHERE k = ? AND id = ?', k, id).toArray()[0];
+      // Guest blob retrieval: /live/:shareId/blob/:k/:id/:n
+      if (p[2] === 'blob' && p[3] && p[4] && req.method === 'GET') {
+        const k = p[3], id = p[4], n = Number(p[5] || 0);
+        const r = this.sql.exec('SELECT s, parts, gz FROM recs WHERE k = ? AND id = ?', k, id).toArray()[0];
         const part = this.sql.exec('SELECT data FROM parts WHERE k = ? AND id = ? AND n = ?', k, id, n).toArray()[0];
         if (!r || !part) return json({ error: 'missing' }, 404);
-        return new Response(part.data, { headers: { 'Content-Type': 'application/octet-stream', 'X-Seq': String(r.s) } });
+        return new Response(part.data, {
+          headers: {
+            'Content-Type': 'application/octet-stream',
+            'X-Parts': String(r.parts || 1),
+            'X-Gz': r.gz ? '1' : '0'
+          }
+        });
       }
     }
 
     const token = ((req.headers.get('Authorization') || '').match(/^Bearer\s+(\S+)$/) || [])[1];
     const sess = await this.session(token);
     if (!sess) return json({ error: 'signin' }, 401);
+
+    const tokenSub = (token || '').split('.')[0] || '';
+    if (tokenSub && !this.kvGet('sub')) this.kvSet('sub', tokenSub);
+    const mySub = this.kvGet('sub') || tokenSub;
 
     // POST /share/:docId : create or get a live share link
     if (p[0] === 'share' && p[1] && req.method === 'POST') {
@@ -272,8 +298,7 @@ export class User extends DurableObject {
       if (!sh) {
         this.sql.exec('INSERT INTO shares (secret, docId, canWrite, created) VALUES (?, ?, ?, ?)', secret, docId, canWrite ? 1 : 0, Date.now());
       }
-      const sub = this.kvGet('sub') || key;
-      return json({ shareId: `${sub}_${secret}`, canWrite: sh ? !!sh.canWrite : !!canWrite, secret });
+      return json({ shareId: `${mySub}_${secret}`, canWrite: sh ? !!sh.canWrite : !!canWrite, secret });
     }
 
     // GET /share/:docId : check status of live share
@@ -281,8 +306,7 @@ export class User extends DurableObject {
       const docId = p[1];
       const sh = this.sql.exec('SELECT secret, canWrite FROM shares WHERE docId = ?', docId).toArray()[0];
       if (!sh) return json({ shared: false });
-      const sub = this.kvGet('sub') || key;
-      return json({ shared: true, shareId: `${sub}_${sh.secret}`, canWrite: !!sh.canWrite, secret: sh.secret });
+      return json({ shared: true, shareId: `${mySub}_${sh.secret}`, canWrite: !!sh.canWrite, secret: sh.secret });
     }
 
     // PUT /share/:docId/permission : toggle allow friend to write
@@ -290,6 +314,13 @@ export class User extends DurableObject {
       const docId = p[1];
       const { canWrite = false } = await req.json().catch(() => ({}));
       this.sql.exec('UPDATE shares SET canWrite = ? WHERE docId = ?', canWrite ? 1 : 0, docId);
+      for (const ws of this.ctx.getWebSockets()) {
+        const a = ws.deserializeAttachment() || {};
+        if (a.guest && a.docId === docId) {
+          a.canWrite = !!canWrite;
+          ws.serializeAttachment(a);
+        }
+      }
       this.broadcastLive(docId, { live: true, type: 'perm', docId, canWrite: !!canWrite });
       return json({ ok: true, canWrite: !!canWrite });
     }

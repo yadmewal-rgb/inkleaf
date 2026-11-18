@@ -5679,6 +5679,11 @@ export async function mountEditor(root, docId, opts = {}) {
         if (toRem.length) removeItems(pg, toRem, true);
       }
       if (pv) paintInk(pv);
+      if (!opts.liveShare) dirty(pg);
+      else {
+        pg.modified = Date.now();
+        db.put('pages', pg).catch(() => {});
+      }
     }
   }
   showSync(syncStatus());

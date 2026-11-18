@@ -377,7 +377,8 @@ async function pushRecord(kind, rec) {
     const s = st[name];
     try {
       const { bytes, gz } = await encode(rec);
-      const j = await putBlob(kind, rec.id, bytes, { base: s ? s.s : 0, gz });
+      const info = (kind === 'p' && rec.docId) ? JSON.stringify({ docId: rec.docId }) : undefined;
+      const j = await putBlob(kind, rec.id, bytes, { base: s ? s.s : 0, gz, info });
       st[name] = { lm: rec.modified, s: j.s };
       health.sent = Date.now();
       return;
@@ -866,6 +867,7 @@ export async function getLiveShare(docId) {
 
 export async function startLiveShare(docId, canWrite = false) {
   if (!session) throw new Error('Sign in to sync before sharing a live link');
+  await pushDoc(docId).catch(() => {});
   const r = await call('/share/' + encodeURIComponent(docId), {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -897,36 +899,66 @@ export function sendLiveDelta(docId, pageId, delta) {
   }
 }
 
+function joinBuffers(bufs) {
+  if (bufs.length === 1) return bufs[0];
+  const out = new Uint8Array(bufs.reduce((t, b) => t + b.length, 0));
+  let o = 0;
+  for (const b of bufs) { out.set(b, o); o += b.length; }
+  return out;
+}
+
 export async function fetchLiveDoc(shareId) {
-  const r = await http(SERVER + '/live/' + encodeURIComponent(shareId) + '/doc');
-  if (!r.ok) throw new Error('Live share not found or expired');
+  const base = server || SERVER;
+  const r = await http(base + '/live/' + encodeURIComponent(shareId) + '/doc');
+  if (!r.ok) {
+    const err = await r.json().catch(() => ({}));
+    if (err.error === 'doc-missing') throw new Error('Notebook is still syncing from the owner. Please try again in a moment.');
+    throw new Error('Live share not found or expired');
+  }
   const j = await r.json();
-  const docBlobRes = await http(SERVER + '/live/' + encodeURIComponent(shareId) + '/blob/d/' + j.docId + '/0');
-  if (!docBlobRes.ok) throw new Error('Could not load notebook data');
-  const docData = await decode(new Uint8Array(await docBlobRes.arrayBuffer()), j.doc.gz);
+
+  const fetchBlob = async (k, id) => {
+    const firstRes = await http(base + '/live/' + encodeURIComponent(shareId) + '/blob/' + k + '/' + encodeURIComponent(id) + '/0');
+    if (!firstRes.ok) throw new Error('Could not load ' + k + '/' + id);
+    const partsCount = Number(firstRes.headers.get('X-Parts') || '1');
+    const isGz = firstRes.headers.get('X-Gz') === '1';
+    const bufs = [new Uint8Array(await firstRes.arrayBuffer())];
+    for (let n = 1; n < partsCount; n++) {
+      const partRes = await http(base + '/live/' + encodeURIComponent(shareId) + '/blob/' + k + '/' + encodeURIComponent(id) + '/' + n);
+      if (!partRes.ok) throw new Error('Part ' + n + ' missing');
+      bufs.push(new Uint8Array(await partRes.arrayBuffer()));
+    }
+    return { bytes: joinBuffers(bufs), gz: isGz };
+  };
+
+  const docBlob = await fetchBlob('d', j.docId);
+  const docData = await decode(docBlob.bytes, docBlob.gz || !!(j.doc && j.doc.gz));
   docData.liveShare = shareId;
   docData.canWrite = j.canWrite;
   await db.put('docs', docData);
 
   for (const pr of j.pages || []) {
     try {
-      const pbRes = await http(SERVER + '/live/' + encodeURIComponent(shareId) + '/blob/p/' + pr.id + '/0');
-      if (pbRes.ok) {
-        const pageData = await decode(new Uint8Array(await pbRes.arrayBuffer()), !!pr.gz);
-        await db.put('pages', pageData);
-        if (pageData.pdf && pageData.pdf.a) {
-          const aid = pageData.pdf.a;
-          const curAsset = await db.get('assets', aid);
-          if (!curAsset || !curAsset.data) {
-            const aRes = await http(SERVER + '/live/' + encodeURIComponent(shareId) + '/blob/a/' + aid + '/0');
-            if (aRes.ok) {
-              const aBytes = await aRes.arrayBuffer();
-              await db.put('assets', { id: aid, data: aBytes, mime: 'application/pdf' });
-            }
-          }
+      const pBlob = await fetchBlob('p', pr.id);
+      const pageData = await decode(pBlob.bytes, pBlob.gz || !!pr.gz);
+      await db.put('pages', pageData);
+
+      const assetIds = new Set();
+      if (pageData.pdf && pageData.pdf.a) assetIds.add(pageData.pdf.a);
+      if (pageData.bg && pageData.bg.a) assetIds.add(pageData.bg.a);
+      for (const it of pageData.items || []) if (it.t === 'im' && it.a) assetIds.add(it.a);
+      for (const aid of assetIds) {
+        const curAsset = await db.get('assets', aid);
+        if (!curAsset || !curAsset.data) {
+          try {
+            const aBlob = await fetchBlob('a', aid);
+            await db.put('assets', { id: aid, data: aBlob.bytes.buffer.slice(aBlob.bytes.byteOffset, aBlob.bytes.byteOffset + aBlob.bytes.byteLength), mime: 'application/octet-stream' });
+          } catch {}
         }
       }
-    } catch {}
+    } catch (e) {
+      console.warn('Live page fetch error:', e);
+    }
   }
   return { doc: docData, canWrite: j.canWrite };
 }
@@ -934,7 +966,8 @@ export async function fetchLiveDoc(shareId) {
 let guestWs = null;
 export function openLiveGuestSocket(shareId) {
   if (guestWs) { try { guestWs.close(); } catch {} guestWs = null; }
-  const wsUrl = SERVER.replace(/^http/, 'ws') + '/live/' + encodeURIComponent(shareId) + '/ws';
+  const base = (server || SERVER).replace(/^http/, 'ws');
+  const wsUrl = base + '/live/' + encodeURIComponent(shareId) + '/ws';
   guestWs = makeSocket(wsUrl);
   guestWs.onmessage = e => {
     let m;
@@ -942,6 +975,10 @@ export function openLiveGuestSocket(shareId) {
     if (m.live) bus.emit('live-message', m);
   };
   return guestWs;
+}
+
+export function closeLiveGuestSocket() {
+  if (guestWs) { try { guestWs.close(); } catch {} guestWs = null; }
 }
 
 export function sendGuestLiveDelta(docId, pageId, delta) {
@@ -974,8 +1011,15 @@ export async function shareNotebook(docId) {
           class: 'btn primary', type: 'button',
           onclick: async e => {
             const btn = e.currentTarget; btn.disabled = true;
-            try { await startLiveShare(docId, false); drawLive(); }
-            catch (err) { toast('Could not start live share: ' + err.message); btn.disabled = false; }
+            btn.textContent = 'Preparing link...';
+            try {
+              await startLiveShare(docId, false);
+              drawLive();
+            } catch (err) {
+              toast('Could not start live share: ' + err.message);
+              btn.disabled = false;
+              btn.textContent = 'Create live link';
+            }
           }
         }, 'Create live link')
       );
