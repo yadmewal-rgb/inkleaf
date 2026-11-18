@@ -1,9 +1,13 @@
 // Offline support: network first, falling back to the cached copy.
-const CACHE = 'inkleaf-v43';
+const CACHE = 'inkleaf-v44';
+// The handwriting reader (vendor/hw/, about 90 MB) has its own cache that releases leave alone, so it is
+// downloaded once; it only changes when this name does.
+const HW_CACHE = 'inkleaf-hw-1';
 const SHELL = [
   './', 'index.html', 'manifest.webmanifest', 'css/app.css',
   'js/app.js', 'js/util.js', 'js/icons.js', 'js/ui.js', 'js/db.js', 'js/render.js',
   'js/pdfrender.js', 'js/pdftools.js', 'js/library.js', 'js/editor.js', 'js/export.js', 'js/sync.js', 'js/goodnotes.js', 'js/scan.js', 'js/pageshots.js', 'js/editor-consts.js',
+  'js/hwsearch.js', 'js/hw-worker.js',
   'vendor/pdf.min.js', 'vendor/pdf.worker.min.js', 'vendor/pdf-lib.min.js',
   'icons/icon.svg', 'icons/icon-192.png', 'icons/icon-512.png', 'icons/apple-touch-icon.png'
 ];
@@ -15,7 +19,7 @@ self.addEventListener('install', e => {
 self.addEventListener('activate', e => {
   e.waitUntil(
     caches.keys()
-      .then(keys => Promise.all(keys.filter(k => k !== CACHE).map(k => caches.delete(k))))
+      .then(keys => Promise.all(keys.filter(k => k !== CACHE && k !== HW_CACHE).map(k => caches.delete(k))))
       .then(() => self.clients.claim())
   );
 });
@@ -23,6 +27,14 @@ self.addEventListener('activate', e => {
 self.addEventListener('fetch', e => {
   const url = new URL(e.request.url);
   if (e.request.method !== 'GET' || url.origin !== location.origin) return;
+  if (url.pathname.includes('/vendor/hw/')) {
+    // Cache first: these files are large and never change under the same name.
+    e.respondWith(caches.open(HW_CACHE).then(c => c.match(e.request, { ignoreSearch: true }).then(hit => hit || fetch(e.request.url).then(res => {
+      if (res.ok) c.put(e.request, res.clone());
+      return res;
+    }))));
+    return;
+  }
   e.respondWith(
     // "no-cache" re-checks with the server every time, so a newly published version shows up straight away.
     fetch(e.request.url, { cache: 'no-cache' })

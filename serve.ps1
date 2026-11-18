@@ -13,7 +13,7 @@ Write-Host "Inkleaf is being served at $prefix  (Ctrl+C to stop)"
 $mime = @{
   '.html' = 'text/html; charset=utf-8'; '.js' = 'text/javascript; charset=utf-8'; '.css' = 'text/css; charset=utf-8'
   '.json' = 'application/json'; '.webmanifest' = 'application/manifest+json'; '.svg' = 'image/svg+xml'
-  '.png' = 'image/png'; '.jpg' = 'image/jpeg'; '.pdf' = 'application/pdf'
+  '.png' = 'image/png'; '.jpg' = 'image/jpeg'; '.pdf' = 'application/pdf'; '.wasm' = 'application/wasm'
 }
 
 while ($listener.IsListening) {
