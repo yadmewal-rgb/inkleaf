@@ -88,8 +88,22 @@ export default {
         if (!who) return withCors(json({ error: 'google-rejected' }, 401), cors);
         if (!allowedEmail(who.email, env)) return withCors(json({ error: 'not-allowed', email: who.email }, 403), cors);
         const stub = env.USER.get(env.USER.idFromName(who.sub));
-        const r = await stub.newSession(who.email, String(label || '').slice(0, 80), rt);
+        const r = await stub.newSession(who.email, String(label || '').slice(0, 80), rt, who.sub);
         return withCors(json({ token: who.sub + '.' + r.secret, email: who.email, drive: r.drive }), cors);
+      }
+
+      // Guest access to a shared notebook via share link: /live/:shareId/...
+      if (url.pathname.startsWith('/live/')) {
+        const segs = url.pathname.slice('/live/'.length).split('/').filter(Boolean);
+        const shareId = segs[0] || '';
+        const [sub, secret] = shareId.split('_');
+        if (!sub || !secret || !/^\d+$/.test(sub)) return withCors(json({ error: 'invalid-share-id' }, 400), cors);
+        const stub = env.USER.get(env.USER.idFromName(sub));
+        const subPath = segs.slice(1).join('/');
+        const forwardUrl = new URL(req.url);
+        forwardUrl.pathname = '/share-guest/' + (subPath || 'doc');
+        forwardUrl.searchParams.set('secret', secret);
+        return withCors(await stub.fetch(new Request(forwardUrl, req)), cors);
       }
 
       // Everything else belongs to one person: the device key says whose Durable Object to ask.
@@ -116,6 +130,7 @@ export class User extends DurableObject {
       CREATE INDEX IF NOT EXISTS recs_s ON recs (s);
       CREATE TABLE IF NOT EXISTS parts (k TEXT, id TEXT, n INTEGER, data BLOB, PRIMARY KEY (k, id, n));
       CREATE TABLE IF NOT EXISTS pending (up TEXT, n INTEGER, data BLOB, t INTEGER, PRIMARY KEY (up, n));
+      CREATE TABLE IF NOT EXISTS shares (secret TEXT PRIMARY KEY, docId TEXT, canWrite INTEGER, created INTEGER);
     `);
   }
 
@@ -126,9 +141,10 @@ export class User extends DurableObject {
 
   // Called by the Worker after Google confirmed who this is. Returns the secret half of a new device key, and
   // whether this person's Google Drive is linked (a refresh token is kept, so files can go to their Drive).
-  async newSession(email, label, refreshToken) {
+  async newSession(email, label, refreshToken, sub) {
     const secret = randomKey(), now = Date.now();
     this.kvSet('email', email);
+    if (sub) this.kvSet('sub', sub);
     if (refreshToken) { this.kvSet('grt', refreshToken); this.gat = null; }
     this.sql.exec('INSERT INTO sessions (h, created, seen, label) VALUES (?, ?, ?, ?)', await sha256(secret), now, now, label || '');
     return { secret, drive: !!this.kvGet('grt') };
@@ -199,14 +215,133 @@ export class User extends DurableObject {
       return new Response(null, { status: 101, webSocket: pair[0] });
     }
 
+    // Unauthenticated Guest Routes for Live Share: /share-guest/...
+    if (p[0] === 'share-guest') {
+      const secret = url.searchParams.get('secret');
+      if (!secret) return json({ error: 'no-secret' }, 400);
+      const sh = this.sql.exec('SELECT docId, canWrite FROM shares WHERE secret = ?', secret).toArray()[0];
+      if (!sh) return json({ error: 'invalid-share' }, 404);
+
+      // WebSocket connection for live guest: /share-guest/ws
+      if (p[1] === 'ws') {
+        if (req.headers.get('Upgrade') !== 'websocket') return json({ error: 'websocket' }, 426);
+        const pair = new WebSocketPair();
+        this.ctx.acceptWebSocket(pair[1]);
+        pair[1].serializeAttachment({ ok: true, guest: true, docId: sh.docId, canWrite: !!sh.canWrite, secret });
+        pair[1].send(JSON.stringify({ hello: true, live: true, docId: sh.docId, canWrite: !!sh.canWrite }));
+        return new Response(null, { status: 101, webSocket: pair[0] });
+      }
+
+      // Guest metadata & doc structure: /share-guest/doc
+      if (p[1] === 'doc' && req.method === 'GET') {
+        const docRec = this.sql.exec("SELECT id, s, size, parts, info, gz FROM recs WHERE k = 'd' AND id = ?", sh.docId).toArray()[0];
+        if (!docRec) return json({ error: 'doc-missing' }, 404);
+        const pageRecs = this.sql.exec("SELECT id, s, size, parts, info, gz FROM recs WHERE k = 'p' AND size >= 0").toArray()
+          .filter(r => {
+            try { const inf = JSON.parse(r.info || '{}'); return inf.docId === sh.docId; } catch { return false; }
+          });
+        return json({
+          ok: true,
+          docId: sh.docId,
+          canWrite: !!sh.canWrite,
+          doc: docRec,
+          pages: pageRecs
+        });
+      }
+
+      // Guest blob retrieval (doc, page, or attached PDF/image): /share-guest/blob/:k/:id/:n
+      if (p[1] === 'blob' && p[2] && p[3] && req.method === 'GET') {
+        const k = p[2], id = p[3], n = Number(p[4] || 0);
+        const r = this.sql.exec('SELECT s FROM recs WHERE k = ? AND id = ?', k, id).toArray()[0];
+        const part = this.sql.exec('SELECT data FROM parts WHERE k = ? AND id = ? AND n = ?', k, id, n).toArray()[0];
+        if (!r || !part) return json({ error: 'missing' }, 404);
+        return new Response(part.data, { headers: { 'Content-Type': 'application/octet-stream', 'X-Seq': String(r.s) } });
+      }
+    }
+
     const token = ((req.headers.get('Authorization') || '').match(/^Bearer\s+(\S+)$/) || [])[1];
     const sess = await this.session(token);
     if (!sess) return json({ error: 'signin' }, 401);
+
+    // POST /share/:docId : create or get a live share link
+    if (p[0] === 'share' && p[1] && req.method === 'POST') {
+      const docId = p[1];
+      const { canWrite = false } = await req.json().catch(() => ({}));
+      let sh = this.sql.exec('SELECT secret, canWrite FROM shares WHERE docId = ?', docId).toArray()[0];
+      const secret = sh ? sh.secret : randomKey().slice(0, 16);
+      if (!sh) {
+        this.sql.exec('INSERT INTO shares (secret, docId, canWrite, created) VALUES (?, ?, ?, ?)', secret, docId, canWrite ? 1 : 0, Date.now());
+      }
+      const sub = this.kvGet('sub') || key;
+      return json({ shareId: `${sub}_${secret}`, canWrite: sh ? !!sh.canWrite : !!canWrite, secret });
+    }
+
+    // GET /share/:docId : check status of live share
+    if (p[0] === 'share' && p[1] && req.method === 'GET') {
+      const docId = p[1];
+      const sh = this.sql.exec('SELECT secret, canWrite FROM shares WHERE docId = ?', docId).toArray()[0];
+      if (!sh) return json({ shared: false });
+      const sub = this.kvGet('sub') || key;
+      return json({ shared: true, shareId: `${sub}_${sh.secret}`, canWrite: !!sh.canWrite, secret: sh.secret });
+    }
+
+    // PUT /share/:docId/permission : toggle allow friend to write
+    if (p[0] === 'share' && p[1] && p[2] === 'permission' && req.method === 'PUT') {
+      const docId = p[1];
+      const { canWrite = false } = await req.json().catch(() => ({}));
+      this.sql.exec('UPDATE shares SET canWrite = ? WHERE docId = ?', canWrite ? 1 : 0, docId);
+      this.broadcastLive(docId, { live: true, type: 'perm', docId, canWrite: !!canWrite });
+      return json({ ok: true, canWrite: !!canWrite });
+    }
+
+    // DELETE /share/:docId : revoke live share link
+    if (p[0] === 'share' && p[1] && req.method === 'DELETE') {
+      const docId = p[1];
+      this.sql.exec('DELETE FROM shares WHERE docId = ?', docId);
+      this.broadcastLive(docId, { live: true, type: 'revoked', docId });
+      return json({ ok: true });
+    }
 
     // GET /google-token : a fresh pass for this person's Google Drive app folder, where PDFs and pictures are kept.
     if (p[0] === 'google-token' && req.method === 'GET') {
       const t = await this.googleToken();
       return t ? json({ access_token: t, exp: this.gexp }) : json({ error: 'no-google' }, 404);
+    }
+
+    // POST /ocr : Handwriting transcription via Gemini Flash
+    if (p[0] === 'ocr' && req.method === 'POST') {
+      const apiKey = this.env.GEMINI_KEY;
+      if (!apiKey) return json({ error: 'no-gemini-key' }, 501);
+      const { image, mimeType = 'image/jpeg' } = await req.json().catch(() => ({}));
+      if (!image) return json({ error: 'no-image' }, 400);
+
+      const prompt = 'Transcribe all handwritten words and notes in this image. Return ONLY the transcribed text. Do not add quotes, markdown, or commentary.';
+      const geminiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${apiKey}`;
+
+      const res = await fetch(geminiUrl, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          contents: [{
+            parts: [
+              { text: prompt },
+              { inline_data: { mime_type: mimeType, data: image } }
+            ]
+          }],
+          generationConfig: {
+            temperature: 0.1
+          }
+        })
+      });
+
+      if (!res.ok) {
+        const err = await res.text().catch(() => '');
+        return json({ error: 'gemini-failed', detail: err.slice(0, 200) }, 502);
+      }
+
+      const data = await res.json();
+      const text = (data?.candidates?.[0]?.content?.parts?.[0]?.text || '').trim();
+      return json({ ok: true, text });
     }
 
     // GET /meta/k/id : one record's entry, if the service holds it.
@@ -324,6 +459,17 @@ export class User extends DurableObject {
     return json({ error: 'not-found' }, 404);
   }
 
+  broadcastLive(docId, msg, excludeWs = null) {
+    const raw = typeof msg === 'string' ? msg : JSON.stringify(msg);
+    for (const ws of this.ctx.getWebSockets()) {
+      if (ws === excludeWs) continue;
+      const a = ws.deserializeAttachment() || {};
+      if (a.ok && (a.docId === docId || !a.guest)) {
+        try { ws.send(raw); } catch {}
+      }
+    }
+  }
+
   async webSocketMessage(ws, msg) {
     let m = null;
     try { m = JSON.parse(typeof msg === 'string' ? msg : new TextDecoder().decode(msg)); } catch { /* not ours */ }
@@ -337,7 +483,12 @@ export class User extends DurableObject {
       } else ws.close(4001, 'signin');
       return;
     }
-    if (m.ping) ws.send(JSON.stringify({ pong: true, s: this.seq() }));
+    if (m.ping) { ws.send(JSON.stringify({ pong: true, s: this.seq() })); return; }
+    // Live ink streaming across the share room
+    if (m.live && m.docId) {
+      if (a.guest && !a.canWrite) return; // View-only guest cannot send edits
+      this.broadcastLive(m.docId, m, ws);
+    }
   }
 
   async webSocketClose(ws, code) { try { ws.close(code, 'bye'); } catch { /* already closed */ } }

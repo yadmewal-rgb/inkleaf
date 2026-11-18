@@ -10,7 +10,8 @@ import { pageLinks, resolveDest, pdfOutline, pageText, textMatches } from './pdf
 import { I } from './icons.js';
 import { popMenu, popover, confirmBox, promptText, toast, modal, chipGroup, templatePicker, PAPER_OPTS, busy } from './ui.js';
 import { exportFlow, pdfAsPictures } from './export.js';
-import { syncNow, syncStatus, mergePage, mergeDoc, shareNotebook } from './sync.js';
+import { syncNow, syncStatus, mergePage, mergeDoc, shareNotebook, sendLiveDelta, sendGuestLiveDelta } from './sync.js';
+import { matchPage, matchSync, hwOn } from './hwsearch.js';
 import {
   GAP, MIN_S, MAX_S, COARSE, MAXPX, REGION_PX, REGION_PAD, PULL_PX, PALM_MS, INK, INK_ON_DARK, PEN_COLORS, HL_COLORS, SHAPES,
   MM, mmToPt, TAPE_COLORS, LASER_COLORS, RULER_L, RULER_W, ZOOM_TOOLS, NOTE_COLORS, FILL_COLORS, HIST_GAP, HIST_MAX, HIST_DAYS,
@@ -804,15 +805,19 @@ export async function mountEditor(root, docId, opts = {}) {
   }
 
   // ------------------------------------------------------------------ data changes, undo, saving
-  function removeItems(page, items) {
+  function removeItems(page, items, fromRemote = false) {
     if (!items.length) return;
     const ids = new Set(items.map(i => i.id));
     page.items = page.items.filter(i => !ids.has(i.id));
     const t = Date.now();
     for (const id of ids) page.dels[id] = t;
+    if (!fromRemote) {
+      if (opts.liveShare) sendGuestLiveDelta(doc.id, page.id, { remove: [...ids] });
+      else sendLiveDelta(doc.id, page.id, { remove: [...ids] });
+    }
   }
 
-  function addItems(page, items) {
+  function addItems(page, items, fromRemote = false) {
     if (!items.length) return;
     const t = Date.now() + 1;
     let sorted = true;
@@ -824,6 +829,10 @@ export async function mountEditor(root, docId, opts = {}) {
       page.items.push(it);
     }
     if (!sorted) page.items.sort((a, b) => a.z - b.z);
+    if (!fromRemote) {
+      if (opts.liveShare) sendGuestLiveDelta(doc.id, page.id, { add: items });
+      else sendLiveDelta(doc.id, page.id, { add: items });
+    }
   }
 
   function dirty(page) {
@@ -2501,6 +2510,19 @@ export async function mountEditor(root, docId, opts = {}) {
         const s = it.t === 'tx' || it.t === 'nt' ? it.s || '' : it.t === 'tb' ? (it.cells || []).map(r => r.join(' ')).join(' ') : '';
         if (s && s.toLowerCase().includes(q)) hits.push({ pg, rects: [R.bounds(it)] });
       }
+      if (hwOn()) {
+        try {
+          const hwHits = await matchPage(pg, q);
+          if (tok !== findTok) return;
+          for (const hh of hwHits) {
+            const strokes = pg.items.filter(it => hh.ids.includes(it.id));
+            if (strokes.length) {
+              const b = R.bounds(strokes);
+              hits.push({ pg, rects: [b], hw: true });
+            }
+          }
+        } catch { /* page not indexed yet */ }
+      }
       if (!pg.pdf || pg.tpl) continue;
       try {
         const t = await pageText(pg.pdf.a, pg.pdf.i);
@@ -3841,11 +3863,12 @@ export async function mountEditor(root, docId, opts = {}) {
     if (n >= 1) scrollToPage(n - 1);
   }
 
-  // Does a page match the panel's search box? Looks at the page name and any typed text on it.
+  // Does a page match the panel's search box? Looks at the page name, typed text, and handwriting.
   function pageMatches(pg, q) {
     if (!q) return true;
     if ((pg.title || '').toLowerCase().includes(q)) return true;
     if (pg.pdf && (pdfText.get(pg.id) || '').includes(q)) return true;
+    if (hwOn() && matchSync(pg, q).length > 0) return true;
     return pg.items.some(it => ((it.t === 'tx' || it.t === 'nt') && (it.s || '').toLowerCase().includes(q))
       || (it.t === 'tb' && (it.cells || []).some(r => r.some(c => (c || '').toLowerCase().includes(q)))));
   }
@@ -5632,7 +5655,32 @@ export async function mountEditor(root, docId, opts = {}) {
     el.remove();
   }
 
-  const offs = [bus.on('remote-record', onRemote), bus.on('sync-status', showSync)];
+  const offs = [bus.on('remote-record', onRemote), bus.on('sync-status', showSync), bus.on('live-message', onLive)];
+
+  function onLive(m) {
+    if (m.docId !== doc.id) return;
+    if (m.type === 'perm') {
+      setReadOnly(!m.canWrite);
+      toast(m.canWrite ? 'You now have write permission.' : 'Notebook switched to view-only.', 2600);
+      return;
+    }
+    if (m.type === 'revoked') {
+      toast('Live share was ended by the owner.', 3500);
+      return;
+    }
+    if (m.delta && m.pageId) {
+      const pg = pages.find(p => p.id === m.pageId);
+      if (!pg) return;
+      const pv = pvs.find(v => v.page === pg);
+      if (m.delta.add && m.delta.add.length) addItems(pg, m.delta.add, true);
+      if (m.delta.remove && m.delta.remove.length) {
+        const removeIds = new Set(m.delta.remove);
+        const toRem = pg.items.filter(it => removeIds.has(it.id));
+        if (toRem.length) removeItems(pg, toRem, true);
+      }
+      if (pv) paintInk(pv);
+    }
+  }
   showSync(syncStatus());
   bus.emit('editor-open', doc.id);
   bmBtn.classList.add('wide'); // on a phone the bookmark star lives in the pages panel only

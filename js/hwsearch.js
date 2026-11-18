@@ -21,6 +21,20 @@ let worker = null, seq = 0, idleT = 0;
 const waiting = new Map();
 export const status = { state: hwOn() ? 'idle' : 'off', done: 0, left: 0, loaded: 0, total: 0, err: '' };
 
+let cloudOcrFn = null;
+export const setCloudOcr = fn => { cloudOcrFn = fn; };
+
+function imgToBase64(img) {
+  if (!img) return '';
+  const cv = document.createElement('canvas');
+  cv.width = img.width; cv.height = img.height;
+  const ctx = cv.getContext('2d');
+  ctx.putImageData(img, 0, 0);
+  const dataUrl = cv.toDataURL('image/jpeg', 0.85);
+  cv.width = cv.height = 0;
+  return dataUrl.split(',')[1] || '';
+}
+
 function startWorker() {
   if (worker) return worker;
   worker = new Worker(new URL('./hw-worker.js', import.meta.url), { type: 'module' });
@@ -52,13 +66,59 @@ function stopWorker() {
   waiting.clear();
 }
 
-function read(img) {
+async function read(img) {
+  if (!img) {
+    const wk = startWorker(), id = ++seq;
+    return new Promise(res => {
+      waiting.set(id, { res: () => res(''), rej: () => res('') });
+      wk.postMessage({ id });
+    });
+  }
+
+  // 1. Try Cloud AI first when online (Gemini Flash)
+  if (navigator.onLine) {
+    try {
+      const b64 = imgToBase64(img);
+      if (b64) {
+        // Direct key if set in settings
+        const directKey = localStorage.getItem('inkleaf.geminiKey');
+        if (directKey) {
+          const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${directKey}`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              contents: [{
+                parts: [
+                  { text: 'Transcribe all handwritten words and notes in this image. Return ONLY the transcribed text. Do not add quotes, markdown, or commentary.' },
+                  { inline_data: { mime_type: 'image/jpeg', data: b64 } }
+                ]
+              }],
+              generationConfig: { temperature: 0.1 }
+            })
+          });
+          if (res.ok) {
+            const j = await res.json();
+            const txt = (j?.candidates?.[0]?.content?.parts?.[0]?.text || '').trim();
+            if (txt) return txt;
+          }
+        }
+        // Cloudflare sync service /ocr
+        if (cloudOcrFn) {
+          const txt = await cloudOcrFn(b64);
+          if (txt) return txt.trim();
+        }
+      }
+    } catch (e) {
+      console.warn('Cloud handwriting OCR skipped, using offline backup:', e);
+    }
+  }
+
+  // 2. Offline backup (TrOCR Web Worker)
   clearTimeout(idleT);
   const wk = startWorker(), id = ++seq;
   return new Promise((res, rej) => {
     waiting.set(id, { res, rej });
-    if (img) wk.postMessage({ id, w: img.width, h: img.height, data: img.data.buffer }, [img.data.buffer]);
-    else wk.postMessage({ id });
+    wk.postMessage({ id, w: img.width, h: img.height, data: img.data.buffer }, [img.data.buffer]);
   }).finally(() => { clearTimeout(idleT); idleT = setTimeout(() => { if (!waiting.size) stopWorker(); }, IDLE_MS); });
 }
 

@@ -13,6 +13,7 @@ import { db, assetIdsOf } from './db.js';
 import { h, uid, bus, loadScript, downloadBlob, bufToB64, b64ToBuf } from './util.js';
 import { modal, toast, confirmBox, busy } from './ui.js';
 import { I } from './icons.js';
+import { hwOn, setHwOn, status as hwStatus, setCloudOcr } from './hwsearch.js';
 
 const SERVER = 'https://inkleaf-sync.yadmewal.workers.dev';
 // drive.appdata: Inkleaf's hidden app folder (files it syncs); drive.file: only files Inkleaf itself creates, used
@@ -224,6 +225,23 @@ async function call(path, opts = {}) {
   }
   return r;
 }
+
+export async function syncOcr(imageB64) {
+  if (!session || !navigator.onLine) return null;
+  try {
+    const r = await call('/ocr', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ image: imageB64 })
+    });
+    if (!r.ok) return null;
+    const j = await r.json().catch(() => null);
+    return j && j.text ? j.text : null;
+  } catch {
+    return null;
+  }
+}
+setCloudOcr(syncOcr);
 
 // ---------------------------------------------------------------- blobs on the service
 const canZip = typeof CompressionStream === 'function' && typeof DecompressionStream === 'function';
@@ -636,6 +654,7 @@ function openLive() {
     try { m = JSON.parse(e.data); } catch { return; }
     if (m.hello) { wsLive = true; wsWait = 2000; schedule(); }
     if ((m.s || 0) > cursor) pullSoon();
+    if (m.live) bus.emit('live-message', m);
   };
   sock.onclose = e => {
     if (ws !== sock) return;
@@ -837,22 +856,194 @@ export async function notebookFile(docId) {
   return new File([JSON.stringify(data)], name + '.inkleaf', { type: 'application/octet-stream' });
 }
 
+export async function getLiveShare(docId) {
+  if (!session || !navigator.onLine) return { shared: false };
+  try {
+    const r = await call('/share/' + encodeURIComponent(docId));
+    return r.ok ? await r.json() : { shared: false };
+  } catch { return { shared: false }; }
+}
+
+export async function startLiveShare(docId, canWrite = false) {
+  if (!session) throw new Error('Sign in to sync before sharing a live link');
+  const r = await call('/share/' + encodeURIComponent(docId), {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ canWrite: !!canWrite })
+  });
+  if (!r.ok) throw new Error('Could not create live share');
+  return await r.json();
+}
+
+export async function setLiveSharePerm(docId, canWrite) {
+  const r = await call('/share/' + encodeURIComponent(docId) + '/permission', {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ canWrite: !!canWrite })
+  });
+  return r.ok;
+}
+
+export async function stopLiveShare(docId) {
+  const r = await call('/share/' + encodeURIComponent(docId), { method: 'DELETE' });
+  return r.ok;
+}
+
+export function sendLiveDelta(docId, pageId, delta) {
+  if (ws && ws.readyState === WebSocket.OPEN) {
+    try {
+      ws.send(JSON.stringify({ live: true, docId, pageId, delta }));
+    } catch {}
+  }
+}
+
+export async function fetchLiveDoc(shareId) {
+  const r = await http(SERVER + '/live/' + encodeURIComponent(shareId) + '/doc');
+  if (!r.ok) throw new Error('Live share not found or expired');
+  const j = await r.json();
+  const docBlobRes = await http(SERVER + '/live/' + encodeURIComponent(shareId) + '/blob/d/' + j.docId + '/0');
+  if (!docBlobRes.ok) throw new Error('Could not load notebook data');
+  const docData = await decode(new Uint8Array(await docBlobRes.arrayBuffer()), j.doc.gz);
+  docData.liveShare = shareId;
+  docData.canWrite = j.canWrite;
+  await db.put('docs', docData);
+
+  for (const pr of j.pages || []) {
+    try {
+      const pbRes = await http(SERVER + '/live/' + encodeURIComponent(shareId) + '/blob/p/' + pr.id + '/0');
+      if (pbRes.ok) {
+        const pageData = await decode(new Uint8Array(await pbRes.arrayBuffer()), !!pr.gz);
+        await db.put('pages', pageData);
+        if (pageData.pdf && pageData.pdf.a) {
+          const aid = pageData.pdf.a;
+          const curAsset = await db.get('assets', aid);
+          if (!curAsset || !curAsset.data) {
+            const aRes = await http(SERVER + '/live/' + encodeURIComponent(shareId) + '/blob/a/' + aid + '/0');
+            if (aRes.ok) {
+              const aBytes = await aRes.arrayBuffer();
+              await db.put('assets', { id: aid, data: aBytes, mime: 'application/pdf' });
+            }
+          }
+        }
+      }
+    } catch {}
+  }
+  return { doc: docData, canWrite: j.canWrite };
+}
+
+let guestWs = null;
+export function openLiveGuestSocket(shareId) {
+  if (guestWs) { try { guestWs.close(); } catch {} guestWs = null; }
+  const wsUrl = SERVER.replace(/^http/, 'ws') + '/live/' + encodeURIComponent(shareId) + '/ws';
+  guestWs = makeSocket(wsUrl);
+  guestWs.onmessage = e => {
+    let m;
+    try { m = JSON.parse(e.data); } catch { return; }
+    if (m.live) bus.emit('live-message', m);
+  };
+  return guestWs;
+}
+
+export function sendGuestLiveDelta(docId, pageId, delta) {
+  if (guestWs && guestWs.readyState === WebSocket.OPEN) {
+    try {
+      guestWs.send(JSON.stringify({ live: true, docId, pageId, delta }));
+    } catch {}
+  }
+}
+
 export async function shareNotebook(docId) {
-  const b = busy('Preparing the notebook file...');
-  let file;
-  try { file = await notebookFile(docId); } catch (e) { b.done(); toast('Could not make the file: ' + e.message); return; }
-  b.done();
-  const mb = (file.size / 1048576).toFixed(1);
-  const canShare = !!(navigator.canShare && navigator.canShare({ files: [file] }));
-  const actions = [{ label: 'Download', primary: !canShare, onClick: () => downloadBlob(file, file.name) }];
-  if (canShare) actions.push({ label: 'Share', primary: true, onClick: async () => { try { await navigator.share({ files: [file] }); } catch { /* cancelled */ } } });
+  const d = await db.get('docs', docId);
+  const title = d ? d.title : 'Notebook';
+  const liveBox = h('div', { class: 'live-share-box', style: 'margin-bottom: 20px;' });
+
+  const drawLive = async () => {
+    if (!session || !navigator.onLine) {
+      liveBox.replaceChildren(
+        h('h3', null, 'Real-time live sharing'),
+        h('p', { class: 'modal-text small' }, 'Sign in to sync to get a live share link so friends can watch your annotations in real time.')
+      );
+      return;
+    }
+    const info = await getLiveShare(docId);
+    if (!info.shared) {
+      liveBox.replaceChildren(
+        h('h3', null, 'Real-time live sharing'),
+        h('p', { class: 'modal-text' }, 'Share a private link. Friends can open it on any device to view the PDF and see your annotations live without signing in.'),
+        h('button', {
+          class: 'btn primary', type: 'button',
+          onclick: async e => {
+            const btn = e.currentTarget; btn.disabled = true;
+            try { await startLiveShare(docId, false); drawLive(); }
+            catch (err) { toast('Could not start live share: ' + err.message); btn.disabled = false; }
+          }
+        }, 'Create live link')
+      );
+    } else {
+      const shareUrl = location.origin + location.pathname + '#/live/' + info.shareId;
+      const permCheck = h('input', {
+        type: 'checkbox', checked: !!info.canWrite, hidden: true,
+        onchange: async e => {
+          const val = e.target.checked;
+          await setLiveSharePerm(docId, val);
+          toast(val ? 'Friend can now write' : 'Friend is now view-only', 2000);
+          drawLive();
+        }
+      });
+      liveBox.replaceChildren(
+        h('h3', null, 'Real-time live sharing'),
+        h('div', { class: 'row', style: 'align-items: center; gap: 8px; margin: 8px 0;' },
+          h('input', { class: 'inp sm', type: 'text', readonly: true, value: shareUrl, style: 'flex: 1;' }),
+          h('button', {
+            class: 'btn sm primary', type: 'button',
+            onclick: () => {
+              if (navigator.clipboard) navigator.clipboard.writeText(shareUrl);
+              toast('Live link copied to clipboard!', 2500);
+            }
+          }, 'Copy link')
+        ),
+        h('div', { class: 'row', style: 'align-items: center; justify-content: space-between; margin-top: 8px;' },
+          h('label', { class: 'chip check' + (info.canWrite ? ' on' : ''), style: 'cursor: pointer;' },
+            permCheck,
+            'Allow friend to write'
+          ),
+          h('button', {
+            class: 'btn sm danger', type: 'button',
+            onclick: async () => {
+              if (!await confirmBox('Stop sharing', 'End this live share link? Anyone looking at it will be disconnected.', 'Stop sharing', true)) return;
+              await stopLiveShare(docId);
+              drawLive();
+            }
+          }, 'End link')
+        ),
+        h('p', { class: 'modal-text small', style: 'margin-top: 6px;' },
+          info.canWrite ? 'Friend has write access: both of you can write on this notebook together.' : 'View-only: friend can watch your live writing without leaving marks.')
+      );
+    }
+  };
+  drawLive();
+
+  // Export file copy option
+  const fileSection = h('div', null,
+    h('h3', null, 'Send a file copy'),
+    h('p', { class: 'modal-text small' }, 'Export this notebook as a standalone .inkleaf file for backup or offline transfer.'),
+    h('button', {
+      class: 'btn sm', type: 'button',
+      onclick: async () => {
+        const b = busy('Preparing notebook file...');
+        try {
+          const file = await notebookFile(docId);
+          downloadBlob(file, file.name);
+        } catch (e) { toast('Error: ' + e.message); }
+        b.done();
+      }
+    }, 'Download .inkleaf file')
+  );
+
   modal({
-    title: 'Send a copy',
-    body: h('div', null,
-      h('p', { class: 'modal-text' }, `${file.name} (${mb} MB)`),
-      h('p', { class: 'modal-text small' }, 'Send this file by WhatsApp, email or Drive. The other person opens Inkleaf, taps New, then "Open a notebook file". '
-        + 'If they send it back after writing in it, opening it here merges their writing into yours.')),
-    actions
+    title: `Share "${title}"`,
+    wide: true,
+    body: h('div', null, liveBox, fileSection)
   });
 }
 
@@ -968,10 +1159,59 @@ export async function openSettings() {
   const who = session && !cfg.off
     ? `This device is signed in as ${session.email}. It stays signed in; nothing needs doing again.`
     : cfg.off ? 'Sync is turned off on this device.' : 'This device is not signed in yet.';
+  // Handwriting search row and status
+  const hwBox = h('div', { class: 'hw-settings', style: 'margin: 10px 0 16px;' });
+  const drawHw = () => {
+    const on = hwOn();
+    const st = hwStatus;
+    const txt = !on ? 'Turn on to search handwritten notes by typing in the find bar.'
+      : st.state === 'working' ? `Reading handwriting (${st.left} left)...`
+      : st.state === 'loading' ? 'Loading offline reader backup...'
+      : 'Ready. Uses Cloud AI (Gemini Flash) when online, offline reader when not.';
+    const gemKey = localStorage.getItem('inkleaf.geminiKey') || '';
+    const keyInp = h('input', {
+      type: 'password', class: 'inp sm', placeholder: 'Optional Gemini API Key (or leave blank for Cloudflare)', value: gemKey,
+      style: 'margin-top: 4px; width: 100%;',
+      onchange: e => {
+        const val = e.target.value.trim();
+        if (val) localStorage.setItem('inkleaf.geminiKey', val);
+        else localStorage.removeItem('inkleaf.geminiKey');
+      }
+    });
+    hwBox.replaceChildren(
+      ...[
+        h('div', { class: 'row', style: 'align-items: center; justify-content: space-between; margin-bottom: 6px;' },
+          h('label', { class: 'chip check' + (on ? ' on' : ''), style: 'cursor: pointer;' },
+            h('input', {
+              type: 'checkbox', checked: on, hidden: true,
+              onchange: e => {
+                setHwOn(e.target.checked);
+                drawHw();
+              }
+            }),
+            'Search handwriting'
+          ),
+          h('span', { class: 'bk-sub' }, on ? 'Enabled' : 'Disabled')
+        ),
+        h('p', { class: 'modal-text small', style: 'margin-bottom: 6px;' }, txt),
+        on ? h('div', { class: 'field', style: 'margin-top: 6px;' },
+          h('label', { class: 'small' }, 'Direct Gemini API Key (optional):'),
+          keyInp,
+          h('span', { class: 'bk-sub' }, 'Leave blank to use your Cloudflare server automatically.')
+        ) : null
+      ].filter(Boolean)
+    );
+  };
+  drawHw();
+
   const m = modal({
     title: 'Settings',
     wide: true,
     body: h('div', null,
+      h('h3', null, 'Handwriting search'),
+      h('p', { class: 'modal-text' },
+        'Search your handwritten notes as you type. Uses fast Cloud AI (Gemini Flash) when online, with an offline reader on this device when not.'),
+      hwBox,
       h('h3', null, 'Live sync'),
       h('p', { class: 'modal-text' },
         'Notes are always kept on this device, so they open instantly and work offline. With sync on, every change is also ',

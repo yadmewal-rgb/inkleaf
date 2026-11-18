@@ -1,6 +1,6 @@
 import { mountLibrary } from './library.js';
 import { mountEditor } from './editor.js';
-import { initSync } from './sync.js';
+import { initSync, openSettings, fetchLiveDoc, openLiveGuestSocket } from './sync.js';
 import { toast } from './ui.js';
 import { h } from './util.js';
 
@@ -27,6 +27,23 @@ async function route() {
     }
   } else if (hash === '/bin') {
     current = await mountLibrary(root, null, { bin: true });
+  } else if (hash === '/settings') {
+    current = await mountLibrary(root, null);
+    openSettings();
+  } else if (/^\/live\//.test(hash)) {
+    const liveMatch = /^\/live\/([^?]+)$/.exec(hash);
+    const shareId = liveMatch ? liveMatch[1] : '';
+    try {
+      const { doc: liveDoc, canWrite } = await fetchLiveDoc(shareId);
+      openLiveGuestSocket(shareId);
+      current = await mountEditor(root, liveDoc.id, { liveShare: shareId, readOnly: !canWrite });
+    } catch (e) {
+      root.replaceChildren(h('div', { class: 'empty', style: 'padding: 60px 20px; text-align: center;' },
+        h('h2', null, 'Could not open live notebook'),
+        h('p', { class: 'modal-text' }, e.message || 'The link may have ended or expired.'),
+        h('a', { class: 'btn primary', href: '#/', style: 'margin-top: 16px; display: inline-block;' }, 'Go to Inkleaf')
+      ));
+    }
   } else {
     const f = /^\/f\/(.+)$/.exec(hash);
     current = await mountLibrary(root, f ? f[1] : null);
