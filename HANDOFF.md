@@ -26,9 +26,14 @@
 3. **Browser Verification & Screenshots**:
    - Loaded on local server at `http://localhost:8080/`. Verified library, Settings modal with handwriting toggle, and clean zero-error console. Screenshots captured in `C:\Users\yadram\AgentTools\shots\`.
 
-## Where the work is
-Branch **`hw-search`** (committed locally at `58ca2d6`). Main is unchanged at `7748586` (cache v43).
+## Live now
+- Website on GitHub Pages from `main` (cache `inkleaf-v45`).
+- Sync worker updated with live share endpoints & Gemini OCR endpoint (`inkleaf-sync.yadmewal.workers.dev`).
+- Local server ready at `http://localhost:8080/`.
+
+## Owner must do
+- (Optional) If you want Cloudflare to run the Gemini Flash handwriting reader automatically, add `GEMINI_KEY` secret under Cloudflare dashboard > `inkleaf-sync` > Settings > Variables and Secrets. (Or enter the key directly in Inkleaf Settings).
 
 ## Next step
-- Owner tests live share link and handwriting search locally or deploys to main.
-- In Cloudflare dashboard, add `GEMINI_KEY` secret under `inkleaf-sync` settings if using Cloudflare-proxied Gemini Flash.
+- Test the new **Share Live** link by opening a notebook on iPad, tapping Share > "Create live link", and opening the link on a phone as guest to watch live pen strokes!
+- Test **Handwriting Search** in the find bar with notes written on iPad.
