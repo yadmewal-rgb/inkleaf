@@ -882,7 +882,15 @@ export async function startLiveShare(docId, canWrite = false, allowedEmails = ''
     })
   });
   if (!r.ok) throw new Error('Could not create live share');
-  return await r.json();
+  const res = await r.json();
+  try {
+    const cur = new Set((await db.getMeta('my_shares')) || []);
+    cur.add(docId);
+    await db.setMeta('my_shares', [...cur]);
+    const d = await db.get('docs', docId);
+    if (d) { d.shared = true; await db.put('docs', d); }
+  } catch {}
+  return res;
 }
 
 export async function setLiveSharePerm(docId, canWrite, allowedEmails, extra = {}) {
@@ -922,8 +930,34 @@ export async function fetchSharedWithMe(force = false) {
   try { return (await db.getMeta('shared_items')) || []; } catch { return []; }
 }
 
+export async function fetchMyShares(force = false) {
+  if (!session) {
+    try { return new Set((await db.getMeta('my_shares')) || []); } catch { return new Set(); }
+  }
+  if (!navigator.onLine && !force) {
+    try { return new Set((await db.getMeta('my_shares')) || []); } catch { return new Set(); }
+  }
+  try {
+    const r = await call('/shares');
+    if (r.ok) {
+      const data = await r.json();
+      const list = Array.isArray(data.shares) ? data.shares.map(s => s.docId) : [];
+      await db.setMeta('my_shares', list);
+      return new Set(list);
+    }
+  } catch (e) {}
+  try { return new Set((await db.getMeta('my_shares')) || []); } catch { return new Set(); }
+}
+
 export async function stopLiveShare(docId) {
   const r = await call('/share/' + encodeURIComponent(docId), { method: 'DELETE' });
+  try {
+    const cur = new Set((await db.getMeta('my_shares')) || []);
+    cur.delete(docId);
+    await db.setMeta('my_shares', [...cur]);
+    const d = await db.get('docs', docId);
+    if (d) { d.shared = false; await db.put('docs', d); }
+  } catch {}
   return r.ok;
 }
 
@@ -1531,6 +1565,11 @@ export async function shareFolder(folderId) {
                 folderName: title
               });
             }
+            try {
+              const fShares = new Set((await db.getMeta('my_shared_folders')) || []);
+              fShares.add(folderId);
+              await db.setMeta('my_shared_folders', [...fShares]);
+            } catch {}
             b.done();
             btn.disabled = false;
             toast(`Folder "${title}" shared with ${email}! It will appear in their Shared tab.`);

@@ -27,6 +27,7 @@ export const I = {
   copy: s('<rect x="8" y="8" width="12" height="12" rx="2"/><path d="M16 8V6a2 2 0 00-2-2H6a2 2 0 00-2 2v8a2 2 0 002 2h2"/>'),
   move: s('<path d="M3 7a2 2 0 012-2h4l2 2.5h8a2 2 0 012 2V18a2 2 0 01-2 2H5a2 2 0 01-2-2z"/><path d="M10 14h6M13.5 11.5L16 14l-2.5 2.5"/>'),
   share: s('<path d="M12 15V4"/><path d="M8 8l4-4 4 4"/><path d="M5 12v6a2 2 0 002 2h10a2 2 0 002-2v-6"/>'),
+  users: s('<path d="M17 21v-2a4 4 0 00-4-4H5a4 4 0 00-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 00-3-3.87"/><path d="M16 3.13a4 4 0 010 7.75"/>'),
   up: s('<path d="M12 19V5M6 11l6-6 6 6"/>'),
   down: s('<path d="M12 5v14M6 13l6 6 6-6"/>'),
   palette: s('<path d="M12 3a9 9 0 100 18c1.5 0 2-1 2-2s-.5-1.5-.5-2.5S14.5 15 16 15h1.5A3.5 3.5 0 0021 11.500C21 6.800 17 3 12 3z"/><circle cx="7.500" cy="11.500" r="1" fill="currentColor"/><circle cx="10.500" cy="7.500" r="1" fill="currentColor"/><circle cx="15" cy="8" r="1" fill="currentColor"/>'),

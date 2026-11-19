@@ -434,6 +434,12 @@ export class User extends DurableObject {
       return json({ shares: [] });
     }
 
+    // GET /shares : list all active shares created by this user
+    if (p[0] === 'shares' && req.method === 'GET') {
+      const rows = this.sql.exec('SELECT docId, secret, canWrite, allowedEmails FROM shares').toArray();
+      return json({ shares: rows });
+    }
+
     // GET /share/:docId : check status of live share
     if (p[0] === 'share' && p[1] && req.method === 'GET') {
       const docId = p[1];

@@ -11,7 +11,7 @@ import { importGoodnotes } from './goodnotes.js';
 import { pdfPagesText } from './pdftools.js';
 import { exportFlow } from './export.js';
 import { renderPageTo } from './render.js';
-import { openSettings, syncNow, syncStatus, shareNotebook, shareFolder, importBackup, fetchSharedWithMe, fetchLiveDoc } from './sync.js';
+import { openSettings, syncNow, syncStatus, shareNotebook, shareFolder, importBackup, fetchSharedWithMe, fetchLiveDoc, fetchMyShares } from './sync.js';
 import { pageIndex, matchIndex, hwOn } from './hwsearch.js';
 
 const SIZE_OPTS = [{ v: 'a4', label: 'A4 portrait' }, { v: 'a4l', label: 'A4 landscape' }, { v: 'letter', label: 'Letter' }];
@@ -259,12 +259,24 @@ export async function mountLibrary(root, folderId, opts = {}) {
   let query = '', filter = lsGet('inkleaf.filter', 'all'), sort = lsGet('inkleaf.sort', 'edited'), searchTok = 0;
   let activeSharedFolder = null;
   let sharedItems = [];
-  try { sharedItems = (await db.getMeta('shared_items')) || []; } catch {}
+  let myShares = new Set();
+  let mySharedFolders = new Set();
+  try {
+    sharedItems = (await db.getMeta('shared_items')) || [];
+    myShares = new Set((await db.getMeta('my_shares')) || []);
+    mySharedFolders = new Set((await db.getMeta('my_shared_folders')) || []);
+  } catch {}
   fetchSharedWithMe().then(sh => {
     if (Array.isArray(sh)) {
       const changed = sh.length !== sharedItems.length;
       sharedItems = sh;
       if (changed || filter === 'shared') render();
+    }
+  }).catch(() => {});
+  fetchMyShares().then(sh => {
+    if (sh && sh.size !== myShares.size) {
+      myShares = sh;
+      render();
     }
   }).catch(() => {});
   const grid = h('div', { class: 'grid' });
@@ -542,13 +554,18 @@ export async function mountLibrary(root, folderId, opts = {}) {
   }
 
   function docCard(d) {
+    const isShared = !!d.shared || myShares.has(d.id);
     const sub = fmtDate(d.modified) + (d.pages && d.pages.length > 1 ? ` · ${d.pages.length} pages` : '');
     return h('div', { class: 'card', onclick: () => { location.hash = '#/d/' + d.id; } },
       h('div', { class: 'cover', style: { '--cover': d.cover || COVERS[0] } },
         d.thumb ? h('img', { src: d.thumb, alt: '', draggable: false }) : h('div', { class: 'cover-blank' }),
+        isShared ? h('span', { class: 'shared-mark-badge', title: 'Shared notebook', html: I.users }) : null,
         d.fav ? h('span', { class: 'fav-badge', html: I.starOn }) : null),
       h('div', { class: 'meta' },
-        h('div', { class: 'name' }, d.title),
+        h('div', { class: 'name' },
+          d.title,
+          isShared ? h('span', { class: 'shared-name-icon', title: 'Shared notebook', html: I.users }) : null
+        ),
         h('div', { class: 'sub' }, sub),
         d.tags && d.tags.length ? h('div', { class: 'tags' }, d.tags.map(t => h('span', { class: 'tag' }, '#' + t))) : null),
       h('button', { class: 'ic sm card-more', type: 'button', title: 'Notebook options', html: I.more, onclick: e => { e.stopPropagation(); docMenu(e.currentTarget, d); } }));
@@ -702,11 +719,18 @@ export async function mountLibrary(root, folderId, opts = {}) {
 
     const cards = [];
     for (const f of fs) {
+      const isFolderShared = mySharedFolders.has(f.id) || D.some(d => d.folderId === f.id && (d.shared || myShares.has(d.id)));
       const count = D.filter(d => d.folderId === f.id).length + F.filter(x => x.parentId === f.id).length;
       cards.push(h('div', { class: 'card', onclick: () => { location.hash = '#/f/' + f.id; } },
-        h('div', { class: 'cover folder' }, h('span', { html: I.folder })),
+        h('div', { class: 'cover folder' },
+          h('span', { html: I.folder }),
+          isFolderShared ? h('span', { class: 'shared-mark-badge', title: 'Shared folder', html: I.users }) : null
+        ),
         h('div', { class: 'meta' },
-          h('div', { class: 'name' }, f.name),
+          h('div', { class: 'name' },
+            f.name,
+            isFolderShared ? h('span', { class: 'shared-name-icon', title: 'Shared folder', html: I.users }) : null
+          ),
           h('div', { class: 'sub' }, count === 1 ? '1 item' : count + ' items')),
         h('button', { class: 'ic sm card-more', type: 'button', title: 'Folder options', html: I.more, onclick: e => { e.stopPropagation(); folderMenu(e.currentTarget, f); } })));
     }
