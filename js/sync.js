@@ -106,7 +106,7 @@ const deviceLabel = () => {
   return dev + (app ? ' · ' + app : '') + (standalone ? ' (app)' : '');
 };
 
-async function signIn() {
+export async function signIn() {
   const code = await googleCode();
   const r = await http(server + '/auth', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ code, label: deviceLabel() }) });
   const j = await r.json().catch(() => ({}));
@@ -865,23 +865,25 @@ export async function getLiveShare(docId) {
   } catch { return { shared: false }; }
 }
 
-export async function startLiveShare(docId, canWrite = false) {
+export async function startLiveShare(docId, canWrite = false, allowedEmails = '') {
   if (!session) throw new Error('Sign in to sync before sharing a live link');
   await pushDoc(docId).catch(() => {});
   const r = await call('/share/' + encodeURIComponent(docId), {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ canWrite: !!canWrite })
+    body: JSON.stringify({ canWrite: !!canWrite, allowedEmails: String(allowedEmails || '').trim() })
   });
   if (!r.ok) throw new Error('Could not create live share');
   return await r.json();
 }
 
-export async function setLiveSharePerm(docId, canWrite) {
+export async function setLiveSharePerm(docId, canWrite, allowedEmails) {
+  const payload = { canWrite: !!canWrite };
+  if (allowedEmails !== undefined) payload.allowedEmails = String(allowedEmails || '').trim();
   const r = await call('/share/' + encodeURIComponent(docId) + '/permission', {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ canWrite: !!canWrite })
+    body: JSON.stringify(payload)
   });
   return r.ok;
 }
@@ -909,22 +911,25 @@ function joinBuffers(bufs) {
 
 export async function fetchLiveDoc(shareId) {
   const base = server || SERVER;
-  const r = await http(base + '/live/' + encodeURIComponent(shareId) + '/doc');
+  const authHeaders = session?.token ? { 'Authorization': 'Bearer ' + session.token } : {};
+  const r = await http(base + '/live/' + encodeURIComponent(shareId) + '/doc', { headers: authHeaders });
   if (!r.ok) {
     const err = await r.json().catch(() => ({}));
+    if (err.error === 'signin-required') throw new Error('SIGNIN_REQUIRED:' + (err.message || 'Please sign in with Google to view this private notebook.'));
+    if (err.error === 'forbidden') throw new Error('FORBIDDEN:' + (err.message || 'Access denied: You do not have permission to view this notebook.'));
     if (err.error === 'doc-missing') throw new Error('Notebook is still syncing from the owner. Please try again in a moment.');
     throw new Error('Live share not found or expired');
   }
   const j = await r.json();
 
   const fetchBlob = async (k, id) => {
-    const firstRes = await http(base + '/live/' + encodeURIComponent(shareId) + '/blob/' + k + '/' + encodeURIComponent(id) + '/0');
+    const firstRes = await http(base + '/live/' + encodeURIComponent(shareId) + '/blob/' + k + '/' + encodeURIComponent(id) + '/0', { headers: authHeaders });
     if (!firstRes.ok) throw new Error('Could not load ' + k + '/' + id);
     const partsCount = Number(firstRes.headers.get('X-Parts') || '1');
     const isGz = firstRes.headers.get('X-Gz') === '1';
     const bufs = [new Uint8Array(await firstRes.arrayBuffer())];
     for (let n = 1; n < partsCount; n++) {
-      const partRes = await http(base + '/live/' + encodeURIComponent(shareId) + '/blob/' + k + '/' + encodeURIComponent(id) + '/' + n);
+      const partRes = await http(base + '/live/' + encodeURIComponent(shareId) + '/blob/' + k + '/' + encodeURIComponent(id) + '/' + n, { headers: authHeaders });
       if (!partRes.ok) throw new Error('Part ' + n + ' missing');
       bufs.push(new Uint8Array(await partRes.arrayBuffer()));
     }
@@ -967,7 +972,15 @@ let guestWs = null;
 export function openLiveGuestSocket(shareId) {
   if (guestWs) { try { guestWs.close(); } catch {} guestWs = null; }
   const base = (server || SERVER).replace(/^http/, 'ws');
-  const wsUrl = base + '/live/' + encodeURIComponent(shareId) + '/ws';
+  const wsUrl = base + '/live/' + encodeURIComponent(shareId) + '/ws' + (session?.token ? '?token=' + encodeURIComponent(session.token) : '');
+  guestWs = makeSocket(wsUrl);
+  guestWs.onmessage = e => {
+    let m;
+    try { m = JSON.parse(e.data); } catch { return; }
+    if (m.live) bus.emit('live-message', m);
+  };
+  return guestWs;
+}
   guestWs = makeSocket(wsUrl);
   guestWs.onmessage = e => {
     let m;
@@ -989,10 +1002,199 @@ export function sendGuestLiveDelta(docId, pageId, delta) {
   }
 }
 
+export async function folderFile(folderId) {
+  const allF = await db.all('folders');
+  const root = allF.find(x => x.id === folderId);
+  if (!root) throw new Error('Folder not found');
+
+  const inside = new Set([folderId]);
+  let grew = true;
+  while (grew) {
+    grew = false;
+    for (const x of allF) {
+      if (!x.deleted && !x.trashed && x.parentId && inside.has(x.parentId) && !inside.has(x.id)) {
+        inside.add(x.id); grew = true;
+      }
+    }
+  }
+
+  // Ensure root folder has null parent so it lands cleanly in recipient's library
+  const exportFolders = allF.filter(f => inside.has(f.id) && !f.deleted && !f.trashed).map(f => {
+    if (f.id === folderId) return { ...f, parentId: null };
+    return f;
+  });
+
+  const allDocs = await db.all('docs');
+  const exportDocs = allDocs.filter(d => inside.has(d.folderId) && !d.deleted && !d.trashed && !d.sys);
+
+  const pages = [];
+  const allAssetIds = new Set();
+  for (const d of exportDocs) {
+    const docPages = (await db.byDoc(d.id)).filter(p => !p.deleted && !p.trashed);
+    pages.push(...docPages);
+    for (const aid of assetIdsOf(docPages)) allAssetIds.add(aid);
+  }
+
+  const assets = [];
+  for (const id of allAssetIds) {
+    const a = await db.get('assets', id);
+    if (a && a.data) assets.push({ ...a, data: bufToB64(a.data) });
+  }
+
+  const cleanDocs = exportDocs.map(d => {
+    const { thumb, fav, tags, trashed, ...rest } = d;
+    return rest;
+  });
+
+  const data = {
+    app: 'inkleaf',
+    version: 1,
+    kind: 'folder',
+    exported: Date.now(),
+    folders: exportFolders,
+    docs: cleanDocs,
+    pages,
+    assets
+  };
+  const name = (root.name || 'folder').replace(/[\\/:*?"<>|]+/g, ' ').trim().slice(0, 80) || 'folder';
+  return new File([JSON.stringify(data)], name + '.inkleaf', { type: 'application/octet-stream' });
+}
+
+function emailPicker({ title, isFolder, getLiveUrl, getFile, initialEmail = '', onEmailChange = null }) {
+  const getRecent = () => {
+    try { return JSON.parse(localStorage.getItem('inkleaf.friends') || '[]'); } catch { return []; }
+  };
+  const saveRecent = (em) => {
+    const trimmed = (em || '').trim();
+    if (!trimmed || !trimmed.includes('@')) return;
+    const list = getRecent().filter(e => e.toLowerCase() !== trimmed.toLowerCase());
+    list.unshift(trimmed);
+    localStorage.setItem('inkleaf.friends', JSON.stringify(list.slice(0, 8)));
+  };
+
+  let chosenEmail = initialEmail;
+  const emailInp = h('input', {
+    class: 'inp sm',
+    type: 'email',
+    placeholder: "Friend's email (e.g. friend@gmail.com)",
+    value: initialEmail,
+    style: 'flex: 1;',
+    oninput: e => {
+      chosenEmail = e.target.value.trim();
+      if (onEmailChange) onEmailChange(chosenEmail);
+    }
+  });
+
+  const chipsBox = h('div', { class: 'chips', style: 'margin: 6px 0; gap: 6px;' });
+  const refreshChips = (suggested = []) => {
+    const recents = getRecent();
+    const all = [...new Set([...suggested, ...recents])].filter(Boolean);
+    chipsBox.replaceChildren(
+      ...all.map(f => h('button', {
+        class: 'chip sm' + (chosenEmail.toLowerCase() === f.toLowerCase() ? ' on' : ''),
+        type: 'button',
+        title: 'Share with ' + f,
+        onclick: () => {
+          chosenEmail = f;
+          emailInp.value = f;
+          if (onEmailChange) onEmailChange(chosenEmail);
+          refreshChips(suggested);
+        }
+      }, f))
+    );
+  };
+
+  const sendEmailLink = async () => {
+    const email = emailInp.value.trim();
+    if (!email || !email.includes('@')) {
+      toast('Please enter a friend email address');
+      emailInp.focus();
+      return;
+    }
+    saveRecent(email);
+    const b = busy('Preparing share link...');
+    try {
+      const url = await getLiveUrl(email);
+      b.done();
+      const subject = encodeURIComponent(`Inkleaf: ${title}`);
+      const body = encodeURIComponent(
+        `Hi,\n\nHere is a private live link to view "${title}" on Inkleaf:\n\n${url}\n\nYou can open this link on your iPad, phone, or laptop and sign in to view.\n`
+      );
+      window.open(`mailto:${encodeURIComponent(email)}?subject=${subject}&body=${body}`, '_blank');
+      toast(`Email draft opened for ${email}`);
+    } catch (e) {
+      b.done();
+      toast('Could not prepare link: ' + e.message);
+    }
+  };
+
+  const sendEmailFile = async () => {
+    const email = emailInp.value.trim();
+    if (!email || !email.includes('@')) {
+      toast('Please enter a friend email address');
+      emailInp.focus();
+      return;
+    }
+    saveRecent(email);
+    const b = busy('Preparing file...');
+    try {
+      const file = await getFile();
+      b.done();
+      if (navigator.canShare && navigator.canShare({ files: [file] })) {
+        try {
+          await navigator.share({
+            files: [file],
+            title: title,
+            text: `Inkleaf ${isFolder ? 'folder' : 'notebook'}: ${title}`
+          });
+          toast('Shared successfully!');
+          return;
+        } catch (err) {
+          if (err.name === 'AbortError') return;
+        }
+      }
+      downloadBlob(file, file.name);
+      const subject = encodeURIComponent(`Inkleaf: ${title}`);
+      const body = encodeURIComponent(
+        `Hi,\n\nI have exported the Inkleaf ${isFolder ? 'folder' : 'notebook'} "${title}" for you (${file.name}).\n\nI've downloaded the file so you can attach it to this email. You can open and import it at https://yadmewal-rgb.github.io/inkleaf/ using the "Open a notebook file" option.\n`
+      );
+      window.open(`mailto:${encodeURIComponent(email)}?subject=${subject}&body=${body}`, '_blank');
+      toast(`Downloaded ${file.name} & opened email draft for ${email}`);
+    } catch (e) {
+      b.done();
+      toast('Error: ' + e.message);
+    }
+  };
+
+  return {
+    el: h('div', { class: 'email-picker-wrap' },
+      h('div', { class: 'row', style: 'align-items: center; gap: 8px; margin: 8px 0;' }, emailInp),
+      chipsBox
+    ),
+    emailInp,
+    refreshChips,
+    sendEmailLink,
+    sendEmailFile,
+    getEmail: () => chosenEmail
+  };
+}
+
 export async function shareNotebook(docId) {
   const d = await db.get('docs', docId);
   const title = d ? d.title : 'Notebook';
   const liveBox = h('div', { class: 'live-share-box', style: 'margin-bottom: 20px;' });
+
+  // Get allowed friends from server /me
+  let serverFriends = [];
+  if (session && navigator.onLine) {
+    try {
+      const meRes = await call('/me');
+      if (meRes.ok) {
+        const meData = await meRes.json();
+        serverFriends = meData.friends || [];
+      }
+    } catch {}
+  }
 
   const drawLive = async () => {
     if (!session || !navigator.onLine) {
@@ -1003,67 +1205,146 @@ export async function shareNotebook(docId) {
       return;
     }
     const info = await getLiveShare(docId);
-    if (!info.shared) {
-      liveBox.replaceChildren(
-        h('h3', null, 'Real-time live sharing'),
-        h('p', { class: 'modal-text' }, 'Share a private link. Friends can open it on any device to view the PDF and see your annotations live without signing in.'),
-        h('button', {
-          class: 'btn primary', type: 'button',
-          onclick: async e => {
-            const btn = e.currentTarget; btn.disabled = true;
-            btn.textContent = 'Preparing link...';
-            try {
-              await startLiveShare(docId, false);
-              drawLive();
-            } catch (err) {
-              toast('Could not start live share: ' + err.message);
-              btn.disabled = false;
-              btn.textContent = 'Create live link';
-            }
+    let restrictedTo = info.allowedEmails || (serverFriends[0] || '');
+    let shareMode = (info.shared && info.allowedEmails) || (!info.shared && serverFriends.length > 0) ? 'friend' : 'anyone';
+
+    const renderContent = () => {
+      if (!info.shared) {
+        const picker = emailPicker({
+          title,
+          isFolder: false,
+          initialEmail: restrictedTo,
+          onEmailChange: em => { restrictedTo = em; }
+        });
+        picker.refreshChips(serverFriends);
+
+        const modeChips = h('div', { class: 'chips', style: 'margin: 8px 0 10px;' },
+          h('button', {
+            class: 'chip sm' + (shareMode === 'friend' ? ' on' : ''),
+            type: 'button',
+            onclick: () => { shareMode = 'friend'; renderContent(); }
+          }, 'Specific friend (Google sign-in)'),
+          h('button', {
+            class: 'chip sm' + (shareMode === 'anyone' ? ' on' : ''),
+            type: 'button',
+            onclick: () => { shareMode = 'anyone'; renderContent(); }
+          }, 'Anyone with link')
+        );
+
+        liveBox.replaceChildren(
+          h('h3', null, 'Real-time live sharing'),
+          h('p', { class: 'modal-text' }, 'Share with your friend so they can view the notebook and see your annotations live.'),
+          modeChips,
+          shareMode === 'friend' ? h('div', null,
+            h('p', { class: 'modal-text small' }, "Only this email address can open the notebook (they must sign in with Google):"),
+            picker.el
+          ) : null,
+          h('div', { class: 'row', style: 'gap: 8px; margin-top: 12px;' },
+            h('button', {
+              class: 'btn primary', type: 'button',
+              onclick: async e => {
+                const btn = e.currentTarget; btn.disabled = true;
+                btn.textContent = 'Preparing link...';
+                try {
+                  const allowed = shareMode === 'friend' ? (restrictedTo.trim() || serverFriends[0] || '') : '';
+                  await startLiveShare(docId, false, allowed);
+                  drawLive();
+                } catch (err) {
+                  toast('Could not start live share: ' + err.message);
+                  btn.disabled = false;
+                  btn.textContent = 'Create live link';
+                }
+              }
+            }, 'Create live link')
+          )
+        );
+      } else {
+        const shareUrl = location.origin + location.pathname + '#/live/' + info.shareId;
+        const currentAllowed = info.allowedEmails || '';
+
+        const permCheck = h('input', {
+          type: 'checkbox', checked: !!info.canWrite, hidden: true,
+          onchange: async e => {
+            const val = e.target.checked;
+            await setLiveSharePerm(docId, val, info.allowedEmails);
+            toast(val ? 'Friend can now write' : 'Friend is now view-only', 2000);
+            drawLive();
           }
-        }, 'Create live link')
-      );
-    } else {
-      const shareUrl = location.origin + location.pathname + '#/live/' + info.shareId;
-      const permCheck = h('input', {
-        type: 'checkbox', checked: !!info.canWrite, hidden: true,
-        onchange: async e => {
-          const val = e.target.checked;
-          await setLiveSharePerm(docId, val);
-          toast(val ? 'Friend can now write' : 'Friend is now view-only', 2000);
-          drawLive();
-        }
-      });
-      liveBox.replaceChildren(
-        h('h3', null, 'Real-time live sharing'),
-        h('div', { class: 'row', style: 'align-items: center; gap: 8px; margin: 8px 0;' },
-          h('input', { class: 'inp sm', type: 'text', readonly: true, value: shareUrl, style: 'flex: 1;' }),
-          h('button', {
-            class: 'btn sm primary', type: 'button',
-            onclick: () => {
-              if (navigator.clipboard) navigator.clipboard.writeText(shareUrl);
-              toast('Live link copied to clipboard!', 2500);
-            }
-          }, 'Copy link')
-        ),
-        h('div', { class: 'row', style: 'align-items: center; justify-content: space-between; margin-top: 8px;' },
-          h('label', { class: 'chip check' + (info.canWrite ? ' on' : ''), style: 'cursor: pointer;' },
-            permCheck,
-            'Allow friend to write'
+        });
+
+        const picker = emailPicker({
+          title,
+          isFolder: false,
+          initialEmail: currentAllowed || serverFriends[0] || '',
+          getLiveUrl: async () => shareUrl,
+          getFile: () => notebookFile(docId)
+        });
+        picker.refreshChips(serverFriends);
+
+        liveBox.replaceChildren(
+          h('h3', null, 'Real-time live sharing'),
+          h('div', { class: 'row', style: 'align-items: center; gap: 8px; margin: 8px 0;' },
+            h('input', { class: 'inp sm', type: 'text', readonly: true, value: shareUrl, style: 'flex: 1;' }),
+            h('button', {
+              class: 'btn sm primary', type: 'button',
+              onclick: () => {
+                if (navigator.clipboard) navigator.clipboard.writeText(shareUrl);
+                toast('Live link copied to clipboard!', 2500);
+              }
+            }, 'Copy link'),
+            h('button', {
+              class: 'btn sm', type: 'button',
+              title: 'Email link to friend',
+              onclick: picker.sendEmailLink
+            }, 'Email link')
           ),
-          h('button', {
-            class: 'btn sm danger', type: 'button',
-            onclick: async () => {
-              if (!await confirmBox('Stop sharing', 'End this live share link? Anyone looking at it will be disconnected.', 'Stop sharing', true)) return;
-              await stopLiveShare(docId);
-              drawLive();
-            }
-          }, 'End link')
-        ),
-        h('p', { class: 'modal-text small', style: 'margin-top: 6px;' },
-          info.canWrite ? 'Friend has write access: both of you can write on this notebook together.' : 'View-only: friend can watch your live writing without leaving marks.')
-      );
-    }
+          h('div', { style: 'margin: 10px 0 6px;' },
+            h('div', { class: 'modal-text small', style: 'margin-bottom: 4px;' },
+              currentAllowed
+                ? `Protected: only ${currentAllowed} can view when signed in.`
+                : 'Public link: anyone with the link can view without signing in.'
+            ),
+            h('div', { class: 'row', style: 'align-items: center; gap: 6px; flex-wrap: wrap;' },
+              serverFriends.map(fr => h('button', {
+                class: 'chip sm' + (currentAllowed.toLowerCase() === fr.toLowerCase() ? ' on' : ''),
+                type: 'button',
+                onclick: async () => {
+                  await setLiveSharePerm(docId, info.canWrite, fr);
+                  toast('Restricted to ' + fr);
+                  drawLive();
+                }
+              }, 'Share with ' + fr)),
+              h('button', {
+                class: 'chip sm' + (!currentAllowed ? ' on' : ''),
+                type: 'button',
+                onclick: async () => {
+                  await setLiveSharePerm(docId, info.canWrite, '');
+                  toast('Changed to: anyone with link');
+                  drawLive();
+                }
+              }, 'Anyone with link')
+            )
+          ),
+          h('div', { class: 'row', style: 'align-items: center; justify-content: space-between; margin-top: 10px;' },
+            h('label', { class: 'chip check' + (info.canWrite ? ' on' : ''), style: 'cursor: pointer;' },
+              permCheck,
+              'Allow friend to write'
+            ),
+            h('button', {
+              class: 'btn sm danger', type: 'button',
+              onclick: async () => {
+                if (!await confirmBox('Stop sharing', 'End this live share link? Anyone looking at it will be disconnected.', 'Stop sharing', true)) return;
+                await stopLiveShare(docId);
+                drawLive();
+              }
+            }, 'End link')
+          ),
+          h('p', { class: 'modal-text small', style: 'margin-top: 6px;' },
+            info.canWrite ? 'Friend has write access: both of you can write on this notebook together.' : 'View-only: friend can watch your live writing without leaving marks.')
+        );
+      }
+    };
+    renderContent();
   };
   drawLive();
 
@@ -1071,23 +1352,138 @@ export async function shareNotebook(docId) {
   const fileSection = h('div', null,
     h('h3', null, 'Send a file copy'),
     h('p', { class: 'modal-text small' }, 'Export this notebook as a standalone .inkleaf file for backup or offline transfer.'),
-    h('button', {
-      class: 'btn sm', type: 'button',
-      onclick: async () => {
-        const b = busy('Preparing notebook file...');
-        try {
-          const file = await notebookFile(docId);
-          downloadBlob(file, file.name);
-        } catch (e) { toast('Error: ' + e.message); }
-        b.done();
-      }
-    }, 'Download .inkleaf file')
+    h('div', { class: 'row', style: 'gap: 8px; margin-top: 8px;' },
+      h('button', {
+        class: 'btn sm', type: 'button',
+        onclick: async () => {
+          const b = busy('Preparing notebook file...');
+          try {
+            const file = await notebookFile(docId);
+            downloadBlob(file, file.name);
+          } catch (e) { toast('Error: ' + e.message); }
+          b.done();
+        }
+      }, 'Download .inkleaf file'),
+      navigator.share ? h('button', {
+        class: 'btn sm', type: 'button',
+        onclick: async () => {
+          const b = busy('Preparing notebook file...');
+          try {
+            const file = await notebookFile(docId);
+            b.done();
+            if (navigator.canShare && navigator.canShare({ files: [file] })) {
+              await navigator.share({ files: [file], title, text: `Inkleaf notebook: ${title}` });
+            } else {
+              downloadBlob(file, file.name);
+            }
+          } catch (e) { b.done(); if (e.name !== 'AbortError') toast('Error: ' + e.message); }
+        }
+      }, 'Share file via app...') : null
+    )
   );
 
   modal({
     title: `Share "${title}"`,
     wide: true,
     body: h('div', null, liveBox, fileSection)
+  });
+}
+
+export async function shareFolder(folderId) {
+  const f = await db.get('folders', folderId);
+  const title = f ? f.name : 'Folder';
+
+  let serverFriends = [];
+  if (session && navigator.onLine) {
+    try {
+      const meRes = await call('/me');
+      if (meRes.ok) {
+        const meData = await meRes.json();
+        serverFriends = meData.friends || [];
+      }
+    } catch {}
+  }
+
+  // Count notebooks and pages
+  const allF = await db.all('folders');
+  const inside = new Set([folderId]);
+  let grew = true;
+  while (grew) {
+    grew = false;
+    for (const x of allF) {
+      if (!x.deleted && !x.trashed && x.parentId && inside.has(x.parentId) && !inside.has(x.id)) {
+        inside.add(x.id); grew = true;
+      }
+    }
+  }
+  const allDocs = await db.all('docs');
+  const docs = allDocs.filter(d => inside.has(d.folderId) && !d.deleted && !d.trashed && !d.sys);
+  let pageCount = 0;
+  for (const d of docs) {
+    const pages = (await db.byDoc(d.id)).filter(p => !p.deleted && !p.trashed);
+    pageCount += pages.length;
+  }
+
+  const picker = emailPicker({
+    title,
+    isFolder: true,
+    getFile: () => folderFile(folderId)
+  });
+  picker.refreshChips(serverFriends);
+
+  const overviewBox = h('div', { style: 'margin-bottom: 16px;' },
+    h('p', { class: 'modal-text' },
+      `This folder contains ${docs.length} ${docs.length === 1 ? 'notebook' : 'notebooks'} and ${pageCount} ${pageCount === 1 ? 'page' : 'pages'}.`
+    )
+  );
+
+  const emailBox = h('div', { style: 'margin-bottom: 20px;' },
+    h('h3', null, 'Send folder to a friend'),
+    h('p', { class: 'modal-text small' }, "Email the entire folder and all its notebooks as an .inkleaf package:"),
+    picker.el,
+    h('div', { class: 'row', style: 'gap: 8px; margin-top: 8px;' },
+      h('button', {
+        class: 'btn sm primary', type: 'button',
+        onclick: picker.sendEmailFile
+      }, 'Email folder to friend'),
+      navigator.share ? h('button', {
+        class: 'btn sm', type: 'button',
+        onclick: async () => {
+          const b = busy('Preparing folder...');
+          try {
+            const file = await folderFile(folderId);
+            b.done();
+            if (navigator.canShare && navigator.canShare({ files: [file] })) {
+              await navigator.share({ files: [file], title, text: `Inkleaf folder: ${title}` });
+            } else {
+              downloadBlob(file, file.name);
+            }
+          } catch (e) { b.done(); if (e.name !== 'AbortError') toast('Error: ' + e.message); }
+        }
+      }, 'Share via app...') : null
+    )
+  );
+
+  const fileSection = h('div', null,
+    h('h3', null, 'Download folder file'),
+    h('p', { class: 'modal-text small' }, 'Download as a single .inkleaf file. Your friend can open Inkleaf and tap "Open a notebook file" to import all notebooks at once.'),
+    h('button', {
+      class: 'btn sm', type: 'button',
+      onclick: async () => {
+        const b = busy('Preparing folder package...');
+        try {
+          const file = await folderFile(folderId);
+          downloadBlob(file, file.name);
+        } catch (e) { toast('Error: ' + e.message); }
+        b.done();
+      }
+    }, 'Download folder (.inkleaf)')
+  );
+
+  modal({
+    title: `Share folder "${title}"`,
+    wide: true,
+    body: h('div', null, overviewBox, emailBox, fileSection)
   });
 }
 
@@ -1112,7 +1508,7 @@ export async function importBackup(file) {
       }
     }
     bus.emit('synced');
-    toast(data.kind === 'notebook' ? 'Notebook added' : 'Backup restored');
+    toast(data.kind === 'notebook' ? 'Notebook added' : data.kind === 'folder' ? 'Folder added' : 'Backup restored');
     return (data.docs || []).filter(d => !d.deleted && !d.sys).map(d => d.id);
   } catch (e) {
     console.error(e);

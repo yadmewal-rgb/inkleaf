@@ -1,6 +1,6 @@
 import { mountLibrary } from './library.js';
 import { mountEditor } from './editor.js';
-import { initSync, openSettings, fetchLiveDoc, openLiveGuestSocket, closeLiveGuestSocket } from './sync.js';
+import { initSync, openSettings, fetchLiveDoc, openLiveGuestSocket, closeLiveGuestSocket, signIn } from './sync.js';
 import { toast } from './ui.js';
 import { h } from './util.js';
 
@@ -18,7 +18,39 @@ async function route() {
     const ids = d[1].split('+').filter(Boolean), q = new URLSearchParams(d[2] || '');
     if (ids.length === 2 && ids[0] !== ids[1]) {
       const panes = [h('div', { class: 'pane' }), h('div', { class: 'pane' })];
-      root.append(h('div', { class: 'split' }, panes));
+      const handle = h('div', { class: 'split-handle' });
+      const splitEl = h('div', { class: 'split' }, [panes[0], handle, panes[1]]);
+      root.append(splitEl);
+      /* ---- draggable split handle ---- */
+      panes[0].style.flex = '1 1 0'; panes[1].style.flex = '1 1 0';
+      const startDrag = (e) => {
+        e.preventDefault();
+        document.body.classList.add('split-dragging');
+        const vertical = getComputedStyle(splitEl).flexDirection === 'column';
+        const rect = splitEl.getBoundingClientRect();
+        const hSize = vertical ? handle.offsetHeight : handle.offsetWidth;
+        const move = (ev) => {
+          const pt = ev.touches ? ev.touches[0] : ev;
+          let pos = vertical ? pt.clientY - rect.top : pt.clientX - rect.left;
+          const total = vertical ? rect.height : rect.width;
+          const min = 80, max = total - hSize - 80;
+          pos = Math.max(min, Math.min(pos, max));
+          panes[0].style.flex = '0 0 ' + pos + 'px';
+          panes[1].style.flex = '0 0 ' + (total - pos - hSize) + 'px';
+        };
+        const stop = () => {
+          document.body.classList.remove('split-dragging');
+          window.removeEventListener('pointermove', move);
+          window.removeEventListener('pointerup', stop);
+          window.removeEventListener('pointercancel', stop);
+          /* tell each editor to recalculate its size */
+          window.dispatchEvent(new Event('resize'));
+        };
+        window.addEventListener('pointermove', move);
+        window.addEventListener('pointerup', stop);
+        window.addEventListener('pointercancel', stop);
+      };
+      handle.addEventListener('pointerdown', startDrag);
       const eds = [];
       for (let i = 0; i < 2; i++) eds.push(await mountEditor(panes[i], ids[i], { pane: i, other: ids[1 - i] }));
       current = { destroy: async () => { for (const e of eds) await e.destroy(); } };
@@ -49,11 +81,52 @@ async function route() {
         }
       };
     } catch (e) {
-      root.replaceChildren(h('div', { class: 'empty', style: 'padding: 60px 20px; text-align: center;' },
-        h('h2', null, 'Could not open live notebook'),
-        h('p', { class: 'modal-text' }, e.message || 'The link may have ended or expired.'),
-        h('a', { class: 'btn primary', href: '#/', style: 'margin-top: 16px; display: inline-block;' }, 'Go to Inkleaf')
-      ));
+      const msg = e.message || '';
+      if (msg.startsWith('SIGNIN_REQUIRED:')) {
+        const text = msg.slice('SIGNIN_REQUIRED:'.length);
+        root.replaceChildren(h('div', { class: 'empty', style: 'padding: 60px 20px; text-align: center;' },
+          h('h2', null, 'Private notebook'),
+          h('p', { class: 'modal-text' }, text),
+          h('button', {
+            class: 'btn primary',
+            style: 'margin-top: 16px;',
+            onclick: async () => {
+              try {
+                await signIn();
+                route();
+              } catch (err) {
+                toast('Sign in failed: ' + err.message);
+              }
+            }
+          }, 'Sign in with Google')
+        ));
+      } else if (msg.startsWith('FORBIDDEN:')) {
+        const text = msg.slice('FORBIDDEN:'.length);
+        root.replaceChildren(h('div', { class: 'empty', style: 'padding: 60px 20px; text-align: center;' },
+          h('h2', null, 'Access denied'),
+          h('p', { class: 'modal-text' }, text),
+          h('div', { class: 'row', style: 'justify-content: center; gap: 8px; margin-top: 16px;' },
+            h('button', {
+              class: 'btn sm',
+              onclick: async () => {
+                try {
+                  await signIn();
+                  route();
+                } catch (err) {
+                  toast('Sign in failed: ' + err.message);
+                }
+              }
+            }, 'Sign in with another account'),
+            h('a', { class: 'btn sm primary', href: '#/' }, 'Go to Inkleaf')
+          )
+        ));
+      } else {
+        root.replaceChildren(h('div', { class: 'empty', style: 'padding: 60px 20px; text-align: center;' },
+          h('h2', null, 'Could not open live notebook'),
+          h('p', { class: 'modal-text' }, e.message || 'The link may have ended or expired.'),
+          h('a', { class: 'btn primary', href: '#/', style: 'margin-top: 16px; display: inline-block;' }, 'Go to Inkleaf')
+        ));
+      }
     }
   } else {
     const f = /^\/f\/(.+)$/.exec(hash);

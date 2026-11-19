@@ -11,7 +11,7 @@ import { importGoodnotes } from './goodnotes.js';
 import { pdfPagesText } from './pdftools.js';
 import { exportFlow } from './export.js';
 import { renderPageTo } from './render.js';
-import { openSettings, syncNow, syncStatus, shareNotebook, importBackup } from './sync.js';
+import { openSettings, syncNow, syncStatus, shareNotebook, shareFolder, importBackup } from './sync.js';
 import { pageIndex, matchIndex, hwOn } from './hwsearch.js';
 
 const SIZE_OPTS = [{ v: 'a4', label: 'A4 portrait' }, { v: 'a4l', label: 'A4 landscape' }, { v: 'letter', label: 'Letter' }];
@@ -471,6 +471,7 @@ export async function mountLibrary(root, folderId, opts = {}) {
           if (dest !== undefined && dest !== (f.parentId || null)) { await db.put('folders', { ...f, parentId: dest, modified: Date.now() }); render(); }
         }
       },
+      { label: 'Send a copy', icon: I.send, onClick: () => shareFolder(f.id) },
       { label: 'Details', icon: I.info, onClick: () => detailsDialog('f', f.id) },
       '-',
       { label: 'Move to bin', icon: I.trash, danger: true, onClick: async () => { await trashFolder(f); toast(`"${f.name}" and its contents are in the bin`); render(); } }

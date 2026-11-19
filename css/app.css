@@ -527,11 +527,18 @@ button.pageind:hover { background: var(--surface-2); }
 
 /* two notebooks side by side */
 .split { display: flex; height: 100%; height: 100dvh; }
-.split > .pane { flex: 1 1 0; min-width: 0; min-height: 0; position: relative; }
-.split > .pane + .pane { border-left: 3px solid var(--line); }
+.split > .pane { min-width: 0; min-height: 0; position: relative; overflow: hidden; }
+.split > .pane + .pane { border-left: 0; }
+.split-handle { flex: 0 0 5px; background: var(--line); cursor: col-resize; touch-action: none;
+  position: relative; z-index: 10; transition: background .15s; }
+.split-handle:hover, .split-handle:active { background: var(--accent, #4a9); }
+.split-handle::after { content: ''; position: absolute; inset: -4px; } /* wider hit area */
+body.split-dragging { cursor: col-resize !important; user-select: none; -webkit-user-select: none; }
+body.split-dragging iframe, body.split-dragging canvas { pointer-events: none; }
 @media (max-aspect-ratio: 1/1) {
   .split { flex-direction: column; }
-  .split > .pane + .pane { border-left: 0; border-top: 3px solid var(--line); }
+  .split-handle { cursor: row-resize; }
+  body.split-dragging { cursor: row-resize !important; }
 }
 .ed.in-split .bar:first-child { padding-top: 4px; }
 

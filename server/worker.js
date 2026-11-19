@@ -128,10 +128,13 @@ export class User extends DurableObject {
       CREATE INDEX IF NOT EXISTS recs_s ON recs (s);
       CREATE TABLE IF NOT EXISTS parts (k TEXT, id TEXT, n INTEGER, data BLOB, PRIMARY KEY (k, id, n));
       CREATE TABLE IF NOT EXISTS pending (up TEXT, n INTEGER, data BLOB, t INTEGER, PRIMARY KEY (up, n));
-      CREATE TABLE IF NOT EXISTS shares (secret TEXT PRIMARY KEY, docId TEXT, canWrite INTEGER, created INTEGER);
+      CREATE TABLE IF NOT EXISTS shares (secret TEXT PRIMARY KEY, docId TEXT, canWrite INTEGER, created INTEGER, allowedEmails TEXT);
       CREATE INDEX IF NOT EXISTS shares_docId ON shares (docId);
     `);
+    try { this.sql.exec('ALTER TABLE shares ADD COLUMN allowedEmails TEXT'); } catch {}
   }
+
+  async getEmail() { return this.kvGet('email') || ''; }
 
   kvGet(k) { const r = this.sql.exec('SELECT v FROM kv WHERE k = ?', k).toArray()[0]; return r ? r.v : null; }
   kvSet(k, v) { this.sql.exec('INSERT INTO kv (k, v) VALUES (?, ?) ON CONFLICT (k) DO UPDATE SET v = excluded.v', k, String(v)); }
@@ -219,8 +222,41 @@ export class User extends DurableObject {
       const shareId = p[1];
       const [, secret] = shareId.split('_');
       if (!secret) return json({ error: 'no-secret' }, 400);
-      const sh = this.sql.exec('SELECT docId, canWrite FROM shares WHERE secret = ?', secret).toArray()[0];
+      const sh = this.sql.exec('SELECT docId, canWrite, allowedEmails FROM shares WHERE secret = ?', secret).toArray()[0];
       if (!sh) return json({ error: 'invalid-share' }, 404);
+
+      // Access control if restricted to specific emails
+      if (sh.allowedEmails && sh.allowedEmails.trim()) {
+        const allowed = sh.allowedEmails.split(',').map(s => s.trim().toLowerCase()).filter(Boolean);
+        const ownerEmail = String(this.kvGet('email') || '').toLowerCase();
+        let guestToken = '';
+        if (p[2] === 'ws') guestToken = url.searchParams.get('token') || '';
+        else guestToken = ((req.headers.get('Authorization') || '').match(/^Bearer\s+(\S+)$/) || [])[1] || '';
+
+        if (!guestToken) {
+          return json({ error: 'signin-required', message: 'This notebook is private. Please sign in with Google to view it.' }, 401);
+        }
+        const guestSub = guestToken.split('.')[0];
+        if (!guestSub || !/^\d+$/.test(guestSub)) {
+          return json({ error: 'signin-required', message: 'Invalid session. Please sign in with Google.' }, 401);
+        }
+        let guestEmail = '';
+        try {
+          const guestStub = this.env.USER.get(this.env.USER.idFromName(guestSub));
+          guestEmail = (await guestStub.getEmail().catch(() => null) || '').toLowerCase();
+          if (!guestEmail) {
+            const resp = await guestStub.fetch(new Request('http://internal/internal/email'));
+            if (resp.ok) guestEmail = (await resp.json()).email || '';
+          }
+        } catch {}
+        guestEmail = (guestEmail || '').toLowerCase();
+        if (!guestEmail) {
+          return json({ error: 'signin-required', message: 'Could not verify your sign-in. Please sign in again.' }, 401);
+        }
+        if (guestEmail !== ownerEmail && !allowed.includes(guestEmail)) {
+          return json({ error: 'forbidden', message: `Signed in as ${guestEmail}, but this notebook is only shared with ${sh.allowedEmails}.` }, 403);
+        }
+      }
 
       // WebSocket connection for live guest: /live/:shareId/ws
       if (p[2] === 'ws') {
@@ -290,6 +326,10 @@ export class User extends DurableObject {
       }
     }
 
+    if (url.pathname === '/internal/email') {
+      return json({ email: this.kvGet('email') || '' });
+    }
+
     const token = ((req.headers.get('Authorization') || '').match(/^Bearer\s+(\S+)$/) || [])[1];
     const sess = await this.session(token);
     if (!sess) return json({ error: 'signin' }, 401);
@@ -301,28 +341,35 @@ export class User extends DurableObject {
     // POST /share/:docId : create or get a live share link
     if (p[0] === 'share' && p[1] && req.method === 'POST') {
       const docId = p[1];
-      const { canWrite = false } = await req.json().catch(() => ({}));
-      let sh = this.sql.exec('SELECT secret, canWrite FROM shares WHERE docId = ?', docId).toArray()[0];
+      const { canWrite = false, allowedEmails = '' } = await req.json().catch(() => ({}));
+      let sh = this.sql.exec('SELECT secret, canWrite, allowedEmails FROM shares WHERE docId = ?', docId).toArray()[0];
       const secret = sh ? sh.secret : randomKey().slice(0, 16);
+      const emails = String(allowedEmails || '').trim().toLowerCase();
       if (!sh) {
-        this.sql.exec('INSERT INTO shares (secret, docId, canWrite, created) VALUES (?, ?, ?, ?)', secret, docId, canWrite ? 1 : 0, Date.now());
+        this.sql.exec('INSERT INTO shares (secret, docId, canWrite, created, allowedEmails) VALUES (?, ?, ?, ?, ?)', secret, docId, canWrite ? 1 : 0, Date.now(), emails);
+      } else if (allowedEmails !== undefined) {
+        this.sql.exec('UPDATE shares SET allowedEmails = ? WHERE secret = ?', emails, secret);
       }
-      return json({ shareId: `${mySub}_${secret}`, canWrite: sh ? !!sh.canWrite : !!canWrite, secret });
+      return json({ shareId: `${mySub}_${secret}`, canWrite: sh ? !!sh.canWrite : !!canWrite, allowedEmails: sh ? (sh.allowedEmails || '') : emails, secret });
     }
 
     // GET /share/:docId : check status of live share
     if (p[0] === 'share' && p[1] && req.method === 'GET') {
       const docId = p[1];
-      const sh = this.sql.exec('SELECT secret, canWrite FROM shares WHERE docId = ?', docId).toArray()[0];
+      const sh = this.sql.exec('SELECT secret, canWrite, allowedEmails FROM shares WHERE docId = ?', docId).toArray()[0];
       if (!sh) return json({ shared: false });
-      return json({ shared: true, shareId: `${mySub}_${sh.secret}`, canWrite: !!sh.canWrite, secret: sh.secret });
+      return json({ shared: true, shareId: `${mySub}_${sh.secret}`, canWrite: !!sh.canWrite, allowedEmails: sh.allowedEmails || '', secret: sh.secret });
     }
 
-    // PUT /share/:docId/permission : toggle allow friend to write
+    // PUT /share/:docId/permission : toggle allow friend to write & allowed emails
     if (p[0] === 'share' && p[1] && p[2] === 'permission' && req.method === 'PUT') {
       const docId = p[1];
-      const { canWrite = false } = await req.json().catch(() => ({}));
-      this.sql.exec('UPDATE shares SET canWrite = ? WHERE docId = ?', canWrite ? 1 : 0, docId);
+      const { canWrite = false, allowedEmails } = await req.json().catch(() => ({}));
+      if (allowedEmails !== undefined) {
+        this.sql.exec('UPDATE shares SET canWrite = ?, allowedEmails = ? WHERE docId = ?', canWrite ? 1 : 0, String(allowedEmails || '').trim().toLowerCase(), docId);
+      } else {
+        this.sql.exec('UPDATE shares SET canWrite = ? WHERE docId = ?', canWrite ? 1 : 0, docId);
+      }
       for (const ws of this.ctx.getWebSockets()) {
         const a = ws.deserializeAttachment() || {};
         if (a.guest && a.docId === docId) {
@@ -330,8 +377,8 @@ export class User extends DurableObject {
           ws.serializeAttachment(a);
         }
       }
-      this.broadcastLive(docId, { live: true, type: 'perm', docId, canWrite: !!canWrite });
-      return json({ ok: true, canWrite: !!canWrite });
+      this.broadcastLive(docId, { live: true, type: 'perm', docId, canWrite: !!canWrite, allowedEmails });
+      return json({ ok: true, canWrite: !!canWrite, allowedEmails });
     }
 
     // DELETE /share/:docId : revoke live share link
@@ -486,7 +533,10 @@ export class User extends DurableObject {
 
     if (p[0] === 'me' && req.method === 'GET') {
       const n = this.sql.exec('SELECT COUNT(*) AS c FROM sessions').toArray()[0].c;
-      return json({ email: this.kvGet('email'), devices: n, bytes: this.usedBytes(), quota: this.quota(), drive: !!this.kvGet('grt'), seq: this.seq() });
+      const myEmail = String(this.kvGet('email') || '').toLowerCase();
+      const allowedList = (this.env.ALLOWED || '').split(',').map(s => s.trim().toLowerCase()).filter(Boolean);
+      const friends = allowedList.filter(e => e !== myEmail);
+      return json({ email: this.kvGet('email'), devices: n, bytes: this.usedBytes(), quota: this.quota(), drive: !!this.kvGet('grt'), seq: this.seq(), friends });
     }
 
     if (p[0] === 'signout' && req.method === 'POST') {
