@@ -11,7 +11,7 @@ import { importGoodnotes } from './goodnotes.js';
 import { pdfPagesText } from './pdftools.js';
 import { exportFlow } from './export.js';
 import { renderPageTo } from './render.js';
-import { openSettings, syncNow, syncStatus, shareNotebook, shareFolder, importBackup, fetchSharedWithMe, fetchLiveDoc, fetchMyShares } from './sync.js';
+import { openSettings, syncNow, syncStatus, shareNotebook, shareFolder, stopLiveShare, importBackup, fetchSharedWithMe, fetchLiveDoc, fetchMyShares } from './sync.js';
 import { pageIndex, matchIndex, hwOn } from './hwsearch.js';
 
 const SIZE_OPTS = [{ v: 'a4', label: 'A4 portrait' }, { v: 'a4l', label: 'A4 landscape' }, { v: 'letter', label: 'Letter' }];
@@ -339,6 +339,7 @@ export async function mountLibrary(root, folderId, opts = {}) {
     popMenu(anchor, [
       { label: 'Notebook', icon: I.book, onClick: newNotebook },
       { label: 'Folder', icon: I.folder, onClick: newFolder },
+      { label: 'Auto-sort library', icon: I.folder, onClick: autoSortDialog },
       { label: 'Import PDF', icon: I.pdf, onClick: () => pdfInp.click() },
       { label: 'Import a GoodNotes file', icon: I.book, onClick: () => gnInp.click() },
       { label: 'Open a notebook file', icon: I.share, onClick: () => fileInp.click() }
@@ -372,6 +373,177 @@ export async function mountLibrary(root, folderId, opts = {}) {
     if (!name) return;
     await createFolder(name, folderId);
     render();
+  }
+
+  async function autoSortDialog() {
+    const allD = await liveDocs();
+    const allF = await db.all('folders');
+    const hidden = hiddenFolders(allF);
+    const F = allF.filter(f => !hidden.has(f.id));
+
+    const unsorted = allD.filter(d => !d.folderId || !(d.tags && d.tags.length));
+    if (!unsorted.length) {
+      toast('Your library is already well organized! All notebooks have folders and tags.');
+      return;
+    }
+
+    const b = busy('Analyzing library with AI...');
+    const categories = [
+      { name: 'Math', pattern: /(?:math|calculus|algebra|geometry|stats|trig|equation|theorem)/i, tag: 'Math' },
+      { name: 'Physics', pattern: /(?:physics|mechanics|kinematics|thermo|optics|quantum|circuit|halliday)/i, tag: 'Physics' },
+      { name: 'Science', pattern: /(?:chemistry|biology|science|lab|experiment)/i, tag: 'Science' },
+      { name: 'Study', pattern: /(?:lecture|class|exam|course|semester|syllabus|homework|revision)/i, tag: 'Study' },
+      { name: 'Finance', pattern: /(?:budget|finance|money|expense|invoice|bill|tax|bank|accounts)/i, tag: 'Finance' },
+      { name: 'Work', pattern: /(?:work|project|meeting|todo|client|company|contract)/i, tag: 'Work' },
+      { name: 'Personal', pattern: /(?:journal|diary|daily|thoughts|ideas|plan|routine)/i, tag: 'Personal' }
+    ];
+
+    const folderMap = new Map();
+    const tagMap = new Map();
+
+    for (const doc of unsorted) {
+      const title = doc.title || '';
+      let matched = false;
+
+      for (const f of F) {
+        if (title.toLowerCase().includes(f.name.toLowerCase()) || f.name.toLowerCase().includes(title.toLowerCase())) {
+          if (!doc.folderId || doc.folderId !== f.id) {
+            const list = folderMap.get(f.name) || [];
+            list.push({ doc, existingFolder: f });
+            folderMap.set(f.name, list);
+            matched = true;
+            break;
+          }
+        }
+      }
+
+      for (const cat of categories) {
+        if (cat.pattern.test(title)) {
+          if (!doc.folderId) {
+            const list = folderMap.get(cat.name) || [];
+            if (!list.some(x => x.doc.id === doc.id)) {
+              list.push({ doc, existingFolder: F.find(f => f.name.toLowerCase() === cat.name.toLowerCase()) });
+              folderMap.set(cat.name, list);
+            }
+          }
+          if (!(doc.tags || []).includes(cat.tag)) {
+            const list = tagMap.get(cat.tag) || [];
+            if (!list.some(d => d.id === doc.id)) {
+              list.push(doc);
+              tagMap.set(cat.tag, list);
+            }
+          }
+          matched = true;
+        }
+      }
+
+      if (!matched && (!doc.tags || !doc.tags.length)) {
+        const list = tagMap.get('Notes') || [];
+        if (!list.some(d => d.id === doc.id)) {
+          list.push(doc);
+          tagMap.set('Notes', list);
+        }
+      }
+    }
+
+    const suggestions = [];
+    for (const [folderName, items] of folderMap) {
+      if (items.length > 0) {
+        suggestions.push({
+          type: 'folder',
+          folderName,
+          existingFolder: items[0].existingFolder,
+          docs: items.map(x => x.doc)
+        });
+      }
+    }
+
+    for (const [tag, docs] of tagMap) {
+      if (docs.length > 0) {
+        suggestions.push({
+          type: 'tag',
+          tag,
+          docs
+        });
+      }
+    }
+
+    b.done();
+
+    if (!suggestions.length) {
+      toast('No new organization suggestions found.');
+      return;
+    }
+
+    const body = h('div', { class: 'auto-sort-dialog' },
+      h('p', { class: 'modal-text', style: { marginBottom: '12px' } },
+        `AI scanned ${unsorted.length} unsorted ${unsorted.length === 1 ? 'notebook' : 'notebooks'}. Suggested organization:`
+      ),
+      h('div', { class: 'auto-sort-list', style: { display: 'flex', flexDirection: 'column', gap: '8px', maxHeight: '300px', overflowY: 'auto' } },
+        suggestions.map(s => {
+          if (s.type === 'folder') {
+            return h('div', { class: 'sugg-box' },
+              h('div', { class: 'sugg-head' },
+                h('span', null, s.existingFolder ? '📁 Move to folder: ' : '📁 Create folder: '),
+                h('b', null, s.folderName)
+              ),
+              h('div', { class: 'sugg-desc' },
+                `Move ${s.docs.map(d => d.title).join(', ')} here.`
+              )
+            );
+          } else {
+            return h('div', { class: 'sugg-box' },
+              h('div', { class: 'sugg-head' },
+                h('span', null, '🏷️ Add Tag: '),
+                h('b', null, '#' + s.tag)
+              ),
+              h('div', { class: 'sugg-desc' },
+                `Tag ${s.docs.map(d => d.title).join(', ')} for quick filtering.`
+              )
+            );
+          }
+        })
+      )
+    );
+
+    async function applyAll() {
+      let count = 0;
+      for (const s of suggestions) {
+        if (s.type === 'folder') {
+          let fid = s.existingFolder ? s.existingFolder.id : null;
+          if (!fid) {
+            const newF = await createFolder(s.folderName);
+            fid = newF.id;
+          }
+          for (const d of s.docs) {
+            d.folderId = fid;
+            d.modified = Date.now();
+            await db.put('docs', d);
+            count++;
+          }
+        } else if (s.type === 'tag') {
+          for (const d of s.docs) {
+            const tags = new Set(d.tags || []);
+            tags.add(s.tag);
+            d.tags = [...tags];
+            d.modified = Date.now();
+            await db.put('docs', d);
+            count++;
+          }
+        }
+      }
+      toast(`Library organized (${count} updates applied)`);
+      render();
+    }
+
+    modal({
+      title: '✨ Smart Auto-Sort',
+      body,
+      actions: [
+        { label: 'Cancel' },
+        { label: `Apply Suggestions (${suggestions.length})`, primary: true, onClick: applyAll }
+      ]
+    });
   }
 
   // Folder picker used by "Move to".
@@ -450,6 +622,7 @@ export async function mountLibrary(root, folderId, opts = {}) {
   const shareCopy = d => shareNotebook(d.id);
 
   function docMenu(anchor, d) {
+    const isShared = !!d.shared || myShares.has(d.id);
     popMenu(anchor, [
       {
         label: d.fav ? 'Remove from favourites' : 'Add to favourites', icon: d.fav ? I.starOn : I.star, onClick: async () => {
@@ -472,14 +645,23 @@ export async function mountLibrary(root, folderId, opts = {}) {
       },
       { label: 'Duplicate', icon: I.copy, onClick: async () => { await duplicateDoc(d); render(); } },
       { label: 'Export as PDF', icon: I.share, onClick: () => exportFlow(d.id) },
-      { label: 'Send a copy', icon: I.send, onClick: () => shareCopy(d) },
+      { label: 'Share', icon: I.send, onClick: () => shareCopy(d) },
+      isShared ? {
+        label: 'Stop sharing', icon: I.close, danger: true, onClick: async () => {
+          if (!await confirmBox('Stop sharing', `Stop sharing "${d.title}"? Anyone looking at it will be disconnected.`, 'Stop sharing', true)) return;
+          await stopLiveShare(d.id);
+          toast(`Stopped sharing "${d.title}"`);
+          render();
+        }
+      } : null,
       { label: 'Details', icon: I.info, onClick: () => detailsDialog('d', d.id) },
       '-',
       { label: 'Move to bin', icon: I.trash, danger: true, onClick: async () => { await trashDoc(d); toast(`"${d.title}" is in the bin for ${TRASH_DAYS} days`); render(); } }
-    ], { align: 'right' });
+    ].filter(Boolean), { align: 'right' });
   }
 
   function folderMenu(anchor, f) {
+    const isFolderShared = mySharedFolders.has(f.id);
     popMenu(anchor, [
       {
         label: 'Rename', icon: I.edit, onClick: async () => {
@@ -493,11 +675,22 @@ export async function mountLibrary(root, folderId, opts = {}) {
           if (dest !== undefined && dest !== (f.parentId || null)) { await db.put('folders', { ...f, parentId: dest, modified: Date.now() }); render(); }
         }
       },
-      { label: 'Send a copy', icon: I.send, onClick: () => shareFolder(f.id) },
+      { label: 'Share', icon: I.send, onClick: () => shareFolder(f.id) },
+      isFolderShared ? {
+        label: 'Stop sharing folder', icon: I.close, danger: true, onClick: async () => {
+          if (!await confirmBox('Stop sharing folder', `Stop sharing all notebooks in "${f.name}"?`, 'Stop sharing', true)) return;
+          const allDocs = await db.all('docs');
+          for (const d of allDocs.filter(x => x.folderId === f.id)) await stopLiveShare(d.id);
+          mySharedFolders.delete(f.id);
+          await db.setMeta('my_shared_folders', [...mySharedFolders]);
+          toast(`Stopped sharing folder "${f.name}"`);
+          render();
+        }
+      } : null,
       { label: 'Details', icon: I.info, onClick: () => detailsDialog('f', f.id) },
       '-',
       { label: 'Move to bin', icon: I.trash, danger: true, onClick: async () => { await trashFolder(f); toast(`"${f.name}" and its contents are in the bin`); render(); } }
-    ], { align: 'right' });
+    ].filter(Boolean), { align: 'right' });
   }
 
   function sharedDocCard(item) {
@@ -604,6 +797,7 @@ export async function mountLibrary(root, folderId, opts = {}) {
         [...tags].sort().map(t => chip('tag:' + t, '#' + t))
       ),
       h('div', { class: 'grow' }),
+      h('button', { class: 'btn sm', type: 'button', title: 'Auto-sort library with AI', onclick: autoSortDialog }, '✨ Auto-sort'),
       sel);
   }
 

@@ -1133,15 +1133,32 @@ function emailPicker({ title, isFolder, getLiveUrl, getFile, initialEmail = '', 
   };
 
   let chosenEmail = initialEmail;
+  const clearBtn = h('button', {
+    class: 'ic sm',
+    type: 'button',
+    title: 'Clear email',
+    html: I.close,
+    style: 'display: ' + (chosenEmail ? 'inline-flex' : 'none') + '; margin-left: -28px; z-index: 2; color: var(--muted);',
+    onclick: () => {
+      chosenEmail = '';
+      emailInp.value = '';
+      clearBtn.style.display = 'none';
+      if (onEmailChange) onEmailChange('');
+      refreshChips();
+    }
+  });
+
   const emailInp = h('input', {
     class: 'inp sm',
     type: 'email',
     placeholder: "Friend's email (e.g. friend@gmail.com)",
     value: initialEmail,
-    style: 'flex: 1;',
+    style: 'flex: 1; padding-right: 28px;',
     oninput: e => {
       chosenEmail = e.target.value.trim();
+      clearBtn.style.display = chosenEmail ? 'inline-flex' : 'none';
       if (onEmailChange) onEmailChange(chosenEmail);
+      refreshChips();
     }
   });
 
@@ -1155,8 +1172,14 @@ function emailPicker({ title, isFolder, getLiveUrl, getFile, initialEmail = '', 
         type: 'button',
         title: 'Share with ' + f,
         onclick: () => {
-          chosenEmail = f;
-          emailInp.value = f;
+          if (chosenEmail.toLowerCase() === f.toLowerCase()) {
+            chosenEmail = '';
+            emailInp.value = '';
+          } else {
+            chosenEmail = f;
+            emailInp.value = f;
+          }
+          clearBtn.style.display = chosenEmail ? 'inline-flex' : 'none';
           if (onEmailChange) onEmailChange(chosenEmail);
           refreshChips(suggested);
         }
@@ -1228,7 +1251,7 @@ function emailPicker({ title, isFolder, getLiveUrl, getFile, initialEmail = '', 
 
   return {
     el: h('div', { class: 'email-picker-wrap' },
-      h('div', { class: 'row', style: 'align-items: center; gap: 8px; margin: 8px 0;' }, emailInp),
+      h('div', { class: 'row', style: 'align-items: center; gap: 0; margin: 8px 0; width: 100%;' }, emailInp, clearBtn),
       chipsBox
     ),
     emailInp,
@@ -1358,6 +1381,8 @@ export async function shareNotebook(docId) {
         });
         picker.refreshChips(serverFriends);
 
+        const allowedList = currentAllowed.split(',').map(s => s.trim()).filter(Boolean);
+
         liveBox.replaceChildren(
           h('h3', null, 'Real-time live sharing'),
           h('div', { class: 'row', style: 'align-items: center; gap: 8px; margin: 8px 0;' },
@@ -1375,10 +1400,50 @@ export async function shareNotebook(docId) {
               onclick: picker.sendEmailLink
             }, 'Email link')
           ),
+          allowedList.length ? h('div', { style: 'margin: 12px 0 8px;' },
+            h('div', { class: 'modal-text small', style: 'font-weight: 600; margin-bottom: 6px;' }, 'People with access:'),
+            ...allowedList.map(email => h('div', {
+              class: 'row',
+              style: 'align-items: center; justify-content: space-between; padding: 6px 10px; background: var(--surface-2); border-radius: 8px; margin-bottom: 4px;'
+            },
+              h('div', { class: 'row', style: 'align-items: center; gap: 8px;' },
+                h('span', { html: I.users, style: 'color: var(--accent); display: flex;' }),
+                h('span', { style: 'font-size: 13.5px; font-weight: 500;' }, email)
+              ),
+              h('div', { class: 'row', style: 'align-items: center; gap: 8px;' },
+                h('span', { class: 'bk-sub', style: 'font-size: 12px;' }, info.canWrite ? 'Can edit' : 'View only'),
+                h('button', {
+                  class: 'btn sm danger',
+                  type: 'button',
+                  title: 'Remove access for ' + email,
+                  onclick: async () => {
+                    const remaining = allowedList.filter(e => e.toLowerCase() !== email.toLowerCase());
+                    const docObj = await db.get('docs', docId);
+                    const parentFolder = docObj?.folderId ? await db.get('folders', docObj.folderId) : null;
+                    const extra = {
+                      title: docObj?.title || title,
+                      cover: docObj?.cover || '',
+                      folderId: docObj?.folderId || '',
+                      folderName: parentFolder ? parentFolder.name : ''
+                    };
+                    if (remaining.length === 0) {
+                      if (!await confirmBox('Remove access', `Remove access for ${email}? This will stop sharing this notebook.`, 'Remove access', true)) return;
+                      await stopLiveShare(docId);
+                      toast(`Removed ${email}. Notebook is no longer shared.`);
+                    } else {
+                      await setLiveSharePerm(docId, info.canWrite, remaining.join(', '), extra);
+                      toast(`Removed access for ${email}`);
+                    }
+                    drawLive();
+                  }
+                }, 'Remove access')
+              )
+            ))
+          ) : null,
           h('div', { style: 'margin: 10px 0 6px;' },
             h('div', { class: 'modal-text small', style: 'margin-bottom: 4px;' },
               currentAllowed
-                ? `Protected: only ${currentAllowed} can view when signed in.`
+                ? `Add or switch friend:`
                 : 'Public link: anyone with the link can view without signing in.'
             ),
             h('div', { class: 'row', style: 'align-items: center; gap: 6px; flex-wrap: wrap;' },
@@ -1418,7 +1483,7 @@ export async function shareNotebook(docId) {
               }, 'Anyone with link')
             )
           ),
-          h('div', { class: 'row', style: 'align-items: center; justify-content: space-between; margin-top: 10px;' },
+          h('div', { class: 'row', style: 'align-items: center; justify-content: space-between; margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--line);' },
             h('label', { class: 'chip check' + (info.canWrite ? ' on' : ''), style: 'cursor: pointer;' },
               permCheck,
               'Allow friend to write'
@@ -1426,11 +1491,12 @@ export async function shareNotebook(docId) {
             h('button', {
               class: 'btn sm danger', type: 'button',
               onclick: async () => {
-                if (!await confirmBox('Stop sharing', 'End this live share link? Anyone looking at it will be disconnected.', 'Stop sharing', true)) return;
+                if (!await confirmBox('Stop sharing', 'Stop sharing this notebook completely? Anyone looking at it will be disconnected and it will be removed from their Shared tab.', 'Stop sharing', true)) return;
                 await stopLiveShare(docId);
+                toast('Stopped sharing notebook');
                 drawLive();
               }
-            }, 'End link')
+            }, 'Stop sharing notebook')
           ),
           h('p', { class: 'modal-text small', style: 'margin-top: 6px;' },
             info.canWrite ? 'Friend has write access: both of you can write on this notebook together.' : 'View-only: friend can watch your live writing without leaving marks.')
@@ -1525,6 +1591,10 @@ export async function shareFolder(folderId) {
   picker.refreshChips(serverFriends);
 
   let targetFriend = serverFriends[0] || '';
+  const myShares = new Set((await db.getMeta('my_shares')) || []);
+  const mySharedFolders = new Set((await db.getMeta('my_shared_folders')) || []);
+  const isFolderShared = mySharedFolders.has(folderId) || docs.some(d => myShares.has(d.id));
+
   const friendInp = h('input', {
     class: 'inp sm',
     type: 'email',
@@ -1534,6 +1604,7 @@ export async function shareFolder(folderId) {
   });
   friendInp.oninput = () => { targetFriend = friendInp.value.trim(); };
 
+  let folderModal = null;
   const directShareBox = h('div', { style: 'margin-bottom: 20px;' },
     h('h3', null, 'Share directly to friend\'s Inkleaf'),
     h('p', { class: 'modal-text small' }, 'This folder will appear automatically under the "Shared" tab in your friend\'s Inkleaf:'),
@@ -1573,6 +1644,7 @@ export async function shareFolder(folderId) {
             b.done();
             btn.disabled = false;
             toast(`Folder "${title}" shared with ${email}! It will appear in their Shared tab.`);
+            if (folderModal) folderModal.close();
           } catch (err) {
             b.done();
             btn.disabled = false;
@@ -1580,7 +1652,28 @@ export async function shareFolder(folderId) {
           }
         }
       }, 'Share folder with friend')
-    )
+    ),
+    isFolderShared ? h('div', { class: 'row', style: 'margin-top: 10px; justify-content: flex-end;' },
+      h('button', {
+        class: 'btn sm danger', type: 'button',
+        onclick: async () => {
+          if (!await confirmBox('Stop sharing folder', `Stop sharing all notebooks in "${title}"? They will be removed from your friend's Shared tab.`, 'Stop sharing', true)) return;
+          const b = busy('Stopping folder share...');
+          try {
+            for (const d of docs) await stopLiveShare(d.id);
+            const fShares = new Set((await db.getMeta('my_shared_folders')) || []);
+            fShares.delete(folderId);
+            await db.setMeta('my_shared_folders', [...fShares]);
+            b.done();
+            toast(`Stopped sharing folder "${title}"`);
+            if (folderModal) folderModal.close();
+          } catch (err) {
+            b.done();
+            toast('Error: ' + err.message);
+          }
+        }
+      }, 'Stop sharing folder')
+    ) : null
   );
 
   const overviewBox = h('div', { style: 'margin-bottom: 16px;' },
@@ -1632,7 +1725,7 @@ export async function shareFolder(folderId) {
     }, 'Download folder (.inkleaf)')
   );
 
-  modal({
+  folderModal = modal({
     title: `Share folder "${title}"`,
     wide: true,
     body: h('div', null, overviewBox, directShareBox, emailBox, fileSection)
@@ -1848,10 +1941,31 @@ export async function openSettings() {
   const offHwStatus = bus.on('hw-status', () => drawHw());
 
   const m = modal({
-    title: 'Settings',
+    title: 'Settings (v52)',
     wide: true,
     onClose: () => { offUsage(); offHwStatus(); },
     body: h('div', null,
+      h('div', {
+        class: 'row',
+        style: 'align-items: center; justify-content: space-between; padding: 10px 14px; background: var(--surface-2); border-radius: 10px; margin-bottom: 16px;'
+      },
+        h('div', null,
+          h('div', { style: 'font-weight: 600; font-size: 14.5px;' }, 'Inkleaf v52'),
+          h('div', { class: 'bk-sub', style: 'margin-top: 2px;' }, 'Handwriting notes · Real-time sync · PWA')
+        ),
+        h('button', {
+          class: 'btn sm', type: 'button',
+          title: 'Update or reload app cache',
+          onclick: () => {
+            if ('serviceWorker' in navigator) {
+              navigator.serviceWorker.getRegistrations().then(regs => {
+                for (const r of regs) r.update();
+              });
+            }
+            location.reload();
+          }
+        }, 'Check for updates')
+      ),
       h('h3', null, 'Handwriting search'),
       h('p', { class: 'modal-text' },
         'Search your handwritten notes as you type. Uses fast Cloud AI (Gemini Flash) with 1 call per page when online, and syncs search index across devices.'),
@@ -1892,7 +2006,11 @@ export async function openSettings() {
       h('p', { class: 'modal-text small' }, 'Snapshots hold your pages and writing. Imported PDFs and pictures are not duplicated in them; they stay with the library.'),
       bkList,
       h('div', { class: 'row' },
-        h('button', { class: 'btn', type: 'button', onclick: async e => { const b = e.currentTarget; b.disabled = true; await autoBackup(true); b.disabled = false; fillBk(); } }, 'Back up now')))
+        h('button', { class: 'btn', type: 'button', onclick: async e => { const b = e.currentTarget; b.disabled = true; await autoBackup(true); b.disabled = false; fillBk(); } }, 'Back up now')),
+      h('div', { style: 'margin-top: 24px; padding-top: 14px; border-top: 1px solid var(--line); text-align: center; color: var(--muted); font-size: 12.5px;' },
+        'Inkleaf version 52 · Build 2026.11'
+      )
+    )
   });
   fillBk();
 }

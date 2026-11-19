@@ -6,7 +6,7 @@ import { straightenScan } from './scan.js';
 import { regionCanvas, textLines, textUnder, hlGroups, hlRegion, hlShot } from './pageshots.js';
 import { h, uid, nextZ, clamp, bus, distSeg, downloadBlob, safeName, debounce, fill, imgReady } from './util.js';
 import * as R from './render.js';
-import { pageLinks, resolveDest, pdfOutline, pageText, textMatches } from './pdftools.js';
+import { pageLinks, resolveDest, pdfOutline, generatePdfOutline, pageText, textMatches } from './pdftools.js';
 import { I } from './icons.js';
 import { popMenu, popover, confirmBox, promptText, toast, modal, chipGroup, templatePicker, PAPER_OPTS, busy } from './ui.js';
 import { exportFlow, pdfAsPictures } from './export.js';
@@ -2472,20 +2472,106 @@ export async function mountEditor(root, docId, opts = {}) {
   }
 
   async function outlineDialog() {
-    const rows = [];
-    for (const aid of new Set(pages.filter(p => p.pdf && !p.tpl).map(p => p.pdf.a))) {
-      for (const o of await pdfOutline(aid).catch(() => [])) rows.push({ ...o, aid });
+    const aidSet = [...new Set(pages.filter(p => p.pdf && !p.tpl).map(p => p.pdf.a))];
+    if (!aidSet.length) { toast('No PDF attached to this notebook.'); return; }
+    const primaryAid = aidSet[0];
+
+    async function loadRows() {
+      const list = [];
+      let isAi = false;
+      for (const aid of aidSet) {
+        let o = await pdfOutline(aid).catch(() => []);
+        if (!o.length) {
+          o = (await db.getMeta('toc:' + aid)) || [];
+          if (o.length) isAi = true;
+        }
+        for (const r of o) list.push({ ...r, aid });
+      }
+      return { list, isAi };
     }
-    if (!rows.length) { toast('This PDF has no table of contents.'); return; }
-    const m = modal({
-      title: 'Contents',
-      body: h('div', { class: 'outline' }, rows.map(o => {
+
+    let { list: rows, isAi } = await loadRows();
+    let dialogModal = null;
+
+    function renderBody(contentBox) {
+      contentBox.replaceChildren();
+
+      if (!rows.length) {
+        contentBox.appendChild(h('div', { class: 'outline-empty' },
+          h('p', { class: 'modal-text', style: { marginBottom: '14px', textAlign: 'center' } },
+            'This PDF has no built-in table of contents.'
+          ),
+          h('div', { style: { display: 'flex', justifyContent: 'center' } },
+            h('button', {
+              class: 'btn primary',
+              type: 'button',
+              onclick: () => triggerScan(contentBox)
+            }, '✨ Generate outline with AI')
+          )
+        ));
+        return;
+      }
+
+      const outlineWrap = h('div', { class: 'outline' });
+
+      if (isAi) {
+        outlineWrap.appendChild(h('div', { class: 'ai-badge-row' },
+          h('div', { class: 'ai-badge-text' },
+            h('b', null, '✨ Generated with AI'),
+            h('span', null, `Found ${rows.length} ${rows.length === 1 ? 'section' : 'sections'}`)
+          ),
+          h('button', {
+            class: 'btn sm',
+            type: 'button',
+            onclick: () => triggerScan(contentBox)
+          }, 'Re-scan')
+        ));
+      }
+
+      for (const o of rows) {
         const k = pages.findIndex(p => p.pdf && p.pdf.a === o.aid && p.pdf.i === o.i);
-        return h('button', {
-          class: 'ol', type: 'button', disabled: k < 0, style: { paddingLeft: 10 + o.depth * 16 + 'px' },
-          onclick: () => { m.close(); scrollToPage(k); }
-        }, h('span', null, o.title), h('small', null, k >= 0 ? String(k + 1) : ''));
-      }))
+        outlineWrap.appendChild(h('button', {
+          class: 'ol',
+          type: 'button',
+          disabled: k < 0,
+          style: { paddingLeft: (10 + (o.depth || 0) * 16) + 'px' },
+          onclick: () => { dialogModal.close(); if (k >= 0) scrollToPage(k); }
+        },
+          h('span', null, o.title || 'Untitled'),
+          h('small', null, k >= 0 ? String(k + 1) : '')
+        ));
+      }
+
+      contentBox.appendChild(outlineWrap);
+    }
+
+    async function triggerScan(contentBox) {
+      const b = busy('Scanning PDF headings...');
+      try {
+        const generated = await generatePdfOutline(primaryAid);
+        b.done();
+        if (!generated || !generated.length) {
+          toast('Could not find chapter headings in this PDF.');
+          return;
+        }
+        await db.setMeta('toc:' + primaryAid, generated);
+        const updated = await loadRows();
+        rows = updated.list;
+        isAi = true;
+        toast(`Table of contents ready (${rows.length} sections)`);
+        renderBody(contentBox);
+      } catch (err) {
+        b.done();
+        toast('Failed to generate outline: ' + (err.message || err));
+      }
+    }
+
+    const bodyDiv = h('div', { class: 'outline-container' });
+    renderBody(bodyDiv);
+
+    dialogModal = modal({
+      title: 'PDF Contents',
+      body: bodyDiv
     });
   }
 
@@ -5748,5 +5834,5 @@ export async function mountEditor(root, docId, opts = {}) {
   if (opts.q) { findInp.value = opts.q; openFind(); } // opened from a library search: show the matches
   drawTray();
 
-  return { destroy };
+  return { destroy, outlineDialog };
 }

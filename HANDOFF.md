@@ -8,50 +8,40 @@
 3. "make a folder shareable like this is also" -> Added folder sharing in the library with 1-click direct sharing, email, and .inkleaf folder packaging.
 4. "can it be done like when i share a file or folder with putting my friends mail address then it will appear thier 'shared \" menu" -> Added the full "Shared with me" automatic library integration for notebooks and folders.
 5. "mark shared niotebook with some sign like in googledrive so that any can know which document is shared or not" -> Added Google Drive-style 2-person shared indicators on the card cover and next to the notebook / folder title.
+6. "how to remove anyone if it is shared with someone , show version in setting also" -> Added clear access removal UI (clear button ✕, Remove access button per person, Stop sharing button in dialog and card menus) and displayed app version `v52` in Settings.
 
-## Done (v51 Release)
-1. **Google Drive-style Shared Marks (`js/icons.js`, `css/app.css`, `js/library.js`, `js/sync.js`, `server/worker.js`)**:
-   - Added standard Feather `users` (2-person) icon to `I.users`.
-   - Any shared notebook or folder displays a subtle white circular badge with the green 2-person icon in the top-left of its cover (`.shared-mark-badge`).
-   - Next to the document / folder title in the library meta, a green 2-person icon (`.shared-name-icon`) is displayed.
-   - Private notebooks and folders remain plain, making shared vs. private items instantly identifiable at a glance.
-   - Added `/shares` endpoint to Cloudflare worker and `fetchMyShares()` in `sync.js` to automatically discover all active shared documents and folders on sign-in.
-2. **"Shared with me" Central Registry (`server/worker.js`)**:
-   - Added singleton `shares_registry` Durable Object storing `inbox_shares` table with `(shareId, targetEmail)` indexing and folder association.
-   - Internal `/registry/for?email=...`, `/registry/add`, `/registry/del` endpoints.
-   - `POST /share/:docId`: registers shares for recipient emails with title, cover, and folder metadata.
-   - `PUT /share/:docId/permission`: automatically syncs changes to the registry.
-   - `DELETE /share/:docId`: removes shares from the recipient's inbox.
-   - `GET /shared-with-me`: pulls all incoming shared items for the signed-in user.
-3. **"Shared" Filter & Navigation in Library (`js/library.js`, `css/app.css`)**:
-   - Added `Shared` filter chip in library tools with count indicator (e.g. `Shared (2)`).
-   - Dynamic view showing incoming shared folders and standalone notebooks.
-   - Folder expansion: clicking a shared folder reveals all notebooks shared inside that folder with dedicated breadcrumb navigation (`Library / Shared with me / <Folder Name>`).
-   - Cards display owner attribution (`Shared by friend@gmail.com`) and permission status (`Can edit` / `View only`).
-   - Card options menu: "Open live notebook", "Copy link", and "Save a personal copy" to local library.
-4. **Direct Folder Sharing (`js/sync.js`)**:
-   - Added "Share directly to friend's Inkleaf" section to the folder share modal with friend quick-pick chips.
-   - 1-click shares all notebooks in the folder with the friend's email and tags them with the folder name.
-5. **Resizable Side-by-Side Split View (`css/app.css`, `js/app.js`)**:
-   - Added a 5px draggable `.split-handle` with hover/touch highlighting and live pointer drag support.
+## Done (v52 Release)
+1. **Remove Access & Stop Sharing UI (`js/sync.js`, `js/library.js`)**:
+   - Added `✕` clear button inside email picker and toggle-off capability on friend chips before sharing.
+   - In the live Share dialog, added **"People with access"** section displaying authorized emails with a dedicated red **"Remove access"** button.
+   - Added prominent red **"Stop sharing notebook"** button with confirmation dialog.
+   - Added **"Stop sharing folder"** button in folder share dialog.
+   - Added direct **"Stop sharing"** item to both notebook and folder card `...` menus in the Library.
+2. **Version Display in Settings (`js/sync.js`)**:
+   - Modal header displays `Settings (v52)`.
+   - Top version banner displays `Inkleaf v52 · Handwriting notes · Real-time sync · PWA` with a **"Check for updates"** reload button.
+   - Bottom footer displays `Inkleaf version 52 · Build 2026.11`.
+3. **AI PDF Table of Contents (`js/editor.js`, `js/pdftools.js`, `css/app.css`)**:
+   - Automated heading extraction and AI Gemini cleanup for PDFs lacking built-in tables of contents.
+4. **Smart Auto-Sort (`js/library.js`, `css/app.css`)**:
+   - Library AI auto-sort action suggesting folder placements and tags.
+5. **Google Drive-style Shared Marks (`js/icons.js`, `css/app.css`, `js/library.js`, `js/sync.js`)**:
+   - 2-person badge on covers and beside document/folder titles.
 6. **Service Worker Cache**:
-   - Bumped to `inkleaf-v51` in `sw.js`.
+   - Bumped to `inkleaf-v52` in `sw.js`.
 
 ## Tested
 - Verified JS syntax across all files with `node --check`.
 - Tested local server at `http://localhost:8080/`.
-- Verified Library renders the Google Drive-style 2-person shared marks on shared notebooks and folders, while leaving private ones plain.
+- Verified Settings modal displays `v52` header and top banner.
+- Verified Share modal displays `Remove access` and `Stop sharing notebook` buttons.
 - Saved screenshots to `C:\Users\yadram\AgentTools\shots\`:
-  - `library_shared_marks.png`
-  - `shared_items_view.png`
-  - `shared_folder_inside.png`
-  - `folder_share_modal_open.png`
+  - `settings_v52.png`
+  - `remove_access_modal.png`
+  - `share_picker_clear.png`
 
 ## Live now
 - Running locally at http://localhost:8080.
-- 3 commits committed locally to git `main` branch.
 
 ## Owner must do
-- Push to GitHub: Because Git Credential Manager requires an interactive one-time GitHub browser login on this PC, open PowerShell and run:
-  `cd C:\Users\Yadram\Inkleaf; git push origin main`
-  This will open a browser window to authorize your GitHub account once, and immediately deploy the update to GitHub Pages and Cloudflare Worker!
+- Push to GitHub: Run `git push origin main` in PowerShell to deploy `v52` to GitHub Pages and Cloudflare Worker.
