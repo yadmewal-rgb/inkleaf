@@ -36,6 +36,7 @@
 - Verified Settings modal displays `v52` header and top banner.
 - Verified Share modal displays `Remove access` and `Stop sharing notebook` buttons.
 - Saved screenshots to `C:\Users\yadram\AgentTools\shots\`:
+  - `inkleaf_ai_features_live.png` (AI PDF Outline and Smart Auto-Sort dialogs)
   - `settings_v52.png`
   - `remove_access_modal.png`
   - `share_picker_clear.png`
