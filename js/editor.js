@@ -2476,27 +2476,26 @@ export async function mountEditor(root, docId, opts = {}) {
     if (!aidSet.length) { toast('No PDF attached to this notebook.'); return; }
     const primaryAid = aidSet[0];
 
-    async function loadRows() {
-      const list = [];
-      let isAi = false;
-      for (const aid of aidSet) {
-        let o = await pdfOutline(aid).catch(() => []);
-        if (!o.length) {
-          o = (await db.getMeta('toc:' + aid)) || [];
-          if (o.length) isAi = true;
-        }
-        for (const r of o) list.push({ ...r, aid });
-      }
-      return { list, isAi };
+    const nativeList = [];
+    for (const aid of aidSet) {
+      for (const o of await pdfOutline(aid).catch(() => [])) nativeList.push({ ...o, aid });
     }
 
-    let { list: rows, isAi } = await loadRows();
+    const aiList = [];
+    for (const aid of aidSet) {
+      const saved = (await db.getMeta('toc:' + aid)) || [];
+      for (const o of saved) aiList.push({ ...o, aid });
+    }
+
+    let showMode = aiList.length ? 'ai' : nativeList.length ? 'native' : 'none';
     let dialogModal = null;
 
     function renderBody(contentBox) {
       contentBox.replaceChildren();
 
-      if (!rows.length) {
+      const activeRows = showMode === 'ai' ? aiList : nativeList;
+
+      if (!activeRows.length) {
         contentBox.appendChild(h('div', { class: 'outline-empty' },
           h('p', { class: 'modal-text', style: { marginBottom: '14px', textAlign: 'center' } },
             'This PDF has no built-in table of contents.'
@@ -2514,21 +2513,49 @@ export async function mountEditor(root, docId, opts = {}) {
 
       const outlineWrap = h('div', { class: 'outline' });
 
-      if (isAi) {
+      if (showMode === 'ai') {
         outlineWrap.appendChild(h('div', { class: 'ai-badge-row' },
           h('div', { class: 'ai-badge-text' },
             h('b', null, '✨ Generated with AI'),
-            h('span', null, `Found ${rows.length} ${rows.length === 1 ? 'section' : 'sections'}`)
+            h('span', null, `Found ${aiList.length} ${aiList.length === 1 ? 'section' : 'sections'}`)
           ),
-          h('button', {
-            class: 'btn sm',
-            type: 'button',
-            onclick: () => triggerScan(contentBox)
-          }, 'Re-scan')
+          h('div', { style: { display: 'flex', gap: '6px' } },
+            nativeList.length ? h('button', {
+              class: 'btn sm',
+              type: 'button',
+              title: 'Switch back to original bookmarks in the PDF',
+              onclick: () => { showMode = 'native'; renderBody(contentBox); }
+            }, 'Original') : null,
+            h('button', {
+              class: 'btn sm',
+              type: 'button',
+              onclick: () => triggerScan(contentBox)
+            }, 'Re-scan')
+          )
+        ));
+      } else {
+        outlineWrap.appendChild(h('div', { class: 'ai-badge-row built-in' },
+          h('div', { class: 'ai-badge-text' },
+            h('b', null, 'PDF Bookmarks'),
+            h('span', null, `${nativeList.length} ${nativeList.length === 1 ? 'item' : 'items'} in file`)
+          ),
+          h('div', { style: { display: 'flex', gap: '6px' } },
+            aiList.length ? h('button', {
+              class: 'btn sm',
+              type: 'button',
+              title: 'Switch to AI outline',
+              onclick: () => { showMode = 'ai'; renderBody(contentBox); }
+            }, 'Use AI') : null,
+            h('button', {
+              class: 'btn sm',
+              type: 'button',
+              onclick: () => triggerScan(contentBox)
+            }, '✨ Re-scan with AI')
+          )
         ));
       }
 
-      for (const o of rows) {
+      for (const o of activeRows) {
         const k = pages.findIndex(p => p.pdf && p.pdf.a === o.aid && p.pdf.i === o.i);
         outlineWrap.appendChild(h('button', {
           class: 'ol',
@@ -2555,10 +2582,13 @@ export async function mountEditor(root, docId, opts = {}) {
           return;
         }
         await db.setMeta('toc:' + primaryAid, generated);
-        const updated = await loadRows();
-        rows = updated.list;
-        isAi = true;
-        toast(`Table of contents ready (${rows.length} sections)`);
+        aiList.length = 0;
+        for (const aid of aidSet) {
+          const saved = (await db.getMeta('toc:' + aid)) || [];
+          for (const o of saved) aiList.push({ ...o, aid });
+        }
+        showMode = 'ai';
+        toast(`Table of contents ready (${aiList.length} sections)`);
         renderBody(contentBox);
       } catch (err) {
         b.done();

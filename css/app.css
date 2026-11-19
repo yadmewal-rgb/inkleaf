@@ -299,6 +299,8 @@ button.pageind:hover { background: var(--surface-2); }
   background: var(--accent-soft); border: 1px solid var(--accent); border-radius: 8px;
   padding: 8px 12px; margin-bottom: 8px;
 }
+.ai-badge-row.built-in { background: var(--surface-2); border-color: var(--line); }
+.ai-badge-row.built-in b { color: var(--ink); }
 .ai-badge-text { display: flex; flex-direction: column; gap: 2px; font-size: 12px; color: var(--ink); }
 .ai-badge-text b { color: var(--accent); font-size: 12.5px; }
 .outline-empty { padding: 16px 8px; text-align: center; }

@@ -10,7 +10,15 @@
 5. "mark shared niotebook with some sign like in googledrive so that any can know which document is shared or not" -> Added Google Drive-style 2-person shared indicators on the card cover and next to the notebook / folder title.
 6. "how to remove anyone if it is shared with someone , show version in setting also" -> Added clear access removal UI (clear button ✕, Remove access button per person, Stop sharing button in dialog and card menus) and displayed app version `v52` in Settings.
 
-## Done (v52 Release)
+7. "Auto Table of Contents for PDFs... i couldnt find it" -> When a PDF has built-in bookmarks (even messy ones like question/statement text), the AI button was hidden. Added a permanent top action bar in the PDF Contents dialog with a visible **"✨ Re-scan with AI"** button on every PDF, plus instant switching between the original bookmarks and the AI outline.
+
+## Done (v53 Release)
+1. **Always-Available AI Re-scan on All PDFs (`js/editor.js`, `css/app.css`)**:
+   - If a PDF has built-in bookmarks, shows a top header banner with the bookmark count and a prominent **"✨ Re-scan with AI"** button.
+   - If an AI outline is active, shows **"✨ Generated with AI"** with **"Re-scan"** and an **"Original"** button to toggle back to built-in bookmarks anytime.
+   - If no bookmarks exist, shows the **"✨ Generate outline with AI"** button.
+2. **Settings Version & Cache Bump**:
+   - Bumped to `v53` in `sw.js` and `js/sync.js`.
 1. **Remove Access & Stop Sharing UI (`js/sync.js`, `js/library.js`)**:
    - Added `✕` clear button inside email picker and toggle-off capability on friend chips before sharing.
    - In the live Share dialog, added **"People with access"** section displaying authorized emails with a dedicated red **"Remove access"** button.
