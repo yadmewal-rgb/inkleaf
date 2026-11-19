@@ -286,24 +286,75 @@ button.pageind:hover { background: var(--surface-2); }
 .fmark.cur { background: rgba(255, 140, 0, .6); outline: 1.5px solid #e8590c; }
 
 /* PDF contents */
-.outline { display: flex; flex-direction: column; }
+.outline { display: flex; flex-direction: column; gap: 2px; }
 .ol {
-  display: flex; align-items: baseline; gap: 12px; justify-content: space-between; width: 100%;
-  border: 0; background: transparent; text-align: left; padding: 9px 10px; border-radius: 8px;
+  display: flex; align-items: baseline; gap: 10px; justify-content: space-between; width: 100%;
+  border: 0; background: transparent; text-align: left; padding: 7px 8px; border-radius: 8px;
+  color: var(--ink); cursor: pointer; transition: background .12s ease;
 }
 .ol:hover { background: var(--surface-2); }
+.ol.on { background: var(--accent-soft); color: var(--accent); font-weight: 600; }
+.ol.on small { color: var(--accent); font-weight: 600; }
 .ol:disabled { opacity: .5; cursor: default; }
-.ol small { color: var(--muted); font-variant-numeric: tabular-nums; }
+.ol small { color: var(--muted); font-variant-numeric: tabular-nums; flex: none; font-size: 11.5px; }
+.ol-title {
+  flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis;
+  display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; line-height: 1.35; font-size: 12.5px;
+}
+.ol-title.sec { font-weight: 600; }
 .ai-badge-row {
-  display: flex; align-items: center; justify-content: space-between; gap: 8px;
+  display: flex; align-items: center; justify-content: space-between; gap: 6px;
   background: var(--accent-soft); border: 1px solid var(--accent); border-radius: 8px;
-  padding: 8px 12px; margin-bottom: 8px;
+  padding: 6px 10px; margin-bottom: 8px;
 }
 .ai-badge-row.built-in { background: var(--surface-2); border-color: var(--line); }
 .ai-badge-row.built-in b { color: var(--ink); }
-.ai-badge-text { display: flex; flex-direction: column; gap: 2px; font-size: 12px; color: var(--ink); }
-.ai-badge-text b { color: var(--accent); font-size: 12.5px; }
+.ai-badge-text { display: flex; flex-direction: column; gap: 1px; font-size: 11.5px; color: var(--ink); }
+.ai-badge-text b { color: var(--accent); font-size: 12px; }
+.ai-badge-row.built-in .ai-badge-text b { color: var(--ink); }
+.ai-badge-row .btn.sm { height: 26px; padding: 0 8px; font-size: 11.5px; }
 .outline-empty { padding: 16px 8px; text-align: center; }
+
+/* GoodNotes-style sidebar tabs */
+.panel-tabs {
+  display: flex;
+  background: var(--surface-2);
+  border-radius: 9px;
+  padding: 3px;
+  gap: 3px;
+  margin-bottom: 8px;
+}
+.panel-tab {
+  flex: 1 1 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  height: 30px;
+  padding: 0 4px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 500;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: all .15s ease;
+}
+.panel-tab:hover {
+  color: var(--ink);
+}
+.panel-tab.on {
+  background: var(--surface);
+  color: var(--ink);
+  font-weight: 600;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, .14);
+}
+.panel-tab .btn-ic svg {
+  width: 14px;
+  height: 14px;
+}
 .sugg-box {
   background: var(--surface-2); border: 1px solid var(--line);
   border-radius: 8px; padding: 8px 12px;
@@ -631,10 +682,14 @@ body.split-dragging iframe, body.split-dragging canvas { pointer-events: none; }
 }
 
 .panel {
-  position: absolute; top: 0; right: 0; bottom: 0; width: 164px; z-index: 3;
+  position: absolute; top: 0; right: 0; bottom: 0; width: 220px; z-index: 3;
   overflow-y: auto; -webkit-overflow-scrolling: touch;
-  padding: 12px 12px calc(12px + env(safe-area-inset-bottom));
+  padding: 12px 10px calc(12px + env(safe-area-inset-bottom));
   background: var(--surface); border-left: 1px solid var(--line); box-shadow: var(--shadow);
+  transition: width .18s ease;
+}
+.panel.outline-mode {
+  width: min(300px, calc(100vw - 32px));
 }
 .thumb { margin-bottom: 12px; cursor: pointer; }
 .thumb-c { width: 100%; height: auto; display: block; border-radius: 4px; outline: 1px solid var(--line); }

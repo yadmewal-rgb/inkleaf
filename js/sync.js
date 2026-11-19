@@ -1290,6 +1290,7 @@ export async function shareNotebook(docId) {
     const info = await getLiveShare(docId);
     let restrictedTo = info.allowedEmails || (serverFriends[0] || '');
     let shareMode = (info.shared && info.allowedEmails) || (!info.shared && serverFriends.length > 0) ? 'friend' : 'anyone';
+    let initialCanWrite = false;
 
     const renderContent = () => {
       if (!info.shared) {
@@ -1314,6 +1315,19 @@ export async function shareNotebook(docId) {
           }, 'Anyone with link')
         );
 
+        const permChips = h('div', { class: 'chips', style: 'margin: 8px 0 6px;' },
+          h('button', {
+            class: 'chip sm' + (!initialCanWrite ? ' on' : ''),
+            type: 'button',
+            onclick: () => { initialCanWrite = false; renderContent(); }
+          }, '👁️ View only'),
+          h('button', {
+            class: 'chip sm' + (initialCanWrite ? ' on' : ''),
+            type: 'button',
+            onclick: () => { initialCanWrite = true; renderContent(); }
+          }, '✏️ Can edit')
+        );
+
         liveBox.replaceChildren(
           h('h3', null, 'Real-time live sharing'),
           h('p', { class: 'modal-text' }, 'Share with your friend so they can view the notebook and see your annotations live.'),
@@ -1322,7 +1336,16 @@ export async function shareNotebook(docId) {
             h('p', { class: 'modal-text small' }, "Only this email address can open the notebook (they must sign in with Google):"),
             picker.el
           ) : null,
-          h('div', { class: 'row', style: 'gap: 8px; margin-top: 12px;' },
+          h('div', { style: 'margin-top: 10px;' },
+            h('div', { class: 'modal-text small', style: 'font-weight: 600; margin-bottom: 4px;' }, 'Permission:'),
+            permChips,
+            h('p', { class: 'bk-sub', style: 'font-size: 12px; margin-top: 4px;' },
+              initialCanWrite
+                ? 'Can edit: friend can write and draw on this notebook together.'
+                : 'View-only: friend can watch your live writing without leaving marks.'
+            )
+          ),
+          h('div', { class: 'row', style: 'gap: 8px; margin-top: 14px;' },
             h('button', {
               class: 'btn primary', type: 'button',
               onclick: async e => {
@@ -1338,7 +1361,7 @@ export async function shareNotebook(docId) {
                     folderId: docObj?.folderId || '',
                     folderName: parentFolder ? parentFolder.name : ''
                   };
-                  await startLiveShare(docId, false, allowed, extra);
+                  await startLiveShare(docId, initialCanWrite, allowed, extra);
                   drawLive();
                   if (allowed) toast(`Shared with ${allowed}! It will appear in their Shared tab.`);
                 } catch (err) {
@@ -1353,24 +1376,7 @@ export async function shareNotebook(docId) {
       } else {
         const shareUrl = location.origin + location.pathname + '#/live/' + info.shareId;
         const currentAllowed = info.allowedEmails || '';
-
-        const permCheck = h('input', {
-          type: 'checkbox', checked: !!info.canWrite, hidden: true,
-          onchange: async e => {
-            const val = e.target.checked;
-            const docObj = await db.get('docs', docId);
-            const parentFolder = docObj?.folderId ? await db.get('folders', docObj.folderId) : null;
-            const extra = {
-              title: docObj?.title || title,
-              cover: docObj?.cover || '',
-              folderId: docObj?.folderId || '',
-              folderName: parentFolder ? parentFolder.name : ''
-            };
-            await setLiveSharePerm(docId, val, info.allowedEmails, extra);
-            toast(val ? 'Friend can now write' : 'Friend is now view-only', 2000);
-            drawLive();
-          }
-        });
+        const allowedList = currentAllowed.split(',').map(s => s.trim()).filter(Boolean);
 
         const picker = emailPicker({
           title,
@@ -1380,8 +1386,6 @@ export async function shareNotebook(docId) {
           getFile: () => notebookFile(docId)
         });
         picker.refreshChips(serverFriends);
-
-        const allowedList = currentAllowed.split(',').map(s => s.trim()).filter(Boolean);
 
         liveBox.replaceChildren(
           h('h3', null, 'Real-time live sharing'),
@@ -1400,22 +1404,44 @@ export async function shareNotebook(docId) {
               onclick: picker.sendEmailLink
             }, 'Email link')
           ),
-          allowedList.length ? h('div', { style: 'margin: 12px 0 8px;' },
+          h('div', { style: 'margin: 12px 0 8px;' },
             h('div', { class: 'modal-text small', style: 'font-weight: 600; margin-bottom: 6px;' }, 'People with access:'),
             ...allowedList.map(email => h('div', {
               class: 'row',
-              style: 'align-items: center; justify-content: space-between; padding: 6px 10px; background: var(--surface-2); border-radius: 8px; margin-bottom: 4px;'
+              style: 'align-items: center; justify-content: space-between; padding: 6px 10px; background: var(--surface-2); border-radius: 8px; margin-bottom: 4px; gap: 8px;'
             },
-              h('div', { class: 'row', style: 'align-items: center; gap: 8px;' },
-                h('span', { html: I.users, style: 'color: var(--accent); display: flex;' }),
-                h('span', { style: 'font-size: 13.5px; font-weight: 500;' }, email)
+              h('div', { class: 'row', style: 'align-items: center; gap: 8px; min-width: 0; flex: 1;' },
+                h('span', { html: I.users, style: 'color: var(--accent); display: flex; flex-shrink: 0;' }),
+                h('span', { style: 'font-size: 13.5px; font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;' }, email)
               ),
-              h('div', { class: 'row', style: 'align-items: center; gap: 8px;' },
-                h('span', { class: 'bk-sub', style: 'font-size: 12px;' }, info.canWrite ? 'Can edit' : 'View only'),
+              h('div', { class: 'row', style: 'align-items: center; gap: 6px; flex-shrink: 0;' },
+                h('select', {
+                  class: 'inp sm',
+                  style: 'width: auto; padding: 2px 8px; font-size: 12px; height: 28px; cursor: pointer; border-radius: 6px;',
+                  onchange: async e => {
+                    const val = e.target.value === 'edit';
+                    const docObj = await db.get('docs', docId);
+                    const parentFolder = docObj?.folderId ? await db.get('folders', docObj.folderId) : null;
+                    const extra = {
+                      title: docObj?.title || title,
+                      cover: docObj?.cover || '',
+                      folderId: docObj?.folderId || '',
+                      folderName: parentFolder ? parentFolder.name : ''
+                    };
+                    await setLiveSharePerm(docId, val, info.allowedEmails, extra);
+                    toast(val ? 'Changed to: Can edit' : 'Changed to: View only', 2000);
+                    drawLive();
+                  }
+                },
+                  h('option', { value: 'view', selected: !info.canWrite }, 'View only'),
+                  h('option', { value: 'edit', selected: !!info.canWrite }, 'Can edit')
+                ),
                 h('button', {
-                  class: 'btn sm danger',
+                  class: 'ic sm danger',
                   type: 'button',
                   title: 'Remove access for ' + email,
+                  html: I.close,
+                  style: 'width: 28px; height: 28px; border-radius: 6px;',
                   onclick: async () => {
                     const remaining = allowedList.filter(e => e.toLowerCase() !== email.toLowerCase());
                     const docObj = await db.get('docs', docId);
@@ -1436,10 +1462,42 @@ export async function shareNotebook(docId) {
                     }
                     drawLive();
                   }
-                }, 'Remove access')
+                })
               )
-            ))
-          ) : null,
+            )),
+            !allowedList.length ? h('div', {
+              class: 'row',
+              style: 'align-items: center; justify-content: space-between; padding: 6px 10px; background: var(--surface-2); border-radius: 8px; margin-bottom: 4px; gap: 8px;'
+            },
+              h('div', { class: 'row', style: 'align-items: center; gap: 8px; min-width: 0; flex: 1;' },
+                h('span', { html: I.users, style: 'color: var(--accent); display: flex; flex-shrink: 0;' }),
+                h('span', { style: 'font-size: 13.5px; font-weight: 500;' }, 'Anyone with the link')
+              ),
+              h('div', { class: 'row', style: 'align-items: center; gap: 6px; flex-shrink: 0;' },
+                h('select', {
+                  class: 'inp sm',
+                  style: 'width: auto; padding: 2px 8px; font-size: 12px; height: 28px; cursor: pointer; border-radius: 6px;',
+                  onchange: async e => {
+                    const val = e.target.value === 'edit';
+                    const docObj = await db.get('docs', docId);
+                    const parentFolder = docObj?.folderId ? await db.get('folders', docObj.folderId) : null;
+                    const extra = {
+                      title: docObj?.title || title,
+                      cover: docObj?.cover || '',
+                      folderId: docObj?.folderId || '',
+                      folderName: parentFolder ? parentFolder.name : ''
+                    };
+                    await setLiveSharePerm(docId, val, '', extra);
+                    toast(val ? 'Anyone with link can now write' : 'Anyone with link is now view-only', 2000);
+                    drawLive();
+                  }
+                },
+                  h('option', { value: 'view', selected: !info.canWrite }, 'View only'),
+                  h('option', { value: 'edit', selected: !!info.canWrite }, 'Can edit')
+                )
+              )
+            ) : null
+          ),
           h('div', { style: 'margin: 10px 0 6px;' },
             h('div', { class: 'modal-text small', style: 'margin-bottom: 4px;' },
               currentAllowed
@@ -1447,23 +1505,26 @@ export async function shareNotebook(docId) {
                 : 'Public link: anyone with the link can view without signing in.'
             ),
             h('div', { class: 'row', style: 'align-items: center; gap: 6px; flex-wrap: wrap;' },
-              serverFriends.map(fr => h('button', {
-                class: 'chip sm' + (currentAllowed.toLowerCase() === fr.toLowerCase() ? ' on' : ''),
-                type: 'button',
-                onclick: async () => {
-                  const docObj = await db.get('docs', docId);
-                  const parentFolder = docObj?.folderId ? await db.get('folders', docObj.folderId) : null;
-                  const extra = {
-                    title: docObj?.title || title,
-                    cover: docObj?.cover || '',
-                    folderId: docObj?.folderId || '',
-                    folderName: parentFolder ? parentFolder.name : ''
-                  };
-                  await setLiveSharePerm(docId, info.canWrite, fr, extra);
-                  toast('Restricted to ' + fr + ' (will appear in their Shared tab)');
-                  drawLive();
-                }
-              }, 'Share with ' + fr)),
+              ...serverFriends.map(fr => {
+                const isSelected = allowedList.some(e => e.toLowerCase() === fr.toLowerCase());
+                return h('button', {
+                  class: 'chip sm' + (isSelected ? ' on' : ''),
+                  type: 'button',
+                  onclick: async () => {
+                    const docObj = await db.get('docs', docId);
+                    const parentFolder = docObj?.folderId ? await db.get('folders', docObj.folderId) : null;
+                    const extra = {
+                      title: docObj?.title || title,
+                      cover: docObj?.cover || '',
+                      folderId: docObj?.folderId || '',
+                      folderName: parentFolder ? parentFolder.name : ''
+                    };
+                    await setLiveSharePerm(docId, info.canWrite, fr, extra);
+                    toast('Restricted to ' + fr + ' (will appear in their Shared tab)');
+                    drawLive();
+                  }
+                }, 'Share with ' + fr);
+              }),
               h('button', {
                 class: 'chip sm' + (!currentAllowed ? ' on' : ''),
                 type: 'button',
@@ -1484,9 +1545,8 @@ export async function shareNotebook(docId) {
             )
           ),
           h('div', { class: 'row', style: 'align-items: center; justify-content: space-between; margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--line);' },
-            h('label', { class: 'chip check' + (info.canWrite ? ' on' : ''), style: 'cursor: pointer;' },
-              permCheck,
-              'Allow friend to write'
+            h('span', { class: 'bk-sub', style: 'font-size: 12px;' },
+              info.canWrite ? '✏️ Can edit: friend can write and draw live.' : '👁️ View-only: friend can only watch live writing.'
             ),
             h('button', {
               class: 'btn sm danger', type: 'button',
@@ -1497,9 +1557,7 @@ export async function shareNotebook(docId) {
                 drawLive();
               }
             }, 'Stop sharing notebook')
-          ),
-          h('p', { class: 'modal-text small', style: 'margin-top: 6px;' },
-            info.canWrite ? 'Friend has write access: both of you can write on this notebook together.' : 'View-only: friend can watch your live writing without leaving marks.')
+          )
         );
       }
     };
@@ -1941,7 +1999,7 @@ export async function openSettings() {
   const offHwStatus = bus.on('hw-status', () => drawHw());
 
   const m = modal({
-    title: 'Settings (v53)',
+    title: 'Settings (v54)',
     wide: true,
     onClose: () => { offUsage(); offHwStatus(); },
     body: h('div', null,
@@ -1950,7 +2008,7 @@ export async function openSettings() {
         style: 'align-items: center; justify-content: space-between; padding: 10px 14px; background: var(--surface-2); border-radius: 10px; margin-bottom: 16px;'
       },
         h('div', null,
-          h('div', { style: 'font-weight: 600; font-size: 14.5px;' }, 'Inkleaf v53'),
+          h('div', { style: 'font-weight: 600; font-size: 14.5px;' }, 'Inkleaf v54'),
           h('div', { class: 'bk-sub', style: 'margin-top: 2px;' }, 'Handwriting notes · Real-time sync · PWA')
         ),
         h('button', {
@@ -2008,7 +2066,7 @@ export async function openSettings() {
       h('div', { class: 'row' },
         h('button', { class: 'btn', type: 'button', onclick: async e => { const b = e.currentTarget; b.disabled = true; await autoBackup(true); b.disabled = false; fillBk(); } }, 'Back up now')),
       h('div', { style: 'margin-top: 24px; padding-top: 14px; border-top: 1px solid var(--line); text-align: center; color: var(--muted); font-size: 12.5px;' },
-        'Inkleaf version 52 · Build 2026.11'
+        'Inkleaf version 54 · Build 2026.11'
       )
     )
   });

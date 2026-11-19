@@ -176,6 +176,9 @@ export async function mountEditor(root, docId, opts = {}) {
   let full = false, dbg = null;
   let clipItems = (await db.getMeta('clip')) || null; // copied items, shared by every notebook on this device
   let panelQ = '', panelBm = false, panelList = null; // pages panel: search text, bookmarks-only, the list element
+  let panelTab = 'thumbnails';                         // 'thumbnails' | 'bookmarks' | 'outlines'
+  let outlineMode = null;                              // 'ai' | 'native' | null (auto)
+  let cachedAid = null, cachedNativeList = null, cachedAiList = null;
   let pickMode = false, lastPick = -1, pickBar = null; // pages panel: choosing several pages to act on together
   const picked = new Set();                            // ids of the chosen pages
   let sel = null, textEd = null;
@@ -2471,138 +2474,13 @@ export async function mountEditor(root, docId, opts = {}) {
     gotoPdfPage(pv.page.pdf.a, await resolveDest(pv.page.pdf.a, ln.dest));
   }
 
-  async function outlineDialog() {
-    const aidSet = [...new Set(pages.filter(p => p.pdf && !p.tpl).map(p => p.pdf.a))];
-    if (!aidSet.length) { toast('No PDF attached to this notebook.'); return; }
-    const primaryAid = aidSet[0];
-
-    const nativeList = [];
-    for (const aid of aidSet) {
-      for (const o of await pdfOutline(aid).catch(() => [])) nativeList.push({ ...o, aid });
-    }
-
-    const aiList = [];
-    for (const aid of aidSet) {
-      const saved = (await db.getMeta('toc:' + aid)) || [];
-      for (const o of saved) aiList.push({ ...o, aid });
-    }
-
-    let showMode = aiList.length ? 'ai' : nativeList.length ? 'native' : 'none';
-    let dialogModal = null;
-
-    function renderBody(contentBox) {
-      contentBox.replaceChildren();
-
-      const activeRows = showMode === 'ai' ? aiList : nativeList;
-
-      if (!activeRows.length) {
-        contentBox.appendChild(h('div', { class: 'outline-empty' },
-          h('p', { class: 'modal-text', style: { marginBottom: '14px', textAlign: 'center' } },
-            'This PDF has no built-in table of contents.'
-          ),
-          h('div', { style: { display: 'flex', justifyContent: 'center' } },
-            h('button', {
-              class: 'btn primary',
-              type: 'button',
-              onclick: () => triggerScan(contentBox)
-            }, '✨ Generate outline with AI')
-          )
-        ));
-        return;
-      }
-
-      const outlineWrap = h('div', { class: 'outline' });
-
-      if (showMode === 'ai') {
-        outlineWrap.appendChild(h('div', { class: 'ai-badge-row' },
-          h('div', { class: 'ai-badge-text' },
-            h('b', null, '✨ Generated with AI'),
-            h('span', null, `Found ${aiList.length} ${aiList.length === 1 ? 'section' : 'sections'}`)
-          ),
-          h('div', { style: { display: 'flex', gap: '6px' } },
-            nativeList.length ? h('button', {
-              class: 'btn sm',
-              type: 'button',
-              title: 'Switch back to original bookmarks in the PDF',
-              onclick: () => { showMode = 'native'; renderBody(contentBox); }
-            }, 'Original') : null,
-            h('button', {
-              class: 'btn sm',
-              type: 'button',
-              onclick: () => triggerScan(contentBox)
-            }, 'Re-scan')
-          )
-        ));
-      } else {
-        outlineWrap.appendChild(h('div', { class: 'ai-badge-row built-in' },
-          h('div', { class: 'ai-badge-text' },
-            h('b', null, 'PDF Bookmarks'),
-            h('span', null, `${nativeList.length} ${nativeList.length === 1 ? 'item' : 'items'} in file`)
-          ),
-          h('div', { style: { display: 'flex', gap: '6px' } },
-            aiList.length ? h('button', {
-              class: 'btn sm',
-              type: 'button',
-              title: 'Switch to AI outline',
-              onclick: () => { showMode = 'ai'; renderBody(contentBox); }
-            }, 'Use AI') : null,
-            h('button', {
-              class: 'btn sm',
-              type: 'button',
-              onclick: () => triggerScan(contentBox)
-            }, '✨ Re-scan with AI')
-          )
-        ));
-      }
-
-      for (const o of activeRows) {
-        const k = pages.findIndex(p => p.pdf && p.pdf.a === o.aid && p.pdf.i === o.i);
-        outlineWrap.appendChild(h('button', {
-          class: 'ol',
-          type: 'button',
-          disabled: k < 0,
-          style: { paddingLeft: (10 + (o.depth || 0) * 16) + 'px' },
-          onclick: () => { dialogModal.close(); if (k >= 0) scrollToPage(k); }
-        },
-          h('span', null, o.title || 'Untitled'),
-          h('small', null, k >= 0 ? String(k + 1) : '')
-        ));
-      }
-
-      contentBox.appendChild(outlineWrap);
-    }
-
-    async function triggerScan(contentBox) {
-      const b = busy('Scanning PDF headings...');
-      try {
-        const generated = await generatePdfOutline(primaryAid);
-        b.done();
-        if (!generated || !generated.length) {
-          toast('Could not find chapter headings in this PDF.');
-          return;
-        }
-        await db.setMeta('toc:' + primaryAid, generated);
-        aiList.length = 0;
-        for (const aid of aidSet) {
-          const saved = (await db.getMeta('toc:' + aid)) || [];
-          for (const o of saved) aiList.push({ ...o, aid });
-        }
-        showMode = 'ai';
-        toast(`Table of contents ready (${aiList.length} sections)`);
-        renderBody(contentBox);
-      } catch (err) {
-        b.done();
-        toast('Failed to generate outline: ' + (err.message || err));
-      }
-    }
-
-    const bodyDiv = h('div', { class: 'outline-container' });
-    renderBody(bodyDiv);
-
-    dialogModal = modal({
-      title: 'PDF Contents',
-      body: bodyDiv
-    });
+  function openOutlines() {
+    panelTab = 'outlines';
+    if (!panelOpen) togglePanel();
+    else buildPanel();
+  }
+  function outlineDialog() {
+    openOutlines();
   }
 
   // --- find: typed text, page names and the text of PDF pages
