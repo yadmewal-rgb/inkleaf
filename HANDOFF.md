@@ -3,41 +3,36 @@
 **Written:** 2026-11-20 by agy (Antigravity). **Next:** Claude Code or agy.
 
 ## What the owner asked
-1. "you can move content to here" (with screenshots pointing from the floating PDF contents dialog to the left sidebar).
-2. "like goodnotes" (organize the sidebar like GoodNotes).
+1. "remove access and stop sharing notebook will do the same , no option of only veiw , make a x sign to remove individual friend ., tell me what can be done ?"
+2. "same can be done by other friends to me or other"
+3. "you can move content to here" (with screenshots pointing from floating PDF contents dialog to the left sidebar) and "like goodnotes".
 
 ## Done (v54 Release)
-1. **GoodNotes-style 3-Tab Sidebar (`js/editor.js`, `css/app.css`)**:
-   - Added a segmented tab control at the top of the sidebar: **Thumbnails**, **Bookmarks**, and **Outlines**.
-   - **Thumbnails tab**: Displays full page thumbnails, page numbers, search box, section jumps, and page selection tools.
-   - **Bookmarks tab**: Displays only favorite/bookmarked pages with a friendly empty state if no bookmarks exist yet.
-   - **Outlines tab**: Displays the PDF table of contents / chapter outline directly in the sidebar without blocking the document!
-2. **Interactive Chapter Outline & Smooth Navigation (`js/editor.js`)**:
-   - Clicking any chapter or section jumps directly to that page and highlights the active chapter in green.
-   - Preserves indentation levels (`depth`) for sub-headings and sub-sections.
-   - Dedicated outline search box filters chapter titles in real-time.
-   - Responsive: On wide screens (tablets, laptops), the sidebar stays open for easy chapter-to-chapter browsing; on small phones, it closes automatically after jumping.
-3. **AI Outline Generation Inside Sidebar (`js/editor.js`, `css/app.css`)**:
-   - For PDFs without outlines: Prominent **"✨ Generate outline with AI"** button right in the sidebar.
-   - For PDFs with outlines: Top banner displays section count, **"Re-scan"** with AI, and **"Original"** button to toggle back anytime.
-   - Smooth sidebar expansion: Sidebar expands from 220px to 300px in Outlines mode so long chapter titles are readable.
-4. **Top Menu Integration (`js/editor.js`)**:
-   - Tapping **More (···) → PDF contents** now automatically opens the sidebar directly into the Outlines tab.
-5. **Version & Cache**:
-   - Cache set to `inkleaf-v54` in `sw.js` and `js/sync.js`.
+1. **Live Share Permission & Removal Controls (`js/sync.js`, `js/editor.js`, `js/library.js`)**:
+   - Replaced duplicate red "Remove access" button with a dedicated red `✕` button on each collaborator row.
+   - Added explicit "View only" / "Can edit" dropdown on each friend's row and for public links.
+   - Added `[👁️ View only]` and `[✏️ Can edit]` choice buttons before creating a live share link.
+   - Kept a single red "Stop sharing notebook" button at the bottom.
+   - Hid the "Send a copy to a friend" option when viewing a live notebook as a guest (`!opts.liveShare`).
+   - Added "Remove from Shared" in the Library Shared tab menu so friends can remove a shared notebook from their own screen.
+2. **GoodNotes-style 3-Tab Sidebar (`js/editor.js`, `css/app.css`)**:
+   - Segments: **Thumbnails**, **Bookmarks**, and **Outlines**.
+   - Outline chapter jumping, active chapter highlighting, and inline AI outline generator.
+3. **Version & Cache**:
+   - Bumped to `v54` in `sw.js` and `js/sync.js`.
 
 ## Tested
 - Verified JS syntax across all files with `node --check`.
-- Tested in Chrome browser with simulated PDF notebook.
-- Verified tab switching between Thumbnails, Bookmarks, and Outlines.
-- Verified outline chapter jumping and active highlighting.
+- Tested in Chrome browser:
+  - Share link creation with View-only / Can edit selection.
+  - Active share dialog with dropdown, red `✕`, and single Stop sharing button.
 - Screenshots saved:
+  - `C:\Users\yadram\AgentTools\shots\share_modal_updated.png`
   - `C:\Users\yadram\AgentTools\shots\goodnotes_sidebar_comparison.png`
-  - `C:\Users\yadram\AgentTools\shots\goodnotes_sidebar_tabs.png`
-  - `C:\Users\yadram\AgentTools\shots\goodnotes_outline_jump.png`
 
 ## Live now
-- Committed locally to branch `main` (`b0c0bb6`).
+- Committed locally to branch `main`.
+- Running locally at http://localhost:8080.
 
 ## Owner must do
-- Push to GitHub: Run `git push origin main` in PowerShell to deploy `v54` to GitHub Pages.
+- Push to GitHub: Run `git push origin main` in PowerShell to deploy `v54` live to GitHub Pages.
