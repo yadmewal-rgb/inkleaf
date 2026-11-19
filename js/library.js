@@ -11,7 +11,7 @@ import { importGoodnotes } from './goodnotes.js';
 import { pdfPagesText } from './pdftools.js';
 import { exportFlow } from './export.js';
 import { renderPageTo } from './render.js';
-import { openSettings, syncNow, syncStatus, shareNotebook, shareFolder, importBackup } from './sync.js';
+import { openSettings, syncNow, syncStatus, shareNotebook, shareFolder, importBackup, fetchSharedWithMe, fetchLiveDoc } from './sync.js';
 import { pageIndex, matchIndex, hwOn } from './hwsearch.js';
 
 const SIZE_OPTS = [{ v: 'a4', label: 'A4 portrait' }, { v: 'a4l', label: 'A4 landscape' }, { v: 'letter', label: 'Letter' }];
@@ -257,6 +257,16 @@ async function searchPages(q, docs, isStale) {
 export async function mountLibrary(root, folderId, opts = {}) {
   const bin = !!opts.bin;
   let query = '', filter = lsGet('inkleaf.filter', 'all'), sort = lsGet('inkleaf.sort', 'edited'), searchTok = 0;
+  let activeSharedFolder = null;
+  let sharedItems = [];
+  try { sharedItems = (await db.getMeta('shared_items')) || []; } catch {}
+  fetchSharedWithMe().then(sh => {
+    if (Array.isArray(sh)) {
+      const changed = sh.length !== sharedItems.length;
+      sharedItems = sh;
+      if (changed || filter === 'shared') render();
+    }
+  }).catch(() => {});
   const grid = h('div', { class: 'grid' });
   const results = h('div', { class: 'results' });
   const crumbs = h('div', { class: 'crumbs' });
@@ -478,6 +488,59 @@ export async function mountLibrary(root, folderId, opts = {}) {
     ], { align: 'right' });
   }
 
+  function sharedDocCard(item) {
+    const sub = `Shared by ${item.ownerEmail || 'friend'}${item.canWrite ? ' · Can edit' : ' · View only'}`;
+    const openDoc = () => { location.hash = '#/live/' + item.shareId; };
+    return h('div', { class: 'card', onclick: openDoc },
+      h('div', { class: 'cover', style: { '--cover': item.cover || COVERS[0] } },
+        h('div', { class: 'cover-blank' }),
+        h('span', { class: 'shared-badge', title: 'Shared with me', html: I.share })
+      ),
+      h('div', { class: 'meta' },
+        h('div', { class: 'name' }, item.title || 'Shared notebook'),
+        h('div', { class: 'sub' }, sub)
+      ),
+      h('button', {
+        class: 'ic sm card-more', type: 'button', title: 'Shared notebook options', html: I.more,
+        onclick: e => {
+          e.stopPropagation();
+          popMenu(e.currentTarget, [
+            { label: 'Open live notebook', icon: I.book, onClick: openDoc },
+            {
+              label: 'Copy link', icon: I.link, onClick: () => {
+                const url = location.origin + location.pathname + '#/live/' + item.shareId;
+                if (navigator.clipboard) navigator.clipboard.writeText(url);
+                toast('Live share link copied to clipboard!');
+              }
+            },
+            {
+              label: 'Save a personal copy', icon: I.copy, onClick: async () => {
+                const b = busy('Downloading copy...');
+                try {
+                  const { doc: liveDoc } = await fetchLiveDoc(item.shareId);
+                  const fresh = await db.get('docs', liveDoc.id);
+                  if (fresh) {
+                    delete fresh.liveShare;
+                    fresh.title = (item.title || fresh.title) + ' (Copy)';
+                    fresh.id = Math.random().toString(36).slice(2, 18);
+                    fresh.modified = Date.now();
+                    fresh.created = Date.now();
+                    await db.put('docs', fresh);
+                  }
+                  b.done();
+                  toast(`Saved copy of "${item.title}" to your Library!`);
+                } catch (err) {
+                  b.done();
+                  toast('Could not save copy: ' + err.message);
+                }
+              }
+            }
+          ], { align: 'right' });
+        }
+      })
+    );
+  }
+
   function docCard(d) {
     const sub = fmtDate(d.modified) + (d.pages && d.pages.length > 1 ? ` · ${d.pages.length} pages` : '');
     return h('div', { class: 'card', onclick: () => { location.hash = '#/d/' + d.id; } },
@@ -507,12 +570,22 @@ export async function mountLibrary(root, folderId, opts = {}) {
     if (filter.startsWith('tag:') && !tags.has(filter.slice(4))) filter = 'all';
     const chip = (v, label, icon) => h('button', {
       class: 'chip sm' + (filter === v ? ' on' : ''), type: 'button',
-      onclick: () => { filter = filter === v && v !== 'all' ? 'all' : v; lsSet('inkleaf.filter', filter); render(); }
+      onclick: () => {
+        filter = filter === v && v !== 'all' ? 'all' : v;
+        if (filter !== 'shared') activeSharedFolder = null;
+        lsSet('inkleaf.filter', filter);
+        render();
+      }
     }, icon ? h('span', { class: 'btn-ic', html: icon }) : null, label);
     const sel = h('select', { class: 'sort', title: 'Sort notebooks', onchange: () => { sort = sel.value; lsSet('inkleaf.sort', sort); render(); } },
       SORTS.map(([v, l]) => h('option', { value: v, selected: v === sort }, l)));
     fill(tools, 
-      h('div', { class: 'chips' }, chip('all', 'All'), chip('fav', 'Favourites', I.star), [...tags].sort().map(t => chip('tag:' + t, '#' + t))),
+      h('div', { class: 'chips' },
+        chip('all', 'All'),
+        chip('fav', 'Favourites', I.star),
+        chip('shared', sharedItems.length ? `Shared (${sharedItems.length})` : 'Shared', I.share),
+        [...tags].sort().map(t => chip('tag:' + t, '#' + t))
+      ),
       h('div', { class: 'grow' }),
       sel);
   }
@@ -531,8 +604,86 @@ export async function mountLibrary(root, folderId, opts = {}) {
     fill(crumbs, 
       h('a', { href: '#/', class: cur ? '' : 'here' }, 'Library'),
       trail.map((f, i) => [h('span', { class: 'crumb-sep' }, '/'), h('a', { href: '#/f/' + f.id, class: i === trail.length - 1 ? 'here' : '' }, f.name)]),
-      filter !== 'all' && !query ? [h('span', { class: 'crumb-sep' }, '/'), h('span', { class: 'crumb-note' }, filter === 'fav' ? 'Favourites, in every folder' : '#' + filter.slice(4) + ', in every folder')] : null);
+      filter === 'shared' && !query
+        ? [h('span', { class: 'crumb-sep' }, '/'),
+           activeSharedFolder
+             ? h('a', { href: '#/', onclick: e => { e.preventDefault(); activeSharedFolder = null; render(); } }, 'Shared with me')
+             : h('span', { class: 'crumb-note' }, 'Shared with me, from friends'),
+           activeSharedFolder ? [h('span', { class: 'crumb-sep' }, '/'), h('span', { class: 'crumb-note' }, activeSharedFolder)] : null
+          ]
+        : filter !== 'all' && !query
+          ? [h('span', { class: 'crumb-sep' }, '/'), h('span', { class: 'crumb-note' }, filter === 'fav' ? 'Favourites, in every folder' : '#' + filter.slice(4) + ', in every folder')]
+          : null);
     await renderTools(D);
+
+    if (filter === 'shared') {
+      try { sharedItems = await fetchSharedWithMe(); } catch {}
+      const items = (sharedItems || []).filter(item => {
+        if (!query) return true;
+        const q = query.toLowerCase();
+        return (item.title || '').toLowerCase().includes(q) ||
+               (item.folderName || '').toLowerCase().includes(q) ||
+               (item.ownerEmail || '').toLowerCase().includes(q);
+      });
+
+      if (!items.length) {
+        grid.replaceChildren(h('div', { class: 'empty' },
+          h('div', { class: 'empty-ic', html: I.share }),
+          h('h2', null, query ? 'No matching shared items' : 'Nothing shared with you yet'),
+          h('p', null, query ? 'Try a different search term.' : 'When a friend shares a notebook or folder with your email, it appears here automatically.'),
+          query ? null : h('div', { class: 'empty-actions' },
+            h('button', { class: 'btn primary', type: 'button', onclick: async () => { await syncNow(true); render(); } }, 'Check for new shares')
+          )
+        ));
+        if (!query) fill(results, );
+        return;
+      }
+
+      const cards = [];
+      if (activeSharedFolder) {
+        const folderDocs = items.filter(it => (it.folderName || '') === activeSharedFolder);
+        for (const it of folderDocs) cards.push(sharedDocCard(it));
+      } else {
+        const folderGroups = new Map();
+        const standalone = [];
+        for (const it of items) {
+          if (it.folderName) {
+            if (!folderGroups.has(it.folderName)) folderGroups.set(it.folderName, []);
+            folderGroups.get(it.folderName).push(it);
+          } else {
+            standalone.push(it);
+          }
+        }
+
+        // Shared folder cards
+        for (const [fName, fDocs] of folderGroups.entries()) {
+          const owner = fDocs[0]?.ownerEmail || 'friend';
+          const cnt = fDocs.length;
+          cards.push(h('div', {
+            class: 'card',
+            onclick: () => { activeSharedFolder = fName; render(); }
+          },
+            h('div', { class: 'cover folder' },
+              h('span', { html: I.folder }),
+              h('span', { class: 'shared-badge', title: 'Shared folder', html: I.share })
+            ),
+            h('div', { class: 'meta' },
+              h('div', { class: 'name' }, fName),
+              h('div', { class: 'sub' }, `Shared by ${owner} · ${cnt} ${cnt === 1 ? 'notebook' : 'notebooks'}`)
+            )
+          ));
+        }
+
+        // Standalone notebook cards
+        for (const it of standalone) {
+          cards.push(sharedDocCard(it));
+        }
+      }
+
+      grid.replaceChildren(...cards);
+      if (!query) fill(results, );
+      return;
+    }
 
     let fs, ds;
     if (query) {

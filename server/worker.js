@@ -130,8 +130,14 @@ export class User extends DurableObject {
       CREATE TABLE IF NOT EXISTS pending (up TEXT, n INTEGER, data BLOB, t INTEGER, PRIMARY KEY (up, n));
       CREATE TABLE IF NOT EXISTS shares (secret TEXT PRIMARY KEY, docId TEXT, canWrite INTEGER, created INTEGER, allowedEmails TEXT);
       CREATE INDEX IF NOT EXISTS shares_docId ON shares (docId);
+      CREATE TABLE IF NOT EXISTS inbox_shares (id INTEGER PRIMARY KEY AUTOINCREMENT, shareId TEXT, kind TEXT, docId TEXT, title TEXT, cover TEXT, ownerEmail TEXT, targetEmail TEXT, canWrite INTEGER, created INTEGER, folderId TEXT, folderName TEXT);
+      CREATE INDEX IF NOT EXISTS inbox_shares_target ON inbox_shares (targetEmail);
+      CREATE INDEX IF NOT EXISTS inbox_shares_owner ON inbox_shares (ownerEmail, docId);
+      CREATE UNIQUE INDEX IF NOT EXISTS inbox_shares_uniq ON inbox_shares (shareId, targetEmail);
     `);
     try { this.sql.exec('ALTER TABLE shares ADD COLUMN allowedEmails TEXT'); } catch {}
+    try { this.sql.exec('ALTER TABLE inbox_shares ADD COLUMN folderId TEXT'); } catch {}
+    try { this.sql.exec('ALTER TABLE inbox_shares ADD COLUMN folderName TEXT'); } catch {}
   }
 
   async getEmail() { return this.kvGet('email') || ''; }
@@ -208,6 +214,32 @@ export class User extends DurableObject {
 
   async fetch(req) {
     const url = new URL(req.url), p = url.pathname.split('/').filter(Boolean);
+
+    // Internal registry routes for "Shared with me"
+    if (p[0] === 'registry') {
+      if (p[1] === 'for') {
+        const target = (url.searchParams.get('email') || '').trim().toLowerCase();
+        const rows = this.sql.exec('SELECT * FROM inbox_shares WHERE targetEmail = ? ORDER BY created DESC', target).toArray();
+        return json({ shares: rows });
+      }
+      if (p[1] === 'add' && req.method === 'POST') {
+        const b = await req.json().catch(() => ({}));
+        if (b.shareId && b.targetEmail) {
+          this.sql.exec(
+            'INSERT OR REPLACE INTO inbox_shares (shareId, kind, docId, title, cover, ownerEmail, targetEmail, canWrite, created) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
+            b.shareId, b.kind || 'd', b.docId || '', b.title || '', b.cover || '', String(b.ownerEmail || '').toLowerCase(), String(b.targetEmail || '').toLowerCase(), b.canWrite ? 1 : 0, b.created || Date.now()
+          );
+        }
+        return json({ ok: true });
+      }
+      if (p[1] === 'del' && req.method === 'POST') {
+        const b = await req.json().catch(() => ({}));
+        if (b.ownerEmail && b.docId) {
+          this.sql.exec('DELETE FROM inbox_shares WHERE ownerEmail = ? AND docId = ?', String(b.ownerEmail).toLowerCase(), b.docId);
+        }
+        return json({ ok: true });
+      }
+    }
 
     if (p[0] === 'ws') { // live connection; the device key comes as the first message, never in the address
       if (req.headers.get('Upgrade') !== 'websocket') return json({ error: 'websocket' }, 426);
@@ -341,7 +373,7 @@ export class User extends DurableObject {
     // POST /share/:docId : create or get a live share link
     if (p[0] === 'share' && p[1] && req.method === 'POST') {
       const docId = p[1];
-      const { canWrite = false, allowedEmails = '' } = await req.json().catch(() => ({}));
+      const { canWrite = false, allowedEmails = '', title = '', cover = '', kind = 'd', folderId = '', folderName = '' } = await req.json().catch(() => ({}));
       let sh = this.sql.exec('SELECT secret, canWrite, allowedEmails FROM shares WHERE docId = ?', docId).toArray()[0];
       const secret = sh ? sh.secret : randomKey().slice(0, 16);
       const emails = String(allowedEmails || '').trim().toLowerCase();
@@ -350,7 +382,56 @@ export class User extends DurableObject {
       } else if (allowedEmails !== undefined) {
         this.sql.exec('UPDATE shares SET allowedEmails = ? WHERE secret = ?', emails, secret);
       }
-      return json({ shareId: `${mySub}_${secret}`, canWrite: sh ? !!sh.canWrite : !!canWrite, allowedEmails: sh ? (sh.allowedEmails || '') : emails, secret });
+      const shareId = `${mySub}_${secret}`;
+      const myEmail = String(this.kvGet('email') || '').toLowerCase();
+      if (allowedEmails !== undefined) {
+        try {
+          const reg = this.env.USER.get(this.env.USER.idFromName('shares_registry'));
+          await reg.fetch(new Request('http://internal/registry/del', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ ownerEmail: myEmail, docId })
+          }));
+          if (emails) {
+            for (const targetEmail of emails.split(',').map(s => s.trim().toLowerCase()).filter(Boolean)) {
+              await reg.fetch(new Request('http://internal/registry/add', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                  shareId,
+                  kind: kind || (docId.startsWith('f_') ? 'f' : 'd'),
+                  docId,
+                  title: title || 'Shared item',
+                  cover: cover || '',
+                  ownerEmail: myEmail,
+                  targetEmail,
+                  canWrite: canWrite ? 1 : 0,
+                  created: Date.now(),
+                  folderId: folderId || '',
+                  folderName: folderName || ''
+                })
+              }));
+            }
+          }
+        } catch (e) {
+          console.warn('Failed to register share in inbox:', e);
+        }
+      }
+      return json({ shareId, canWrite: sh ? !!sh.canWrite : !!canWrite, allowedEmails: sh ? (sh.allowedEmails || '') : emails, secret });
+    }
+
+    // GET /shared-with-me : list items shared with this user
+    if (p[0] === 'shared-with-me' && req.method === 'GET') {
+      const myEmail = String(this.kvGet('email') || '').toLowerCase();
+      if (!myEmail) return json({ shares: [] });
+      try {
+        const reg = this.env.USER.get(this.env.USER.idFromName('shares_registry'));
+        const resp = await reg.fetch(new Request('http://internal/registry/for?email=' + encodeURIComponent(myEmail)));
+        if (resp.ok) return resp;
+      } catch (e) {
+        console.warn('Registry fetch error:', e);
+      }
+      return json({ shares: [] });
     }
 
     // GET /share/:docId : check status of live share
@@ -364,7 +445,7 @@ export class User extends DurableObject {
     // PUT /share/:docId/permission : toggle allow friend to write & allowed emails
     if (p[0] === 'share' && p[1] && p[2] === 'permission' && req.method === 'PUT') {
       const docId = p[1];
-      const { canWrite = false, allowedEmails } = await req.json().catch(() => ({}));
+      const { canWrite = false, allowedEmails, title = '', cover = '', kind = 'd', folderId = '', folderName = '' } = await req.json().catch(() => ({}));
       if (allowedEmails !== undefined) {
         this.sql.exec('UPDATE shares SET canWrite = ?, allowedEmails = ? WHERE docId = ?', canWrite ? 1 : 0, String(allowedEmails || '').trim().toLowerCase(), docId);
       } else {
@@ -378,6 +459,44 @@ export class User extends DurableObject {
         }
       }
       this.broadcastLive(docId, { live: true, type: 'perm', docId, canWrite: !!canWrite, allowedEmails });
+
+      // Update registry
+      try {
+        const reg = this.env.USER.get(this.env.USER.idFromName('shares_registry'));
+        const myEmail = String(this.kvGet('email') || '').toLowerCase();
+        await reg.fetch(new Request('http://internal/registry/del', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ ownerEmail: myEmail, docId })
+        }));
+        const sh = this.sql.exec('SELECT secret FROM shares WHERE docId = ?', docId).toArray()[0];
+        const emails = allowedEmails !== undefined ? String(allowedEmails || '').trim().toLowerCase() : '';
+        if (sh && mySub && emails) {
+          const shareId = `${mySub}_${sh.secret}`;
+          for (const targetEmail of emails.split(',').map(s => s.trim().toLowerCase()).filter(Boolean)) {
+            await reg.fetch(new Request('http://internal/registry/add', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                shareId,
+                kind: kind || (docId.startsWith('f_') ? 'f' : 'd'),
+                docId,
+                title: title || 'Shared item',
+                cover: cover || '',
+                ownerEmail: myEmail,
+                targetEmail,
+                canWrite: canWrite ? 1 : 0,
+                created: Date.now(),
+                folderId: folderId || '',
+                folderName: folderName || ''
+              })
+            }));
+          }
+        }
+      } catch (e) {
+        console.warn('Failed to update share registry:', e);
+      }
+
       return json({ ok: true, canWrite: !!canWrite, allowedEmails });
     }
 
@@ -386,6 +505,17 @@ export class User extends DurableObject {
       const docId = p[1];
       this.sql.exec('DELETE FROM shares WHERE docId = ?', docId);
       this.broadcastLive(docId, { live: true, type: 'revoked', docId });
+      try {
+        const reg = this.env.USER.get(this.env.USER.idFromName('shares_registry'));
+        await reg.fetch(new Request('http://internal/registry/del', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            ownerEmail: String(this.kvGet('email') || '').toLowerCase(),
+            docId
+          })
+        }));
+      } catch (e) {}
       return json({ ok: true });
     }
 

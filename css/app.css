@@ -344,6 +344,8 @@ button.pageind:hover { background: var(--surface-2); }
 .muted-line { color: var(--muted); font-size: 13px; padding: 4px 0; }
 .fav-badge { position: absolute; top: 6px; right: 6px; width: 26px; height: 26px; border-radius: 50%; display: flex; align-items: center; justify-content: center; background: rgba(255, 255, 255, .92); color: #e0a400; box-shadow: 0 1px 3px rgba(0, 0, 0, .25); }
 .fav-badge svg { width: 16px; height: 16px; }
+.shared-badge { position: absolute; top: 6px; left: 6px; width: 26px; height: 26px; border-radius: 50%; display: flex; align-items: center; justify-content: center; background: rgba(255, 255, 255, .92); color: var(--accent); box-shadow: 0 1px 3px rgba(0, 0, 0, .25); }
+.shared-badge svg { width: 15px; height: 15px; }
 .tags { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 4px; }
 .tag { font-size: 11px; color: var(--accent); background: var(--accent-soft); border-radius: 999px; padding: 1px 7px; white-space: nowrap; }
 .results { padding: 0 max(20px, env(safe-area-inset-left)) 24px; max-width: 860px; }

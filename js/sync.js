@@ -865,27 +865,61 @@ export async function getLiveShare(docId) {
   } catch { return { shared: false }; }
 }
 
-export async function startLiveShare(docId, canWrite = false, allowedEmails = '') {
+export async function startLiveShare(docId, canWrite = false, allowedEmails = '', extra = {}) {
   if (!session) throw new Error('Sign in to sync before sharing a live link');
   await pushDoc(docId).catch(() => {});
   const r = await call('/share/' + encodeURIComponent(docId), {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ canWrite: !!canWrite, allowedEmails: String(allowedEmails || '').trim() })
+    body: JSON.stringify({
+      canWrite: !!canWrite,
+      allowedEmails: String(allowedEmails || '').trim(),
+      title: extra.title || '',
+      cover: extra.cover || '',
+      kind: extra.kind || 'd',
+      folderId: extra.folderId || '',
+      folderName: extra.folderName || ''
+    })
   });
   if (!r.ok) throw new Error('Could not create live share');
   return await r.json();
 }
 
-export async function setLiveSharePerm(docId, canWrite, allowedEmails) {
+export async function setLiveSharePerm(docId, canWrite, allowedEmails, extra = {}) {
   const payload = { canWrite: !!canWrite };
   if (allowedEmails !== undefined) payload.allowedEmails = String(allowedEmails || '').trim();
+  if (extra.title) payload.title = extra.title;
+  if (extra.cover) payload.cover = extra.cover;
+  if (extra.kind) payload.kind = extra.kind;
+  if (extra.folderId) payload.folderId = extra.folderId;
+  if (extra.folderName) payload.folderName = extra.folderName;
   const r = await call('/share/' + encodeURIComponent(docId) + '/permission', {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(payload)
   });
   return r.ok;
+}
+
+export async function fetchSharedWithMe(force = false) {
+  if (!session) {
+    try { return (await db.getMeta('shared_items')) || []; } catch { return []; }
+  }
+  if (!navigator.onLine && !force) {
+    try { return (await db.getMeta('shared_items')) || []; } catch { return []; }
+  }
+  try {
+    const r = await call('/shared-with-me');
+    if (r.ok) {
+      const data = await r.json();
+      const shares = Array.isArray(data.shares) ? data.shares : [];
+      await db.setMeta('shared_items', shares);
+      return shares;
+    }
+  } catch (e) {
+    console.warn('Failed to fetch shared with me:', e);
+  }
+  try { return (await db.getMeta('shared_items')) || []; } catch { return []; }
 }
 
 export async function stopLiveShare(docId) {
@@ -973,14 +1007,6 @@ export function openLiveGuestSocket(shareId) {
   if (guestWs) { try { guestWs.close(); } catch {} guestWs = null; }
   const base = (server || SERVER).replace(/^http/, 'ws');
   const wsUrl = base + '/live/' + encodeURIComponent(shareId) + '/ws' + (session?.token ? '?token=' + encodeURIComponent(session.token) : '');
-  guestWs = makeSocket(wsUrl);
-  guestWs.onmessage = e => {
-    let m;
-    try { m = JSON.parse(e.data); } catch { return; }
-    if (m.live) bus.emit('live-message', m);
-  };
-  return guestWs;
-}
   guestWs = makeSocket(wsUrl);
   guestWs.onmessage = e => {
     let m;
@@ -1247,8 +1273,17 @@ export async function shareNotebook(docId) {
                 btn.textContent = 'Preparing link...';
                 try {
                   const allowed = shareMode === 'friend' ? (restrictedTo.trim() || serverFriends[0] || '') : '';
-                  await startLiveShare(docId, false, allowed);
+                  const docObj = await db.get('docs', docId);
+                  const parentFolder = docObj?.folderId ? await db.get('folders', docObj.folderId) : null;
+                  const extra = {
+                    title: docObj?.title || title,
+                    cover: docObj?.cover || '',
+                    folderId: docObj?.folderId || '',
+                    folderName: parentFolder ? parentFolder.name : ''
+                  };
+                  await startLiveShare(docId, false, allowed, extra);
                   drawLive();
+                  if (allowed) toast(`Shared with ${allowed}! It will appear in their Shared tab.`);
                 } catch (err) {
                   toast('Could not start live share: ' + err.message);
                   btn.disabled = false;
@@ -1266,7 +1301,15 @@ export async function shareNotebook(docId) {
           type: 'checkbox', checked: !!info.canWrite, hidden: true,
           onchange: async e => {
             const val = e.target.checked;
-            await setLiveSharePerm(docId, val, info.allowedEmails);
+            const docObj = await db.get('docs', docId);
+            const parentFolder = docObj?.folderId ? await db.get('folders', docObj.folderId) : null;
+            const extra = {
+              title: docObj?.title || title,
+              cover: docObj?.cover || '',
+              folderId: docObj?.folderId || '',
+              folderName: parentFolder ? parentFolder.name : ''
+            };
+            await setLiveSharePerm(docId, val, info.allowedEmails, extra);
             toast(val ? 'Friend can now write' : 'Friend is now view-only', 2000);
             drawLive();
           }
@@ -1309,8 +1352,16 @@ export async function shareNotebook(docId) {
                 class: 'chip sm' + (currentAllowed.toLowerCase() === fr.toLowerCase() ? ' on' : ''),
                 type: 'button',
                 onclick: async () => {
-                  await setLiveSharePerm(docId, info.canWrite, fr);
-                  toast('Restricted to ' + fr);
+                  const docObj = await db.get('docs', docId);
+                  const parentFolder = docObj?.folderId ? await db.get('folders', docObj.folderId) : null;
+                  const extra = {
+                    title: docObj?.title || title,
+                    cover: docObj?.cover || '',
+                    folderId: docObj?.folderId || '',
+                    folderName: parentFolder ? parentFolder.name : ''
+                  };
+                  await setLiveSharePerm(docId, info.canWrite, fr, extra);
+                  toast('Restricted to ' + fr + ' (will appear in their Shared tab)');
                   drawLive();
                 }
               }, 'Share with ' + fr)),
@@ -1318,7 +1369,15 @@ export async function shareNotebook(docId) {
                 class: 'chip sm' + (!currentAllowed ? ' on' : ''),
                 type: 'button',
                 onclick: async () => {
-                  await setLiveSharePerm(docId, info.canWrite, '');
+                  const docObj = await db.get('docs', docId);
+                  const parentFolder = docObj?.folderId ? await db.get('folders', docObj.folderId) : null;
+                  const extra = {
+                    title: docObj?.title || title,
+                    cover: docObj?.cover || '',
+                    folderId: docObj?.folderId || '',
+                    folderName: parentFolder ? parentFolder.name : ''
+                  };
+                  await setLiveSharePerm(docId, info.canWrite, '', extra);
                   toast('Changed to: anyone with link');
                   drawLive();
                 }
@@ -1431,6 +1490,60 @@ export async function shareFolder(folderId) {
   });
   picker.refreshChips(serverFriends);
 
+  let targetFriend = serverFriends[0] || '';
+  const friendInp = h('input', {
+    class: 'inp sm',
+    type: 'email',
+    placeholder: "Friend's email (e.g. friend@gmail.com)",
+    value: targetFriend,
+    style: 'flex: 1;'
+  });
+  friendInp.oninput = () => { targetFriend = friendInp.value.trim(); };
+
+  const directShareBox = h('div', { style: 'margin-bottom: 20px;' },
+    h('h3', null, 'Share directly to friend\'s Inkleaf'),
+    h('p', { class: 'modal-text small' }, 'This folder will appear automatically under the "Shared" tab in your friend\'s Inkleaf:'),
+    serverFriends.length ? h('div', { class: 'row', style: 'align-items: center; gap: 6px; margin: 8px 0; flex-wrap: wrap;' },
+      h('span', { class: 'modal-text small', style: 'color: var(--muted);' }, 'Quick pick:'),
+      serverFriends.map(fr => h('button', {
+        class: 'chip sm' + (targetFriend.toLowerCase() === fr.toLowerCase() ? ' on' : ''),
+        type: 'button',
+        onclick: () => { targetFriend = fr; friendInp.value = fr; }
+      }, fr))
+    ) : null,
+    h('div', { class: 'row', style: 'gap: 8px; margin-top: 8px;' },
+      friendInp,
+      h('button', {
+        class: 'btn sm primary', type: 'button',
+        onclick: async e => {
+          const email = friendInp.value.trim();
+          if (!email) { toast('Please enter your friend\'s email address'); return; }
+          if (!session) { toast('Please sign in to sync before sharing'); return; }
+          if (!docs.length) { toast('No notebooks to share in this folder'); return; }
+          const btn = e.currentTarget; btn.disabled = true;
+          const b = busy(`Sharing ${docs.length} notebooks with ${email}...`);
+          try {
+            for (const d of docs) {
+              await startLiveShare(d.id, false, email, {
+                title: d.title,
+                cover: d.cover,
+                folderId,
+                folderName: title
+              });
+            }
+            b.done();
+            btn.disabled = false;
+            toast(`Folder "${title}" shared with ${email}! It will appear in their Shared tab.`);
+          } catch (err) {
+            b.done();
+            btn.disabled = false;
+            toast('Could not share folder: ' + err.message);
+          }
+        }
+      }, 'Share folder with friend')
+    )
+  );
+
   const overviewBox = h('div', { style: 'margin-bottom: 16px;' },
     h('p', { class: 'modal-text' },
       `This folder contains ${docs.length} ${docs.length === 1 ? 'notebook' : 'notebooks'} and ${pageCount} ${pageCount === 1 ? 'page' : 'pages'}.`
@@ -1483,7 +1596,7 @@ export async function shareFolder(folderId) {
   modal({
     title: `Share folder "${title}"`,
     wide: true,
-    body: h('div', null, overviewBox, emailBox, fileSection)
+    body: h('div', null, overviewBox, directShareBox, emailBox, fileSection)
   });
 }
 
