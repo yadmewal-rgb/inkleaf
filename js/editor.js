@@ -5673,7 +5673,7 @@ export async function mountEditor(root, docId, opts = {}) {
       { label: 'Add a page', icon: I.addPage, onClick: () => addPageAfter(currentPv()) },
       '-',
       { label: 'Export as PDF', icon: I.pdf, onClick: exportPdf },
-      { label: 'Send a copy to a friend', icon: I.send, onClick: async () => { commitText(); await flush().catch(saveFailed); shareNotebook(doc.id); } },
+      !opts.liveShare ? { label: 'Send a copy to a friend', icon: I.send, onClick: async () => { commitText(); await flush().catch(saveFailed); shareNotebook(doc.id); } } : null,
       { label: 'This page as a picture', icon: I.image, onClick: pagePicture },
       { label: 'Print', icon: I.print, onClick: printDialog },
       '-',

@@ -739,6 +739,16 @@ export async function mountLibrary(root, folderId, opts = {}) {
                   toast('Could not save copy: ' + err.message);
                 }
               }
+            },
+            '-',
+            {
+              label: 'Remove from Shared', icon: I.close, danger: true, onClick: async () => {
+                if (!await confirmBox('Remove shared notebook', `Remove "${item.title || 'this notebook'}" from your Shared tab?`, 'Remove', true)) return;
+                sharedItems = sharedItems.filter(x => x.shareId !== item.shareId);
+                await db.setMeta('shared_items', sharedItems);
+                toast('Removed from your Shared tab');
+                render();
+              }
             }
           ], { align: 'right' });
         }
