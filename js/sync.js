@@ -1931,6 +1931,7 @@ export async function openSettings() {
       style: 'margin-top: 4px; width: 100%;',
       onchange: e => setHwModel(e.target.value)
     }, [
+      h('option', { value: 'gemini-3.8-flash', selected: curModel === 'gemini-3.8-flash' }, 'Gemini 3.8 Flash (Latest · deep reasoning)'),
       h('option', { value: 'gemini-3.5-flash-lite', selected: curModel === 'gemini-3.5-flash-lite' }, 'Gemini 3.5 Flash Lite (Recommended · fast & low quota)'),
       h('option', { value: 'gemini-3.5-flash', selected: curModel === 'gemini-3.5-flash' }, 'Gemini 3.5 Flash'),
       h('option', { value: 'gemini-3.1-flash-lite', selected: curModel === 'gemini-3.1-flash-lite' }, 'Gemini 3.1 Flash Lite'),

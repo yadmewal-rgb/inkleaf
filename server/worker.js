@@ -539,7 +539,7 @@ export class User extends DurableObject {
       const image = body.image;
       const mimeType = body.mimeType || 'image/jpeg';
       const n = Math.max(1, Math.min(40, Number(body.n) || 1));
-      const allowedModels = new Set(['gemini-3.5-flash-lite', 'gemini-3.5-flash', 'gemini-3.1-flash-lite', 'gemini-2.5-flash']);
+      const allowedModels = new Set(['gemini-3.8-flash', 'gemini-3.5-flash-lite', 'gemini-3.5-flash', 'gemini-3.1-flash-lite', 'gemini-2.5-flash']);
       const model = allowedModels.has(body.model) ? body.model : 'gemini-3.5-flash-lite';
       if (!image) return json({ error: 'no-image' }, 400);
 
