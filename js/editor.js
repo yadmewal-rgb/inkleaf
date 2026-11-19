@@ -1646,36 +1646,86 @@ export async function mountEditor(root, docId, opts = {}) {
   // A zigzag drawn over existing ink erases it instead of adding more ink. Returns the items to erase, or null.
   function scribbleTargets(a) {
     const P = a.pts, n = P.length / 3;
-    if (n < 12) return null;
+    if (n < 14) return null; // A real scribble has many points sampled along multiple zigzags
+
     let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity, len = 0;
     for (let i = 0; i < P.length; i += 3) {
       x0 = Math.min(x0, P[i]); x1 = Math.max(x1, P[i]); y0 = Math.min(y0, P[i + 1]); y1 = Math.max(y1, P[i + 1]);
       if (i) len += Math.hypot(P[i] - P[i - 3], P[i + 1] - P[i - 2]);
     }
     const bw = x1 - x0, bh = y1 - y0;
-    if (len < 2.6 * (bw + bh)) return null;
-    // Count the times the line turns back on itself along one axis (small wobbles do not count).
-    const turns = (o, span) => {
-      const hyst = Math.max(4, span * 0.3);
-      let dir = 0, ext = P[o], count = 0;
+    if (bw < 6 && bh < 6) return null;
+    if (len < 2.8 * (bw + bh)) return null;
+
+    // Extract turning points along an axis
+    const getExtrema = (o, span) => {
+      const hyst = Math.max(4, span * 0.22);
+      let dir = 0, ext = P[o], extIdx = 0;
+      const extrema = [];
       for (let i = 3; i < P.length; i += 3) {
         const v = P[i + o];
-        if (dir >= 0 && v > ext) { ext = v; if (!dir && v - P[o] > hyst) dir = 1; }
-        else if (dir <= 0 && v < ext) { ext = v; if (!dir && P[o] - v > hyst) dir = -1; }
-        else if (dir && Math.abs(v - ext) > hyst) { dir = -dir; ext = v; count++; }
+        if (dir >= 0 && v > ext) {
+          ext = v; extIdx = i;
+          if (!dir && v - P[o] > hyst) dir = 1;
+        } else if (dir <= 0 && v < ext) {
+          ext = v; extIdx = i;
+          if (!dir && P[o] - v > hyst) dir = -1;
+        } else if (dir && Math.abs(v - ext) > hyst) {
+          extrema.push({ idx: extIdx, val: ext, x: P[extIdx], y: P[extIdx + 1] });
+          dir = -dir;
+          ext = v;
+          extIdx = i;
+        }
       }
-      return count;
+      if (extrema.length) {
+        extrema.push({ idx: extIdx, val: ext, x: P[extIdx], y: P[extIdx + 1] });
+      }
+      return extrema;
     };
-    if (Math.max(turns(0, bw), turns(1, bh)) < 4) return null;
-    // Only ink lying mostly inside the scribbled area goes, so writing that merely touches a neighbour is safe.
+
+    const xExt = getExtrema(0, bw);
+    const yExt = getExtrema(1, bh);
+
+    // In normal handwriting (especially cursive words like 'minimum', 'water', etc.),
+    // the vertical turns advance forward along the writing line in X.
+    let forwardSteps = 0, totalSteps = 0;
+    for (let i = 1; i < yExt.length; i++) {
+      const dx = yExt[i].x - yExt[i - 1].x;
+      if (dx > 2) forwardSteps++;
+      if (Math.abs(dx) > 2) totalSteps++;
+    }
+    const isAdvancingHandwriting = totalSteps >= 3 && (forwardSteps / totalSteps) >= 0.72 && bw > 1.4 * bh;
+
+    // A genuine scribble requires:
+    // Either horizontal zigzag (at least 5 reversals across the width)
+    // Or vertical zigzag (at least 6 reversals in a localized non-advancing area)
+    const isHorizontalScribble = xExt.length >= 6;
+    const isVerticalScribble = yExt.length >= 7 && !isAdvancingHandwriting;
+
+    if (!isHorizontalScribble && !isVerticalScribble) return null;
+    if (isAdvancingHandwriting) return null;
+
+    // Only ink lying mostly inside the scribbled area goes, and the scribble must cross it multiple times
     const r = Math.max(2, a.size), pad = 4, out = [];
     for (const it of a.pv.page.items) {
       if ((it.t !== 's' && it.t !== 'sh')) continue;
       const b = R.bounds(it);
       if (b.x > x1 || b.x + b.w < x0 || b.y > y1 || b.y + b.h < y0) continue;
       const ix = Math.min(b.x + b.w, x1 + pad) - Math.max(b.x, x0 - pad), iy = Math.min(b.y + b.h, y1 + pad) - Math.max(b.y, y0 - pad);
-      if (ix * iy < 0.65 * b.w * b.h) continue;
-      for (let i = 0; i < P.length; i += 3) if (R.hitsCircle(it, P[i], P[i + 1], r)) { out.push(it); break; }
+      if (ix * iy < 0.5 * b.w * b.h) continue;
+
+      let hitCount = 0, lastHitIdx = -99;
+      for (let i = 0; i < P.length; i += 3) {
+        if (R.hitsCircle(it, P[i], P[i + 1], r)) {
+          if (i - lastHitIdx >= 9) {
+            hitCount++;
+            lastHitIdx = i;
+            if (hitCount >= 3) break;
+          }
+        }
+      }
+      const minHits = (b.w < 10 && b.h < 10) ? 2 : 3;
+      if (hitCount >= minHits) out.push(it);
     }
     return out.length ? out : null;
   }
