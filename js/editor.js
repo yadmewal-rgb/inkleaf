@@ -3879,35 +3879,262 @@ export async function mountEditor(root, docId, opts = {}) {
     panel.replaceChildren();
     panelList = null;
     if (!panelOpen) { fillPanel(); return; }
+    panel.classList.toggle('outline-mode', panelTab === 'outlines');
+
+    const tabThumbnails = h('button', {
+      class: 'panel-tab' + (panelTab === 'thumbnails' ? ' on' : ''),
+      type: 'button',
+      title: 'Thumbnails',
+      onclick: () => { panelTab = 'thumbnails'; panelBm = false; buildPanel(); }
+    }, h('span', { class: 'btn-ic', html: I.pages }), h('span', null, 'Thumbnails'));
+
+    const tabBookmarks = h('button', {
+      class: 'panel-tab' + (panelTab === 'bookmarks' ? ' on' : ''),
+      type: 'button',
+      title: 'Bookmarks',
+      onclick: () => { panelTab = 'bookmarks'; panelBm = true; buildPanel(); }
+    }, h('span', { class: 'btn-ic', html: I.star }), h('span', null, 'Bookmarks'));
+
+    const tabOutlines = h('button', {
+      class: 'panel-tab' + (panelTab === 'outlines' ? ' on' : ''),
+      type: 'button',
+      title: 'Outlines',
+      onclick: () => { panelTab = 'outlines'; panelBm = false; buildPanel(); }
+    }, h('span', { class: 'btn-ic', html: I.list }), h('span', null, 'Outlines'));
+
+    const tabsBar = h('div', { class: 'panel-tabs' }, tabThumbnails, tabBookmarks, tabOutlines);
+
     const q = h('input', {
-      class: 'inp sm', type: 'search', placeholder: 'Find, or page no.', value: panelQ,
-      oninput: () => { panelQ = q.value; fillPanel(); },
+      class: 'inp sm', type: 'search',
+      placeholder: panelTab === 'outlines' ? 'Filter outline...' : panelTab === 'bookmarks' ? 'Find in bookmarks...' : 'Find, or page no.',
+      value: panelQ,
+      oninput: () => {
+        panelQ = q.value;
+        if (panelTab === 'outlines') fillOutlines(panelList);
+        else fillPanel();
+      },
       onkeydown: e => {
         if (e.key !== 'Enter') return;
         const n = /^\d+$/.test(q.value.trim()) ? parseInt(q.value, 10) : 0;
-        if (n >= 1) { panelQ = q.value = ''; scrollToPage(n - 1); fillPanel(); }
+        if (n >= 1) { panelQ = q.value = ''; scrollToPage(n - 1); if (panelTab === 'outlines') fillOutlines(panelList); else fillPanel(); }
       }
     });
-    const bmBtn = h('button', {
-      class: 'chip sm' + (panelBm ? ' on' : ''), type: 'button',
-      onclick: () => { panelBm = !panelBm; bmBtn.classList.toggle('on', panelBm); fillPanel(); }
-    }, h('span', { class: 'btn-ic', html: I.star }), 'Bookmarks');
-    const pickBtn = h('button', {
-      class: 'chip sm' + (pickMode ? ' on' : ''), type: 'button', title: 'Choose several pages to copy, move, delete or export together',
-      onclick: () => { pickMode = !pickMode; if (!pickMode) picked.clear(); lastPick = -1; buildPanel(); }
-    }, pickMode ? 'Done' : 'Select pages');
-    pickBar = pickMode ? h('div', { class: 'pick-bar' }) : null;
-    panel.classList.toggle('picking', pickMode);
-    panelList = h('div', { class: 'panel-list' });
+
     const secs = pages.map((p, i) => ({ p, i })).filter(x => x.p.sec);
-    const secBtn = secs.length ? h('button', {
+    const secBtn = (panelTab === 'thumbnails' && secs.length) ? h('button', {
       class: 'chip sm', type: 'button', title: 'Jump to a section',
       onclick: e => popMenu(e.currentTarget, secs.map((x, n) => ({
         label: `${x.p.sec}  (page ${x.i + 1})`, icon: I.list, onClick: () => { scrollToPage(x.i); fillPanel(); }
       })))
     }, h('span', { class: 'btn-ic', html: I.list }), 'Sections') : null;
-    panel.append(h('div', { class: 'panel-head' }, q, bmBtn, secBtn, pickBtn, pickBar), panelList);
-    fillPanel();
+
+    const pickBtn = panelTab !== 'outlines' ? h('button', {
+      class: 'chip sm' + (pickMode ? ' on' : ''), type: 'button', title: 'Choose several pages to copy, move, delete or export together',
+      onclick: () => { pickMode = !pickMode; if (!pickMode) picked.clear(); lastPick = -1; buildPanel(); }
+    }, pickMode ? 'Done' : 'Select pages') : null;
+
+    pickBar = (panelTab !== 'outlines' && pickMode) ? h('div', { class: 'pick-bar' }) : null;
+    panel.classList.toggle('picking', pickMode && panelTab !== 'outlines');
+
+    const chipsRow = (secBtn || pickBtn) ? h('div', { style: { display: 'flex', gap: '6px', flexWrap: 'wrap' } }, secBtn, pickBtn) : null;
+
+    panelList = h('div', { class: 'panel-list' + (panelTab === 'outlines' ? ' outline-view' : '') });
+    panel.append(h('div', { class: 'panel-head' }, tabsBar, q, chipsRow, pickBar), panelList);
+
+    if (panelTab === 'outlines') fillOutlines(panelList);
+    else fillPanel();
+  }
+
+  async function fillOutlines(container) {
+    if (thumbObs) { thumbObs.disconnect(); thumbObs = null; }
+    thumbs.clear();
+    container.replaceChildren();
+
+    const isPdf = pages.some(p => p.pdf && !p.tpl);
+    if (!isPdf) {
+      const outlineItems = [];
+      pages.forEach((pg, i) => {
+        if (pg.sec || pg.title) {
+          outlineItems.push({
+            title: pg.sec ? (pg.title ? `${pg.sec}: ${pg.title}` : pg.sec) : pg.title,
+            pageIndex: i,
+            isSec: !!pg.sec
+          });
+        }
+      });
+
+      const ql = (panelQ || '').trim().toLowerCase();
+      const filtered = ql ? outlineItems.filter(it => it.title.toLowerCase().includes(ql)) : outlineItems;
+
+      if (!filtered.length) {
+        container.append(h('div', { class: 'panel-empty', style: { padding: '24px 8px' } },
+          h('div', { style: { fontSize: '24px', marginBottom: '6px' } }, '📑'),
+          h('b', null, outlineItems.length ? 'No outline items match' : 'No outline yet'),
+          h('p', { style: { marginTop: '4px', fontSize: '12px', color: 'var(--muted)' } },
+            outlineItems.length ? 'Try a different search word.' : 'Name pages or add section dividers to create an outline.'
+          )
+        ));
+        return;
+      }
+
+      const outlineWrap = h('div', { class: 'outline' });
+      const cur = pvs.indexOf(currentPv());
+      filtered.forEach(item => {
+        const btn = h('button', {
+          class: 'ol' + (item.pageIndex === cur ? ' on' : ''),
+          type: 'button',
+          onclick: () => {
+            scrollToPage(item.pageIndex);
+            outlineWrap.querySelectorAll('.ol.on').forEach(el => el.classList.remove('on'));
+            btn.classList.add('on');
+            if (innerWidth < 700) togglePanel();
+          }
+        },
+          h('span', { class: 'ol-title' + (item.isSec ? ' sec' : '') }, item.title),
+          h('small', null, String(item.pageIndex + 1))
+        );
+        outlineWrap.append(btn);
+      });
+      container.append(outlineWrap);
+      return;
+    }
+
+    const aidSet = [...new Set(pages.filter(p => p.pdf && !p.tpl).map(p => p.pdf.a))];
+    const primaryAid = aidSet[0];
+
+    if (cachedAid !== primaryAid || !cachedNativeList || !cachedAiList) {
+      container.append(h('div', { class: 'panel-empty', style: { padding: '16px 8px' } }, 'Loading outline...'));
+      const nativeList = [];
+      for (const aid of aidSet) {
+        for (const o of await pdfOutline(aid).catch(() => [])) nativeList.push({ ...o, aid });
+      }
+      const aiList = [];
+      for (const aid of aidSet) {
+        const saved = (await db.getMeta('toc:' + aid)) || [];
+        for (const o of saved) aiList.push({ ...o, aid });
+      }
+      cachedAid = primaryAid;
+      cachedNativeList = nativeList;
+      cachedAiList = aiList;
+    }
+
+    const nativeList = cachedNativeList || [];
+    const aiList = cachedAiList || [];
+
+    let showMode = outlineMode;
+    if (!showMode) {
+      showMode = aiList.length ? 'ai' : nativeList.length ? 'native' : 'none';
+    }
+
+    container.replaceChildren();
+
+    const activeRows = showMode === 'ai' ? aiList : nativeList;
+
+    async function triggerScan() {
+      const b = busy('Scanning PDF headings with AI...');
+      try {
+        const generated = await generatePdfOutline(primaryAid);
+        b.done();
+        if (!generated || !generated.length) {
+          toast('Could not find chapter headings in this PDF.');
+          return;
+        }
+        await db.setMeta('toc:' + primaryAid, generated);
+        cachedAiList = generated.map(o => ({ ...o, aid: primaryAid }));
+        outlineMode = 'ai';
+        toast(`Table of contents ready (${generated.length} sections)`);
+        buildPanel();
+      } catch (err) {
+        b.done();
+        toast('Failed to generate outline: ' + (err.message || err));
+      }
+    }
+
+    if (!activeRows.length) {
+      container.append(h('div', { class: 'outline-empty' },
+        h('div', { style: { fontSize: '26px', marginBottom: '8px' } }, '📑'),
+        h('b', null, 'No Table of Contents'),
+        h('p', { class: 'panel-empty', style: { margin: '6px 0 14px' } }, 'This PDF has no built-in outline or chapters.'),
+        h('button', {
+          class: 'btn primary sm',
+          type: 'button',
+          style: { width: '100%', justifyContent: 'center' },
+          onclick: () => triggerScan()
+        }, '✨ Generate outline with AI')
+      ));
+      return;
+    }
+
+    if (showMode === 'ai') {
+      container.append(h('div', { class: 'ai-badge-row' },
+        h('div', { class: 'ai-badge-text' },
+          h('b', null, '✨ Generated with AI'),
+          h('span', null, `${aiList.length} sections`)
+        ),
+        h('div', { style: { display: 'flex', gap: '4px' } },
+          nativeList.length ? h('button', {
+            class: 'btn sm', type: 'button', title: 'Switch back to original bookmarks in the PDF',
+            onclick: () => { outlineMode = 'native'; buildPanel(); }
+          }, 'Original') : null,
+          h('button', {
+            class: 'btn sm', type: 'button', title: 'Re-scan with AI',
+            onclick: () => triggerScan()
+          }, 'Re-scan')
+        )
+      ));
+    } else {
+      container.append(h('div', { class: 'ai-badge-row built-in' },
+        h('div', { class: 'ai-badge-text' },
+          h('b', null, 'PDF Bookmarks'),
+          h('span', null, `${nativeList.length} items`)
+        ),
+        h('div', { style: { display: 'flex', gap: '4px' } },
+          aiList.length ? h('button', {
+            class: 'btn sm', type: 'button', title: 'Switch to AI outline',
+            onclick: () => { outlineMode = 'ai'; buildPanel(); }
+          }, 'Use AI') : null,
+          h('button', {
+            class: 'btn sm', type: 'button', title: 'Re-scan with AI',
+            onclick: () => triggerScan()
+          }, '✨ Re-scan')
+        )
+      ));
+    }
+
+    const outlineWrap = h('div', { class: 'outline' });
+    const curIdx = pvs.indexOf(currentPv());
+    const ql = (panelQ || '').trim().toLowerCase();
+
+    let shown = 0;
+    for (const o of activeRows) {
+      if (ql && !(o.title || '').toLowerCase().includes(ql)) continue;
+      const k = pages.findIndex(p => p.pdf && p.pdf.a === o.aid && p.pdf.i === o.i);
+      shown++;
+      const btn = h('button', {
+        class: 'ol' + (k === curIdx ? ' on' : ''),
+        type: 'button',
+        disabled: k < 0,
+        style: { paddingLeft: (8 + (o.depth || 0) * 12) + 'px' },
+        onclick: () => {
+          if (k >= 0) {
+            scrollToPage(k);
+            outlineWrap.querySelectorAll('.ol.on').forEach(el => el.classList.remove('on'));
+            btn.classList.add('on');
+            if (innerWidth < 700) togglePanel();
+          }
+        }
+      },
+        h('span', { class: 'ol-title', title: o.title || 'Untitled' }, o.title || 'Untitled'),
+        h('small', null, k >= 0 ? String(k + 1) : '')
+      );
+      outlineWrap.appendChild(btn);
+    }
+
+    if (!shown && ql) {
+      outlineWrap.appendChild(h('p', { class: 'panel-empty' }, 'No outline items match.'));
+    }
+
+    container.appendChild(outlineWrap);
   }
 
   function fillPanel() {
@@ -3929,10 +4156,10 @@ export async function mountEditor(root, docId, opts = {}) {
     let shown = 0, secN = 0;
     pages.forEach((pg, i) => {
       const secColor = pg.sec ? SEC_COLORS[secN++ % SEC_COLORS.length] : null;
-      if (panelBm && !pg.bm) return;
+      if (panelTab === 'bookmarks' && !pg.bm) return;
       if (ql && !(numeric ? String(i + 1).startsWith(ql) : pageMatches(pg, ql))) return;
       shown++;
-      if (pg.sec) panelList.append(h('div', { class: 'sec-head', style: { '--c': secColor } }, pg.sec)); // a section starts here
+      if (pg.sec && panelTab === 'thumbnails') panelList.append(h('div', { class: 'sec-head', style: { '--c': secColor } }, pg.sec)); // a section starts here
       const c = h('canvas', { class: 'thumb-c' });
       c._page = pg;
       c.width = 220;
@@ -3981,7 +4208,19 @@ export async function mountEditor(root, docId, opts = {}) {
       dragCard(card, i);
       thumbObs.observe(c);
     });
-    if (!shown) panelList.append(h('p', { class: 'panel-empty' }, panelBm && !ql ? 'No bookmarked pages yet. Tap the star under a page.' : 'No pages match.'));
+    if (!shown) {
+      if (panelTab === 'bookmarks') {
+        panelList.append(h('div', { class: 'panel-empty', style: { padding: '24px 8px' } },
+          h('div', { style: { fontSize: '26px', marginBottom: '6px' } }, '⭐'),
+          h('b', null, ql ? 'No bookmarks match' : 'No bookmarks yet'),
+          h('p', { style: { marginTop: '4px', fontSize: '12px', color: 'var(--muted)' } },
+            ql ? 'Try a different search word.' : 'Tap the star on any page thumbnail to bookmark it and find it quickly here.'
+          )
+        ));
+      } else {
+        panelList.append(h('p', { class: 'panel-empty' }, 'No pages match.'));
+      }
+    }
     const on = panelList.querySelector('.thumb.on');
     if (on && !ql && !pickMode) on.scrollIntoView({ block: 'center' });
     updatePick();
@@ -5742,5 +5981,5 @@ export async function mountEditor(root, docId, opts = {}) {
   if (opts.q) { findInp.value = opts.q; openFind(); } // opened from a library search: show the matches
   drawTray();
 
-  return { destroy, outlineDialog };
+  return { destroy, outlineDialog, openOutlines };
 }
