@@ -106,7 +106,7 @@ export const COMMON_TYPOS = {
   sugestion: ['suggestion']
 };
 
-// Built-in English word vocabulary (frequent words + academic + everyday language)
+// Built-in English word vocabulary (frequent words + academic + everyday language + sciences)
 const VOCAB_RAW = `
 a about above accept according account across act action activity actually add address administration admit adult affect
 after again against age agency agent ago agree agreement ahead air all allow almost alone along already also although
@@ -118,7 +118,7 @@ blue board body book born both box boy break bring brother build building busine
 can cancer candidate capital car card care career carry case catch cause cell center central century certain certainly
 chair challenge chance change character charge check choice choose church circumstance cite citizen city civil claim
 class clear clearly close coach cold collection college color come commercial common community company compare comparison
-computer concern condition conference congress consider consumer contain continue control cost could country couple
+computer concern condition conference congress consider consumer consume consumption contain continue control cost could country couple
 course court cover create creation credit crime cultural culture cup current customer cut dark data daughter day
 dead deal death debate decade decide decision declare deep defense degree democrat democratic describe design despite
 detail determine develop development die difference different difficult dinner direction director discover discuss
@@ -148,13 +148,13 @@ price principle priority process produce product program project promise protect
 question quickly quite race radio raise range rate rather reach read ready real realize reason receive recent recently
 recognize record reduce reflect region relate relationship religious report represent request require research resource
 respond response rest result return reveal rich right ring rise risk road role rock room rule run running rush save
-say science scientist screen sea search season seat second section security see seek seem select self sell senate
+say science scientist scientific screen sea search season seat second section security see seek seem select self sell senate
 send senior sense series serious serve service set settlement several share she shift short should shoulder show
 side sight sign signal significant simple simply since single sister sit site situation six size skill skin small
 so social society soft software soldier some somebody someone something sometimes standard star start state station
 stay statement stock stop step straight street strategy structure student study success successful such sudden
 suggest suggest summer support sure surface survive symbol system table talk target task teacher technology tell
-term text text than thank that the their them then there these they thing think third this those though thought
+term text than thank that the their them then there these they thing think third this those though thought
 thousand threat three through throw time today together tonight tomorrow too total touch tough toward towel town
 trade tradition training transit treat treatment tree true truth turn twenty two type under understand union until
 up upon us use used useful user valid value variable variety various very victim view visit visual voice vote wait
@@ -162,6 +162,38 @@ walk wall want war watch water way we weapon wear week weigh weight well west we
 whether which while white whole whose why wide win wind window wish with within without woman wonder word work
 worker world worry worth would wrap write writer written writing wrong yard year yes yet you young your yours
 yourself zone zero
+
+abiotic absorption acid active adaptation adenine aerobic aerosol aggregate alga algae allele allometry amino
+ammonium anatomy animal anomaly antibiotic antibody antigen aquatic aqueous asexual assimilation atmosphere atom
+autecology autoecology autotroph bacteria bacterium base biodiversity biogeochemical biomass biome biosphere biotic
+blood body bond botany buffer calorie carbohydrate carbon catalyst cell cellular cellulose charge chemical
+chemistry chlorophyll chloroplast chromosome circulation circulatory climate climax clone codon community competition
+compound concentration concept consumer consumers consumption core cortex cycle cytoplasm decomposer decomposition density
+desalination desert detritivore detrivores diffusion digestion diploid diversity dna dominant dormancy dormant
+ecology ecosystem ectotherm element embryo emission endocrine endotherm energy enzyme equilibrium erosion essential
+estuary eukaryote evaporation evolution excretion experiment extinction fauna feedback female fermentation fertilization
+fiber fission fitness flora food forest formula fossil frequency friction fungus gamete gas gene generation
+genetic genetics genome genotype genus geology glucose glycerol glycoprotein greenhouse growth habitat haploid
+heat hemoglobin herbivore heredity heterotroph homeostasis hormone host humidity hybrid hydrocarbon hydrogen
+hydrolysis hypothesis immune immunity individual infection inheritance inorganic insect instinct interaction
+intercellular intestine ion isotope kinetic kingdom lactate larva layer leaf light lipid liquid litter liver
+lymph macroecology macromolecule male mammal marine mass matter meiosis membrane metabolism meter microbe
+microbiology microclimate microhabitat microscope migration mineral mitochondrion mitosis mixture molecule mollusk
+monosaccharide morphology mutation mutualism mycology natural necrosis negative neutral neutron niche nitrogen
+nocturnal node nomad nucleic nucleotide nucleus nutrient nutrition offspring omnivore ontology order organ
+organelle organic organism osmosis oxidation oxygen ozone parasite parasitism pathogen peptide permeability ph
+phenotype phloem phosphate phosphorus photosynthesis physiology pigment planetary plankton plant plasma plasmid
+plate pollen pollinator pollution polymer polypeptide polysaccharide population positive predator prey producer
+productivity prokaryote protein proton protozoa radiation reaction receptor recessive recombinant recycle reflex
+region reproduction reservoir respiration response ribosome rna root saliva sample saprophyte saturated savanna
+scale science scientific scientist season secondary secretion sediment seed selection semipermeable sense sensory
+sequence serology sex sexual shelter shoot sibling sight skeleton skin soil solar solute solution solvent
+speciation species specific specimen spectrum sperm spore stability stimulus stomata stratum structure study studied
+substance substrate succession sugar sunlight suspension symbiosis syn-ecology synecology synthesis system taxonomy
+temperature terrestrial territory theory thermal tissue toxin trace trait transcription transformation translation
+transmission transpiration transport tree trophic tundra turgor uncertainty urea urine vaccine vacuole vapor
+variance vascular vector vegetation velocity venom vertebrate vesicle virus viscous vitamin volume water wavelength
+weather weight wildlife wood yeast yield zoology zygote
 `;
 
 const DICT = new Set(
@@ -219,22 +251,35 @@ function lev(a, b, max = 2) {
 // Check if a single cleaned English word is valid
 function isWordValid(w, userDict) {
   if (!w || w.length <= 1) return true; // ignore lone letters (a, i, x)
-  if (/^\d+$/.test(w) || /^[\d.,%$#@!+-]+$/.test(w)) return true; // numbers, formulas
+  if (/^\d+$/.test(w) || /^[\d/.,%$#@!+:-]+$/.test(w)) return true; // numbers, dates (20/11/2026), math
   if (/^[A-Z0-9_]+$/.test(w)) return true; // ALL_CAPS acronyms or codes (PDF, URL, API)
+  // Chemical formulas like C6H12O6, CO2, H2O, O2 (letters mixed with digits)
+  if (/[a-zA-Z]+[0-9]+|[0-9]+[a-zA-Z]+/i.test(w)) return true;
 
   const lw = w.toLowerCase();
   if (DICT.has(lw) || userDict.has(lw) || sessionIgnored.has(lw)) return true;
 
-  // Suffix checks (simple stemming)
+  // Suffix checks (stemming)
   if (lw.endsWith('s') && (DICT.has(lw.slice(0, -1)) || userDict.has(lw.slice(0, -1)))) return true;
   if (lw.endsWith('es') && (DICT.has(lw.slice(0, -2)) || userDict.has(lw.slice(0, -2)))) return true;
   if (lw.endsWith('ed') && (DICT.has(lw.slice(0, -2)) || DICT.has(lw.slice(0, -1)) || userDict.has(lw.slice(0, -2)))) return true;
+  // study -> studied, carry -> carried
+  if (lw.endsWith('ied') && (DICT.has(lw.slice(0, -3) + 'y') || userDict.has(lw.slice(0, -3) + 'y'))) return true;
+  // study -> studies, category -> categories
+  if (lw.endsWith('ies') && (DICT.has(lw.slice(0, -3) + 'y') || userDict.has(lw.slice(0, -3) + 'y'))) return true;
   if (lw.endsWith('ing') && (DICT.has(lw.slice(0, -3)) || DICT.has(lw.slice(0, -3) + 'e') || userDict.has(lw.slice(0, -3)))) return true;
   if (lw.endsWith('ly') && (DICT.has(lw.slice(0, -2)) || userDict.has(lw.slice(0, -2)))) return true;
+  if (lw.endsWith('ers') && (DICT.has(lw.slice(0, -3)) || DICT.has(lw.slice(0, -1)) || userDict.has(lw.slice(0, -3)))) return true;
+  // science -> scientific, specific
+  if (lw.endsWith('ific') && (DICT.has(lw.slice(0, -4) + 'ce') || DICT.has(lw.slice(0, -4) + 'e') || DICT.has(lw.slice(0, -4)))) return true;
+  // ecology, geology, biology, autoecology, synecology
+  if (lw.endsWith('ology') || lw.endsWith('ological') || lw.endsWith('ecology')) return true;
 
   // Prefix checks
   if (lw.startsWith('un') && (DICT.has(lw.slice(2)) || userDict.has(lw.slice(2)))) return true;
   if (lw.startsWith('re') && (DICT.has(lw.slice(2)) || userDict.has(lw.slice(2)))) return true;
+  if (lw.startsWith('auto') && (DICT.has(lw.slice(4)) || userDict.has(lw.slice(4)))) return true;
+  if (lw.startsWith('syn-') && (DICT.has(lw.slice(4)) || userDict.has(lw.slice(4)))) return true;
 
   return false;
 }
@@ -276,7 +321,7 @@ export function checkWord(rawWord) {
   return {
     misspelled: true,
     clean,
-    suggestions: sugs.length ? sugs : ['the', 'their']
+    suggestions: sugs
   };
 }
 

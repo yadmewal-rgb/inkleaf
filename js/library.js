@@ -12,7 +12,7 @@ import { pdfPagesText } from './pdftools.js';
 import { exportFlow } from './export.js';
 import { renderPageTo } from './render.js';
 import { openSettings, syncNow, syncStatus, shareNotebook, shareFolder, stopLiveShare, importBackup, fetchSharedWithMe, fetchLiveDoc, fetchMyShares } from './sync.js';
-import { pageIndex, matchIndex, hwOn } from './hwsearch.js';
+import { pageIndex, matchIndex, hwOn, getActiveHwModel, formatModelName } from './hwsearch.js';
 
 const SIZE_OPTS = [{ v: 'a4', label: 'A4 portrait' }, { v: 'a4l', label: 'A4 landscape' }, { v: 'letter', label: 'Letter' }];
 const SORTS = [['edited', 'Last edited'], ['opened', 'Last opened'], ['name', 'Name'], ['created', 'Date created']];
@@ -321,10 +321,31 @@ export async function mountLibrary(root, folderId, opts = {}) {
   });
   const binBtn = h('button', { class: 'ic', type: 'button', title: 'Recycle bin', html: I.trash, onclick: () => { location.hash = '#/bin'; } });
 
+  const hwAiBadge = h('button', {
+    class: 'hw-ai-badge',
+    type: 'button',
+    onclick: e => { e.stopPropagation(); openSettings(); }
+  });
+  const updateAiBadge = () => {
+    const on = hwOn();
+    if (on) {
+      search.classList.add('has-ai-pill');
+      hwAiBadge.textContent = formatModelName(getActiveHwModel()).replace('Gemini ', '');
+      hwAiBadge.title = `Handwriting Search AI: ${formatModelName(getActiveHwModel())} (Click to open Settings)`;
+      hwAiBadge.style.display = '';
+    } else {
+      search.classList.remove('has-ai-pill');
+      hwAiBadge.style.display = 'none';
+    }
+  };
+  updateAiBadge();
+  bus.on('hw-model-changed', updateAiBadge);
+  bus.on('hw-status', updateAiBadge);
+
   const el = h('div', { class: 'lib' },
     h('header', { class: 'lib-head' },
       h('div', { class: 'brand' }, h('img', { src: 'icons/icon.svg', alt: '', width: 30, height: 30 }), h('span', null, 'Inkleaf')),
-      bin ? h('div', { class: 'grow' }) : h('div', { class: 'search-wrap' }, h('span', { class: 'search-ic', html: I.search }), search),
+      bin ? h('div', { class: 'grow' }) : h('div', { class: 'search-wrap' }, h('span', { class: 'search-ic', html: I.search }), search, hwAiBadge),
       bin ? null : h('button', {
         class: 'ic', type: 'button', title: 'Journal: open today\'s page', html: I.calendar,
         onclick: async () => { const i = await journalPage(); location.hash = '#/d/journal?p=' + (i + 1); }

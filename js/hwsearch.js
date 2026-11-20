@@ -129,6 +129,23 @@ export function setHwModel(m) {
   bus.emit('hw-model-changed', { model: getActiveHwModel(), pref: getHwModelConfig() });
 }
 
+export function formatModelName(m) {
+  const model = m || getActiveHwModel();
+  const map = {
+    'gemini-3.8-flash': 'Gemini 3.8 Flash',
+    'gemini-3.8-flash-lite': 'Gemini 3.8 Flash Lite',
+    'gemini-3.7-flash': 'Gemini 3.7 Flash',
+    'gemini-3.7-flash-lite': 'Gemini 3.7 Flash Lite',
+    'gemini-3.6-flash': 'Gemini 3.6 Flash',
+    'gemini-3.6-flash-lite': 'Gemini 3.6 Flash Lite',
+    'gemini-3.5-flash': 'Gemini 3.5 Flash',
+    'gemini-3.5-flash-lite': 'Gemini 3.5 Flash Lite',
+    'gemini-3.1-flash-lite': 'Gemini 3.1 Flash Lite',
+    'gemini-2.5-flash': 'Gemini 2.5 Flash'
+  };
+  return map[model] || model;
+}
+
 export const hwOn = () => { try { return localStorage.getItem(KEY) === '1'; } catch { return false; } };
 export function setHwOn(on) {
   try { localStorage.setItem(KEY, on ? '1' : '0'); } catch { /* private mode */ }

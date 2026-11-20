@@ -11,7 +11,7 @@ import { I } from './icons.js';
 import { popMenu, popover, confirmBox, promptText, toast, modal, chipGroup, templatePicker, PAPER_OPTS, busy } from './ui.js';
 import { exportFlow, pdfAsPictures } from './export.js';
 import { syncNow, syncStatus, mergePage, mergeDoc, shareNotebook, sendLiveDelta, sendGuestLiveDelta } from './sync.js';
-import { matchPage, matchSync, hwOn, pageIndex, queuePages } from './hwsearch.js';
+import { matchPage, matchSync, hwOn, pageIndex, queuePages, getActiveHwModel, formatModelName } from './hwsearch.js';
 import { findSpellingErrorsOnPage, addToUserDict, ignoreWord } from './spellcheck.js';
 import {
   GAP, MIN_S, MAX_S, COARSE, MAXPX, REGION_PX, REGION_PAD, PULL_PX, PALM_MS, INK, INK_ON_DARK, PEN_COLORS, HL_COLORS, SHAPES,
@@ -105,8 +105,22 @@ export async function mountEditor(root, docId, opts = {}) {
   // Find bar
   const findInp = h('input', { class: 'inp sm', type: 'search', placeholder: 'Find in this notebook' });
   const findLbl = h('span', { class: 'find-n' });
+  const findAiBadge = h('span', {
+    class: 'hw-ai-badge',
+    title: 'Handwriting Search AI Model',
+    style: hwOn() ? '' : 'display:none;'
+  }, formatModelName(getActiveHwModel()).replace('Gemini ', ''));
+
+  bus.on('hw-model-changed', () => {
+    findAiBadge.textContent = formatModelName(getActiveHwModel()).replace('Gemini ', '');
+    findAiBadge.style.display = hwOn() ? '' : 'none';
+  });
+  bus.on('hw-status', () => {
+    findAiBadge.style.display = hwOn() ? '' : 'none';
+  });
+
   const findBar = h('div', { class: 'findbar', hidden: true },
-    findInp, findLbl,
+    findInp, findAiBadge, findLbl,
     h('button', { class: 'ic sm', type: 'button', title: 'Previous (Shift+Enter)', html: I.up, onclick: () => findStep(-1) }),
     h('button', { class: 'ic sm', type: 'button', title: 'Next (Enter)', html: I.down, onclick: () => findStep(1) }),
     h('button', { class: 'ic sm', type: 'button', title: 'Close', html: I.close, onclick: () => closeFind() }));

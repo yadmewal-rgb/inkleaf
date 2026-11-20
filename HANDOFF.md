@@ -3,51 +3,43 @@
 **Written:** 2026-11-20 by agy (Antigravity). **Next:** Claude Code or agy.
 
 ## What the owner asked
-1. "make it like = use gemini 3.8 then 3.7 then 3.6 and then lower 3.5 and switchthem automatically if any of them is failed , when i open this every time then start it from best version available , keep option of changing it from settings, ,,, when genimi do not work then shift it to cloudflare and if its limit is exahusted then use device,, when device is offline then use divices and when it came online then check these with AI , tell me is it correct and how you going to do it ?"
-2. "if lite version of 3.8,3.7 ,3.6 available then use them according to their capability and go ahead"
+1. "change setting icon with popular icon of setting , show which AI version is currently being used in handwriting search"
+2. "How I will fix this: Remove dummy suggestions fallback, expand dictionary, fix grammar rules, ignore chemical formulas... Shall I go ahead and apply this fix right now? yes proceed and tell me which dictionary version you are adding here, does it online or offline , what is no same word in your dictionary"
+3. "when i send a new message befor repling by you , what will happen to the old task ?"
 
-## Done (v58 Release)
-1. **Tiered Model Cascade Waterfall (`js/hwsearch.js`)**:
-   - Sequential capability waterfall:
-     `gemini-3.8-flash` ➔ `gemini-3.8-flash-lite` ➔ `gemini-3.7-flash` ➔ `gemini-3.7-flash-lite` ➔ `gemini-3.6-flash` ➔ `gemini-3.6-flash-lite` ➔ `gemini-3.5-flash` ➔ `gemini-3.5-flash-lite` ➔ `gemini-3.1-flash-lite` ➔ `gemini-2.5-flash`.
-   - On every fresh app open / session start, always begins at the top best model (`gemini-3.8-flash`).
-   - If an active model fails (404 not found, 429 quota exhausted, 503 overloaded), it automatically steps down to the next model in the waterfall without crashing or stopping.
-2. **Provider Failover (Direct Gemini ➔ Cloudflare Worker ➔ On-Device)**:
-   - **Provider 1 (Direct Gemini)**: If user entered an API key, tries direct Gemini stepping down models.
-   - **Provider 2 (Cloudflare Worker)**: If direct Gemini fails or no key is present, shifts automatically to Cloudflare Worker (`/ocr`). Worker whitelist updated to support all 3.8, 3.7, 3.6, and 3.5 models with built-in fallback.
-   - **Provider 3 (On-Device)**: If offline or daily AI limits are exhausted, shifts to 100% on-device spellcheck and search with zero interruption.
-3. **Automatic Online Reconnection Sync**:
-   - `online` event listener automatically restores fail count, resets waterfall to the top model (`gemini-3.8-flash`), and scans/indexes all notes written while offline.
-   - Newly transcribed handwriting automatically triggers live spellcheck red dotted underlines on screen.
-4. **Settings UI & Live Waterfall Status (`js/sync.js`)**:
-   - Added **Auto (Best Available: 3.8 ➔ 3.5 fallback) — Recommended** as default setting.
-   - Dropdown includes options for all individual models if the user prefers to lock a specific version.
-   - Real-time status subtitle badge showing the active model and waterfall path:
-     `Active now: gemini-3.8-flash · Fallback path: 3.8 ➔ 3.7 ➔ 3.6 ➔ 3.5 ➔ Cloudflare ➔ Device`.
-5. **App Version & Cache**:
-   - Bumped to `v58` in `sw.js` and `js/sync.js`.
+## Done (v59 Release)
+1. **Popular Settings Gear Icon (`js/icons.js`)**:
+   - Replaced the spiky sun-wheel icon with the standard, universally recognized mechanical gear cog icon (`I.settings`).
+2. **Active AI Model Version Display (`js/hwsearch.js`, `js/library.js`, `js/editor.js`, `js/sync.js`, `css/app.css`)**:
+   - **Library Search Bar:** Displays a green active AI pill badge (e.g. `3.8 Flash`) directly inside the search bar, indicating which model powers handwriting search. Clicking it opens Settings.
+   - **Notebook Find Bar:** Displays the active model badge (`AI: 3.8 Flash`) inside the notebook find bar during note searches.
+   - **Settings Dialog:** Added an active model pill badge (`Gemini 3.8 Flash`) directly on the Handwriting search row, and detailed active model status text.
+3. **Comprehensive Offline Dictionary & Spellcheck Fixes (`js/spellcheck.js`, `js/editor.js`)**:
+   - **Expanded Scientific & Academic Vocabulary:** Added standard biology, ecology, chemistry, and academic terms (e.g., *glucose*, *biotic*, *abiotic*, *scientific*, *biodiversity*, *biomass*, *consumers*, *ecology*, *autoecology*, *sunlight*, *detritivores*).
+   - **100% Offline & Deduplicated:** Stored directly inside the offline client bundle in a JavaScript `Set` (guarantees zero duplicate words and instant sub-millisecond lookups with no internet required).
+   - **Grammar Stemming & Suffixes:** Added `-ied` (`study` ➔ `studied`, `carry` ➔ `carried`), `-ies` (`species`, `categories`), `-ific` (`scientific`), `-ology` (`ecology`, `geology`, `autoecology`), and `-ers` (`consumers`).
+   - **Formula & Math Recognition:** Automatically skips chemical formulas ($C_6H_{12}O_6$, $CO_2$, $H_2O$, $O_2$), date strings (`20/11/2026`), and numbers.
+   - **Removed Dummy Fallback:** Removed hardcoded `['the', 'their']` fallback; only shows real close suggestions, or "No suggestions found" if none match.
+4. **App Version & Cache**:
+   - Bumped to `v59` in `sw.js` and `js/sync.js`.
 
 ## Tested
-- Verified JS syntax with `node --check`.
+- Verified JS syntax across all 8 modified files with `node --check`.
 - Ran unit tests verifying:
-  - 10-model cascade hierarchy and capability order.
-  - Fresh session starts at `gemini-3.8-flash`.
-  - Sequential stepDown through all models.
-  - Graceful stepDown termination.
-  - Online reconnection reset back to `gemini-3.8-flash`.
-  - Settings manual lock and Auto restore.
+  - Scientific words (*Glucose*, *Abiotic*, *Scientific*, *studied*, *ecology*, *biodiversity*) are marked 100% valid.
+  - Chemical formulas ($C_6H_{12}O_6$, $CO_2$, $O_2$) and dates are ignored.
+  - Typos (*thier* ➔ *their*) suggest exact fixes.
+  - Words without close matches do not suggest dummy words like `the` or `their`.
 - Ran live browser tests via Edge CDP:
-  - Verified Settings modal renders `Settings (v58)` and `Inkleaf v58`.
-  - Verified default dropdown shows `Auto (Best Available: 3.8 ➔ 3.5 fallback) — Recommended`.
-  - Verified live active model status badge.
-  - Simulated model step-down in live session updating status to `Active now: gemini-3.7-flash (auto fallback)`.
-- Verified screenshots:
-  - `C:\Users\yadram\AgentTools\shots\ai_waterfall_settings_row.png`
-  - `C:\Users\yadram\AgentTools\shots\settings_waterfall_card.png`
+  - Verified popular mechanical gear Cog icon renders in library header.
+  - Verified `3.8 Flash` pill badge renders inside the library search bar.
+  - Verified `Gemini 3.8 Flash` active badge and status text in Settings (v59).
+- Verified screenshot:
+  - `C:\Users\yadram\AgentTools\shots\settings_gear_and_ai_row.png`
 
 ## Live now
 - Committed locally to branch `main`.
 - Running locally at http://localhost:8080.
 
 ## Owner must do
-- Push to GitHub: Run `git push origin main` in PowerShell when ready to release to GitHub Pages and Cloudflare Worker.
+- Push to GitHub: Run `git push origin main` in PowerShell when ready to release to GitHub Pages.

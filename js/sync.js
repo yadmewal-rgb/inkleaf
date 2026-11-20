@@ -13,7 +13,7 @@ import { db, assetIdsOf } from './db.js';
 import { h, uid, bus, loadScript, downloadBlob, bufToB64, b64ToBuf } from './util.js';
 import { modal, toast, confirmBox, busy } from './ui.js';
 import { I } from './icons.js';
-import { hwOn, setHwOn, status as hwStatus, setCloudOcr, getHwUsage, setHwLimit, getHwModel, setHwModel, getHwModelConfig, getActiveHwModel, MODEL_CASCADE } from './hwsearch.js';
+import { hwOn, setHwOn, status as hwStatus, setCloudOcr, getHwUsage, setHwLimit, getHwModel, setHwModel, getHwModelConfig, getActiveHwModel, MODEL_CASCADE, formatModelName } from './hwsearch.js';
 
 const SERVER = 'https://inkleaf-sync.yadmewal.workers.dev';
 // drive.appdata: Inkleaf's hidden app folder (files it syncs); drive.file: only files Inkleaf itself creates, used
@@ -1910,13 +1910,14 @@ export async function openSettings() {
   const drawHw = () => {
     const on = hwOn();
     const st = hwStatus;
-    const txt = !on ? 'Turn on to search handwritten notes by typing in the find bar.'
-      : st.err ? `Status: ${st.err}`
-      : st.state === 'working' ? `Reading handwriting (${st.left} left)...`
-      : 'Ready. Uses fast Cloud AI (Gemini) with page batching when online.';
-    const gemKey = localStorage.getItem('inkleaf.geminiKey') || '';
     const curPref = getHwModelConfig();
     const activeModel = getActiveHwModel();
+    const activeName = formatModelName(activeModel);
+    const txt = !on ? 'Turn on to search handwritten notes by typing in the find bar.'
+      : st.err ? `Status: ${st.err}`
+      : st.state === 'working' ? `Reading handwriting with ${activeName} (${st.left} left)...`
+      : `Ready. Active model: ${activeName} (${curPref === 'auto' ? 'Auto best tier' : 'Custom locked'}) with offline sync.`;
+    const gemKey = localStorage.getItem('inkleaf.geminiKey') || '';
     const usage = getHwUsage();
     const pct = Math.min(100, Math.round(((usage.calls || 0) / (usage.limit || 1500)) * 100));
 
@@ -1995,7 +1996,8 @@ export async function openSettings() {
             }),
             'Search handwriting'
           ),
-          h('span', { class: 'bk-sub' }, on ? 'Enabled' : 'Disabled')
+          on ? h('span', { class: 'hw-ai-badge', style: 'position: static; transform: none;' }, activeName)
+             : h('span', { class: 'bk-sub' }, 'Disabled')
         ),
         h('p', { class: 'modal-text small', style: 'margin-bottom: 6px;' }, txt),
         on ? h('div', { class: 'field', style: 'margin-top: 6px;' },
@@ -2019,7 +2021,7 @@ export async function openSettings() {
   const offModelChanged = bus.on('hw-model-changed', () => drawHw());
 
   const m = modal({
-    title: 'Settings (v58)',
+    title: 'Settings (v59)',
     wide: true,
     onClose: () => { offUsage(); offHwStatus(); offModelChanged(); },
     body: h('div', null,
@@ -2028,7 +2030,7 @@ export async function openSettings() {
         style: 'align-items: center; justify-content: space-between; padding: 10px 14px; background: var(--surface-2); border-radius: 10px; margin-bottom: 16px;'
       },
         h('div', null,
-          h('div', { style: 'font-weight: 600; font-size: 14.5px;' }, 'Inkleaf v58'),
+          h('div', { style: 'font-weight: 600; font-size: 14.5px;' }, 'Inkleaf v59'),
           h('div', { class: 'bk-sub', style: 'margin-top: 2px;' }, 'Handwriting notes · Real-time sync · PWA')
         ),
         h('button', {

@@ -93,12 +93,28 @@ h2, h3, p { margin: 0; }
 }
 .brand { display: flex; align-items: center; gap: 9px; font-size: 19px; font-weight: 700; letter-spacing: -.01em; margin-right: 8px; }
 .brand img { border-radius: 8px; }
-.search-wrap { position: relative; flex: 1; max-width: 420px; margin-left: auto; }
+.search-wrap { position: relative; flex: 1; max-width: 450px; margin-left: auto; }
 .search-ic { position: absolute; left: 10px; top: 50%; transform: translateY(-50%); color: var(--muted); display: flex; pointer-events: none; }
 .search-ic svg { width: 18px; height: 18px; }
 .search {
   width: 100%; height: 38px; padding: 0 12px 0 36px;
   border: 1px solid var(--line); border-radius: 10px; background: var(--surface); outline: none;
+}
+.search.has-ai-pill { padding-right: 125px; }
+.hw-ai-badge {
+  position: absolute; right: 6px; top: 50%; transform: translateY(-50%);
+  display: inline-flex; align-items: center; gap: 4px;
+  font-size: 11px; font-weight: 600;
+  color: var(--accent); background: rgba(34, 197, 94, 0.12);
+  border: 1px solid rgba(34, 197, 94, 0.28); border-radius: 6px;
+  padding: 3px 8px; cursor: pointer; white-space: nowrap; user-select: none;
+  transition: background 0.15s, border-color 0.15s;
+}
+.hw-ai-badge:hover {
+  background: rgba(34, 197, 94, 0.22); border-color: rgba(34, 197, 94, 0.45);
+}
+.findbar .hw-ai-badge {
+  position: static; transform: none; margin: 0 4px;
 }
 .search:focus, .inp:focus { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
 
