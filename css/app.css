@@ -682,14 +682,14 @@ body.split-dragging iframe, body.split-dragging canvas { pointer-events: none; }
 }
 
 .panel {
-  position: absolute; top: 0; right: 0; bottom: 0; width: 220px; z-index: 3;
+  position: absolute; top: 0; right: 0; bottom: 0; width: 255px; z-index: 15;
   overflow-y: auto; -webkit-overflow-scrolling: touch;
   padding: 12px 10px calc(12px + env(safe-area-inset-bottom));
   background: var(--surface); border-left: 1px solid var(--line); box-shadow: var(--shadow);
   transition: width .18s ease;
 }
 .panel.outline-mode {
-  width: min(300px, calc(100vw - 32px));
+  width: min(330px, calc(100vw - 32px));
 }
 .thumb { margin-bottom: 12px; cursor: pointer; }
 .thumb-c { width: 100%; height: auto; display: block; border-radius: 4px; outline: 1px solid var(--line); }

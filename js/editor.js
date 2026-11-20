@@ -761,7 +761,7 @@ export async function mountEditor(root, docId, opts = {}) {
   function updateScrollbarLayout() {
     const side = prefs.scrollbar || 'left';
     sbar.classList.toggle('left', side === 'left');
-    sbar.classList.toggle('hidden-bar', side === 'hidden');
+    sbar.classList.toggle('hidden-bar', side === 'hidden' || (side === 'left' && panelOpen));
   }
   updateScrollbarLayout();
 
@@ -4104,6 +4104,7 @@ export async function mountEditor(root, docId, opts = {}) {
   function togglePanel() {
     panelOpen = !panelOpen;
     panel.hidden = !panelOpen;
+    updateScrollbarLayout();
     buildPanel();
   }
 
@@ -4166,7 +4167,7 @@ export async function mountEditor(root, docId, opts = {}) {
       onclick: () => { panelTab = 'outlines'; panelBm = false; buildPanel(); }
     }, h('span', { class: 'btn-ic', html: I.list }), h('span', null, 'Outlines'));
 
-    const tabsBar = h('div', { class: 'panel-tabs' }, tabThumbnails, tabBookmarks, tabOutlines);
+    const tabsBar = h('div', { class: 'panel-tabs' }, tabThumbnails, tabOutlines, tabBookmarks);
 
     const q = h('input', {
       class: 'inp sm', type: 'search',
