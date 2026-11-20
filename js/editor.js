@@ -929,11 +929,19 @@ export async function mountEditor(root, docId, opts = {}) {
 
   function showSpellPopover(anchor, mark) {
     const sugs = mark.suggestions || [];
+    const wordText = mark.clean || mark.word;
     let close = () => {};
     const body = h('div', { class: 'spell-pop' },
       h('div', { class: 'spell-pop-head' },
-        h('span', { class: 'spell-pop-orig' }, mark.clean || mark.word),
+        h('span', { class: 'spell-pop-orig' }, wordText),
         h('span', { class: 'spell-pop-sub' }, 'Spelling')
+      ),
+      h('div', {
+        class: 'spell-pop-word-box',
+        title: 'Select or long press on iPad for system Look Up, Translate, Copy & Share'
+      },
+        h('span', null, wordText),
+        h('small', null, 'Hold for iPad menu')
       ),
       h('div', { class: 'spell-pop-sugs' },
         sugs.length ? sugs.map(s => h('button', {
@@ -952,9 +960,39 @@ export async function mountEditor(root, docId, opts = {}) {
       h('button', {
         class: 'mi',
         type: 'button',
+        onclick: async () => {
+          close();
+          try {
+            await navigator.clipboard.writeText(wordText);
+            toast(`Copied "${wordText}" to clipboard`);
+          } catch {
+            toast(`Could not copy "${wordText}"`);
+          }
+        }
+      }, h('span', { class: 'mi-ic', html: I.copy }), 'Copy text'),
+      h('button', {
+        class: 'mi',
+        type: 'button',
         onclick: () => {
           close();
-          ignoreWord(mark.clean || mark.word);
+          window.open(`https://translate.google.com/?sl=auto&text=${encodeURIComponent(wordText)}`, '_blank', 'noopener,noreferrer');
+        }
+      }, h('span', { class: 'mi-ic', html: I.translate }), 'Translate'),
+      h('button', {
+        class: 'mi',
+        type: 'button',
+        onclick: () => {
+          close();
+          window.open(`https://en.wiktionary.org/wiki/${encodeURIComponent(wordText)}`, '_blank', 'noopener,noreferrer');
+        }
+      }, h('span', { class: 'mi-ic', html: I.search }), 'Look up in dictionary'),
+      h('div', { class: 'sep' }),
+      h('button', {
+        class: 'mi',
+        type: 'button',
+        onclick: () => {
+          close();
+          ignoreWord(wordText);
           updateSpellMarks();
         }
       }, h('span', { class: 'mi-ic', html: I.eye }), 'Ignore'),
@@ -963,9 +1001,9 @@ export async function mountEditor(root, docId, opts = {}) {
         type: 'button',
         onclick: () => {
           close();
-          addToUserDict(mark.clean || mark.word);
+          addToUserDict(wordText);
           updateSpellMarks();
-          toast(`Added "${mark.clean || mark.word}" to dictionary`);
+          toast(`Added "${wordText}" to dictionary`);
         }
       }, h('span', { class: 'mi-ic', html: I.book }), 'Add to dictionary')
     );
@@ -1350,11 +1388,42 @@ export async function mountEditor(root, docId, opts = {}) {
   }
 
   // ------------------------------------------------------------------ pointer input
+  let holdTimer = null;
+  let holdPos = null;
+
+  function startPointerHold(e) {
+    if (readOnly) return;
+    clearPointerHold();
+    if (e.pointerType === 'mouse' && e.button !== 0) return;
+    holdPos = { x: e.clientX, y: e.clientY, id: e.pointerId };
+    holdTimer = setTimeout(() => {
+      if (holdPos) {
+        const { x, y } = holdPos;
+        holdPos = null;
+        if (action && !action.far) cancelAction();
+        openCanvasContextMenu(x, y);
+      }
+    }, 550);
+  }
+
+  function checkPointerHoldMove(e) {
+    if (holdPos && Math.hypot(e.clientX - holdPos.x, e.clientY - holdPos.y) > 7) {
+      clearPointerHold();
+    }
+  }
+
+  function clearPointerHold() {
+    clearTimeout(holdTimer);
+    holdTimer = null;
+    holdPos = null;
+  }
+
   function onDown(e) {
     if (e.pointerType === 'mouse' && e.button === 2) return;
     measure();
     pullHint.hidden = true;
     if (textEd || boxEd) { commitText(); return; } // this press just closes the text box
+    startPointerHold(e);
     try { vp.setPointerCapture(e.pointerId); } catch { /* synthetic pointer */ }
     const p = { id: e.pointerId, type: e.pointerType, x: e.clientX, y: e.clientY, x0: e.clientX, y0: e.clientY, ignored: false };
     ptrs.set(e.pointerId, p);
@@ -1410,6 +1479,7 @@ export async function mountEditor(root, docId, opts = {}) {
   }
 
   function onMove(e) {
+    checkPointerHoldMove(e);
     if (e.pointerType === 'pen') lastPenT = performance.now();
     if (dbg) dbgEv(e);
     const p = ptrs.get(e.pointerId);
@@ -1426,6 +1496,7 @@ export async function mountEditor(root, docId, opts = {}) {
   }
 
   function onUp(e) {
+    clearPointerHold();
     if (e.pointerType === 'pen') lastPenT = performance.now();
     if (dbg) dbgEv(e);
     const p = ptrs.get(e.pointerId);
@@ -2386,6 +2457,233 @@ export async function mountEditor(root, docId, opts = {}) {
     setSel(pv, items);
   }
 
+  let pendingInsertPos = null;
+
+  async function pasteAt(pv, px, py) {
+    if (!pv || !pv.page) return;
+    // 1. Try reading system clipboard
+    if (navigator.clipboard) {
+      try {
+        if (navigator.clipboard.read) {
+          const items = await navigator.clipboard.read().catch(() => []);
+          for (const item of items) {
+            const imgType = (item.types || []).find(t => t.startsWith('image/'));
+            if (imgType) {
+              const blob = await item.getType(imgType);
+              const assetId = uid();
+              await db.setAsset(assetId, blob);
+              const img = await R.loadImage(assetId);
+              const maxW = Math.min(400, pv.page.w - 40);
+              const w = Math.min(img.width || 300, maxW);
+              const hgt = Math.round(w * ((img.height || 300) / (img.width || 300)));
+              const newItem = { id: uid(), t: 'im', a: assetId, x: Math.round(px), y: Math.round(py), w: Math.round(w), h: Math.round(hgt), z: nextZ(), m: Date.now() };
+              addItems(pv.page, [newItem]);
+              pushUndo({ pageId: pv.page.id, add: [newItem], remove: [] });
+              dirty(pv.page);
+              paintInk(pv);
+              setTool('lasso');
+              setSel(pv, [newItem]);
+              toast('Pasted image at tap');
+              return;
+            }
+          }
+        }
+        if (navigator.clipboard.readText) {
+          const text = await navigator.clipboard.readText().catch(() => '');
+          if (text && text.trim()) {
+            const newItem = {
+              id: uid(), t: 'tx', s: text.trim(),
+              x: Math.round(px), y: Math.round(py),
+              w: Math.min(360, pv.page.w - px - 20),
+              fs: 16, c: prefs.textColor || '#1a1a1a', ff: 'sans', m: Date.now()
+            };
+            addItems(pv.page, [newItem]);
+            pushUndo({ pageId: pv.page.id, add: [newItem], remove: [] });
+            dirty(pv.page);
+            paintInk(pv);
+            setTool('lasso');
+            setSel(pv, [newItem]);
+            toast('Pasted text at tap');
+            return;
+          }
+        }
+      } catch {}
+    }
+
+    // 2. Try internal clipItems
+    const src = (await db.getMeta('clip')) || clipItems;
+    if (src && src.length) {
+      commitText();
+      clearSel();
+      const u = R.unionBounds(src);
+      const dx = px - u.x, dy = py - u.y;
+      await Promise.all(src.filter(it => it.t === 'im').map(it => R.loadImage(it.a)));
+      const items = src.map(it => ({ ...R.transformItem(it, 1, 0, 0, dx, dy), id: uid(), z: nextZ() }));
+      addItems(pv.page, items);
+      pushUndo({ pageId: pv.page.id, add: items, remove: [] });
+      dirty(pv.page);
+      paintInk(pv);
+      setTool('lasso');
+      setSel(pv, items);
+      toast('Pasted at tap');
+      return;
+    }
+
+    toast('Clipboard is empty');
+  }
+
+  function openCanvasContextMenu(clientX, clientY) {
+    if (readOnly) return;
+    measure();
+    const pv = pvAt(clientX, clientY);
+    if (!pv || !pv.page) return;
+    const [px, py] = toPage(pv, clientX, clientY);
+    const it = topItemAt(pv.page, px, py);
+
+    let hwWord = '';
+    if (it && it.t === 'tx') {
+      hwWord = it.s;
+    } else if (it && it.t === 's' && pv.page.hw && pv.page.hw.r) {
+      for (const r of pv.page.hw.r) {
+        if (r.ids && r.ids.includes(it.id)) {
+          hwWord = r.t || '';
+          break;
+        }
+        if (r.w) {
+          for (const w of r.w) {
+            if (w.ids && w.ids.includes(it.id)) {
+              hwWord = w.t || '';
+              break;
+            }
+          }
+        }
+        if (hwWord) break;
+      }
+    }
+
+    const items = [
+      {
+        label: 'Paste here',
+        icon: I.paste,
+        onClick: () => pasteAt(pv, px, py)
+      }
+    ];
+
+    if (hwWord) {
+      const snippet = hwWord.length > 20 ? hwWord.slice(0, 20) + '…' : hwWord;
+      items.push(
+        '-',
+        {
+          label: `Copy "${snippet}"`,
+          icon: I.copy,
+          onClick: async () => {
+            try {
+              await navigator.clipboard.writeText(hwWord);
+              toast(`Copied "${snippet}"`);
+            } catch {
+              toast(`Could not copy text`);
+            }
+          }
+        },
+        {
+          label: `Translate "${snippet}"`,
+          icon: I.translate,
+          onClick: () => {
+            window.open(`https://translate.google.com/?sl=auto&text=${encodeURIComponent(hwWord)}`, '_blank', 'noopener,noreferrer');
+          }
+        },
+        {
+          label: `Look up "${snippet}"`,
+          icon: I.search,
+          onClick: () => {
+            window.open(`https://en.wiktionary.org/wiki/${encodeURIComponent(hwWord)}`, '_blank', 'noopener,noreferrer');
+          }
+        }
+      );
+    }
+
+    items.push(
+      '-',
+      {
+        label: 'Add text here',
+        icon: I.text,
+        onClick: () => {
+          startText(pv, null, px, py);
+        }
+      },
+      {
+        label: 'Add sticky note',
+        icon: I.edit,
+        onClick: () => {
+          const note = { id: uid(), t: 'nt', x: Math.round(px), y: Math.round(py), w: 180, fs: 14, c: prefs.noteColor || '#fdf7c4', s: '', m: Date.now() };
+          addItems(pv.page, [note]);
+          pushUndo({ pageId: pv.page.id, add: [note], remove: [] });
+          dirty(pv.page);
+          paintInk(pv);
+          boxStart(pv, note, 'nt');
+        }
+      },
+      {
+        label: 'Insert picture/photo',
+        icon: I.image,
+        onClick: () => {
+          pendingInsertPos = { pv, x: px, y: py };
+          fileInp.click();
+        }
+      }
+    );
+
+    if (it) {
+      items.push(
+        '-',
+        {
+          label: 'Select with Lasso',
+          icon: I.lasso,
+          onClick: () => {
+            setTool('lasso');
+            setSel(pv, [it]);
+          }
+        },
+        {
+          label: 'Duplicate',
+          icon: I.pages,
+          onClick: () => {
+            const copy = { ...R.transformItem(it, 1, 0, 0, 14, 14), id: uid(), z: nextZ() };
+            addItems(pv.page, [copy]);
+            pushUndo({ pageId: pv.page.id, add: [copy], remove: [] });
+            dirty(pv.page);
+            paintInk(pv);
+            setTool('lasso');
+            setSel(pv, [copy]);
+          }
+        },
+        {
+          label: 'Delete',
+          icon: I.trash,
+          danger: true,
+          onClick: () => {
+            removeItems(pv.page, [it]);
+            pushUndo({ pageId: pv.page.id, remove: [it], add: [] });
+            dirty(pv.page);
+            paintInk(pv);
+          }
+        }
+      );
+    }
+
+    const anchor = {
+      getBoundingClientRect: () => ({
+        left: clientX,
+        right: clientX,
+        top: clientY,
+        bottom: clientY,
+        width: 0,
+        height: 0
+      })
+    };
+    popMenu(anchor, items);
+  }
+
   function rotateSel() {
     if (!sel) return;
     const b = sel.b, cx = b.x + b.w / 2, cy = b.y + b.h / 2;
@@ -2501,6 +2799,16 @@ export async function mountEditor(root, docId, opts = {}) {
   function buildSelBar() {
     const one = sel.items.length === 1 ? sel.items[0] : null;
     const kids = [];
+    let selHwText = '';
+    if (sel.pv.page.hw && sel.pv.page.hw.r) {
+      const texts = [];
+      for (const r of sel.pv.page.hw.r) {
+        if (r.ids && r.ids.some(id => sel.ids.has(id)) && r.t) {
+          texts.push(r.t);
+        }
+      }
+      selHwText = texts.join(' ').trim();
+    }
     if (sel.items.some(it => it.t !== 'im')) {
       const notes = sel.items.every(it => it.t === 'nt');
       kids.push(h('button', {
@@ -2538,6 +2846,19 @@ export async function mountEditor(root, docId, opts = {}) {
     if (one && one.t === 'im') {
       kids.push(h('button', { class: 'ic', type: 'button', title: 'Crop', html: I.crop, onclick: () => cropDialog(one) }));
     }
+    if (selHwText) {
+      kids.push(h('button', {
+        class: 'ic', type: 'button', title: 'Copy handwriting as text', html: I.copy,
+        onclick: async () => {
+          try {
+            await navigator.clipboard.writeText(selHwText);
+            toast('Copied text: "' + (selHwText.length > 25 ? selHwText.slice(0, 25) + '…' : selHwText) + '"');
+          } catch {
+            toast('Could not copy text');
+          }
+        }
+      }));
+    }
     kids.push(
       h('button', { class: 'ic', type: 'button', title: 'Copy (Ctrl+C)', html: I.copy, onclick: () => copySel(false) }),
       h('button', { class: 'ic', type: 'button', title: 'Rotate', html: I.rotate, onclick: rotateSel }),
@@ -2546,6 +2867,21 @@ export async function mountEditor(root, docId, opts = {}) {
         class: 'ic', type: 'button', title: 'More', html: I.more,
         onclick: e => popMenu(e.currentTarget, [
           one && one.lk ? { label: 'Follow the link', icon: I.link, onClick: () => followItemLink(one.lk) } : null,
+          selHwText ? {
+            label: 'Translate handwriting',
+            icon: I.translate,
+            onClick: () => {
+              window.open('https://translate.google.com/?sl=auto&text=' + encodeURIComponent(selHwText), '_blank', 'noopener,noreferrer');
+            }
+          } : null,
+          selHwText ? {
+            label: 'Copy as text',
+            icon: I.copy,
+            onClick: async () => {
+              await navigator.clipboard.writeText(selHwText);
+              toast('Copied handwriting as text');
+            }
+          } : null,
           { label: 'Cut', icon: I.cut, onClick: () => copySel(true) },
           { label: 'Duplicate', icon: I.pages, onClick: duplicateSel },
           { label: 'Save as element', icon: I.element, onClick: saveElement },
@@ -3829,15 +4165,24 @@ export async function mountEditor(root, docId, opts = {}) {
     if (!file) return;
     try {
       const asset = await imageAsset(file, 3200), src = asset; // src.w, src.h: the stored picture's size
-      const pv = currentPv(), pg = pv.page;
+      const pv = (pendingInsertPos && pendingInsertPos.pv) || currentPv(), pg = pv.page;
       const f = Math.min(1, pg.w * 0.9 / src.w, pg.h * 0.8 / src.h);
       const iw = src.w * f, ih = src.h * f;
       measure();
-      const [cx, cy] = toPage(pv, vpRect.left + vpRect.width / 2, vpRect.top + vpRect.height / 2);
+      let ix = 0, iy = 0;
+      if (pendingInsertPos && pendingInsertPos.x != null) {
+        ix = clamp(pendingInsertPos.x, 8, Math.max(8, pg.w - iw - 8));
+        iy = clamp(pendingInsertPos.y, 8, Math.max(8, pg.h - ih - 8));
+        pendingInsertPos = null;
+      } else {
+        const [cx, cy] = toPage(pv, vpRect.left + vpRect.width / 2, vpRect.top + vpRect.height / 2);
+        ix = clamp(cx - iw / 2, 8, Math.max(8, pg.w - iw - 8));
+        iy = clamp(cy - ih / 2, 8, Math.max(8, pg.h - ih - 8));
+      }
       const it = {
         id: uid(), t: 'im', a: asset.id,
-        x: Math.round(clamp(cx - iw / 2, 8, Math.max(8, pg.w - iw - 8))),
-        y: Math.round(clamp(cy - ih / 2, 8, Math.max(8, pg.h - ih - 8))),
+        x: Math.round(ix),
+        y: Math.round(iy),
         w: Math.round(iw), h: Math.round(ih), z: nextZ(), m: Date.now()
       };
       await R.loadImage(asset.id);
@@ -6161,7 +6506,7 @@ export async function mountEditor(root, docId, opts = {}) {
 
   function exit() {
     if (split) { location.hash = '#/d/' + opts.other; return; } // closes just this side
-    location.hash = doc.folderId ? '#/f/' + doc.folderId : '#/';
+    location.hash = '#/';
   }
 
   async function destroy() {
@@ -6254,7 +6599,11 @@ export async function mountEditor(root, docId, opts = {}) {
   vp.addEventListener('pointercancel', onUp);
   vp.addEventListener('pointerleave', () => { if (!action) eraserCur.hidden = true; });
   vp.addEventListener('wheel', onWheel, { passive: false });
-  vp.addEventListener('contextmenu', e => e.preventDefault());
+  vp.addEventListener('contextmenu', e => {
+    e.preventDefault();
+    clearPointerHold();
+    openCanvasContextMenu(e.clientX, e.clientY);
+  });
   // Keep the browser's own touch gestures (double-tap zoom, magnifier, page pinch) away from the paper:
   // on iPad they can swallow the start of quick pen strokes.
   const stopNative = e => { if (e.cancelable) e.preventDefault(); };

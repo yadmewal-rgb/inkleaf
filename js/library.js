@@ -344,7 +344,7 @@ export async function mountLibrary(root, folderId, opts = {}) {
 
   const el = h('div', { class: 'lib' },
     h('header', { class: 'lib-head' },
-      h('div', { class: 'brand' }, h('img', { src: 'icons/icon.svg', alt: '', width: 30, height: 30 }), h('span', null, 'Inkleaf')),
+      h('div', { class: 'brand', title: 'Inkleaf Home', onclick: () => { location.hash = '#/'; } }, h('img', { src: 'icons/icon.svg', alt: 'Inkleaf', width: 30, height: 30 }), h('span', null, 'Inkleaf')),
       bin ? h('div', { class: 'grow' }) : h('div', { class: 'search-wrap' }, h('span', { class: 'search-ic', html: I.search }), search, hwAiBadge),
       bin ? null : h('button', {
         class: 'ic', type: 'button', title: 'Journal: open today\'s page', html: I.calendar,

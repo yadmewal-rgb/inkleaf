@@ -1,10 +1,10 @@
 // Offline support: network first, falling back to the cached copy.
-const CACHE = 'inkleaf-v59';
+const CACHE = 'inkleaf-v60';
 const SHELL = [
   './', 'index.html', 'manifest.webmanifest', 'css/app.css',
   'js/app.js', 'js/util.js', 'js/icons.js', 'js/ui.js', 'js/db.js', 'js/render.js',
   'js/pdfrender.js', 'js/pdftools.js', 'js/library.js', 'js/editor.js', 'js/export.js', 'js/sync.js', 'js/goodnotes.js', 'js/scan.js', 'js/pageshots.js', 'js/editor-consts.js',
-  'js/hwsearch.js', 'js/spellcheck.js',
+  'js/hwsearch.js', 'js/spellcheck.js', 'js/vocab.js',
   'vendor/pdf.min.js', 'vendor/pdf.worker.min.js', 'vendor/pdf-lib.min.js',
   'icons/icon.svg', 'icons/icon-192.png', 'icons/icon-512.png', 'icons/apple-touch-icon.png'
 ];

@@ -525,6 +525,22 @@ export class User extends DurableObject {
       return json({ ok: true });
     }
 
+    // GET /settings : fetch user profile preferences (Gemini key & model preference)
+    if (p[0] === 'settings' && req.method === 'GET') {
+      return json({
+        geminiKey: this.kvGet('geminiKey') || '',
+        geminiModel: this.kvGet('geminiModel') || ''
+      });
+    }
+
+    // PUT /settings : sync user profile preferences across all devices
+    if (p[0] === 'settings' && req.method === 'PUT') {
+      const b = await req.json().catch(() => ({}));
+      if (b.geminiKey !== undefined) this.kvSet('geminiKey', b.geminiKey);
+      if (b.geminiModel !== undefined) this.kvSet('geminiModel', b.geminiModel);
+      return json({ ok: true });
+    }
+
     // GET /google-token : a fresh pass for this person's Google Drive app folder, where PDFs and pictures are kept.
     if (p[0] === 'google-token' && req.method === 'GET') {
       const t = await this.googleToken();
@@ -533,7 +549,7 @@ export class User extends DurableObject {
 
     // POST /ocr : Handwriting transcription via Gemini Flash
     if (p[0] === 'ocr' && req.method === 'POST') {
-      const apiKey = this.env.GEMINI_KEY;
+      const apiKey = this.kvGet('geminiKey') || this.env.GEMINI_KEY;
       if (!apiKey) return json({ error: 'no-gemini-key' }, 501);
       const body = await req.json().catch(() => ({}));
       const image = body.image;

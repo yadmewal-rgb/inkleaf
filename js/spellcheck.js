@@ -2,6 +2,7 @@
 // Highlights misspelled words with a temporary red dotted underline (like GoodNotes),
 // and offers one-tap spelling corrections, ignore, and custom dictionary.
 import { bus } from './util.js';
+import { VOCAB_TEXT } from './vocab.js';
 
 const DICT_STORAGE_KEY = 'inkleaf.user_dict';
 
@@ -106,102 +107,8 @@ export const COMMON_TYPOS = {
   sugestion: ['suggestion']
 };
 
-// Built-in English word vocabulary (frequent words + academic + everyday language + sciences)
-const VOCAB_RAW = `
-a about above accept according account across act action activity actually add address administration admit adult affect
-after again against age agency agent ago agree agreement ahead air all allow almost alone along already also although
-always american among amount analysis and animal another answer any anyone anything anyway anywhere apply approach
-area argue argument arm around arrive art article artist as ask assume at attack attention attorney audience author
-authority available avoid away baby back bad bag balance ball bank bar base be beat beautiful because become bed
-before begin beginning behavior behind believe benefit best better between beyond big bill billion bit black blood
-blue board body book born both box boy break bring brother build building business but buy by call camera campaign
-can cancer candidate capital car card care career carry case catch cause cell center central century certain certainly
-chair challenge chance change character charge check choice choose church circumstance cite citizen city civil claim
-class clear clearly close coach cold collection college color come commercial common community company compare comparison
-computer concern condition conference congress consider consumer consume consumption contain continue control cost could country couple
-course court cover create creation credit crime cultural culture cup current customer cut dark data daughter day
-dead deal death debate decade decide decision declare deep defense degree democrat democratic describe design despite
-detail determine develop development die difference different difficult dinner direction director discover discuss
-discussion disease do doctor document dog door down draw dream drive drop drug during each early east easy eat
-economic economy edge education effect effort eight either election electric electrical electricity element else employee
-empty end energy enjoy enough enter enterprise entire environment environmental equal especially establish estate
-even evening event ever every everybody everyone everything evidence exactly example executive exist expect experience
-expert explain eye face fact factor fail family far fast father fear feature federal fee feel feeling few field
-fight figure fill film final finally financial find fine finger finish fire firm first fish five floor focus follow
-food foot for force foreign forget form former forward found four frame free freedom friend front full function fund
-future game garden general generate girl give glass go goal good government great green ground group grow growth guess
-guy hair half hand hang happen happy hard have he head health hear heart heat heavy help her here herself high him
-himself history hit hold home hope hospital hot hotel hour house how however huge human hundred husband i idea identify
-if image imagine impact important improve in include including income increase indeed independent industry indicate
-individual information inside instead institution interest interesting international internet interview into introduce
-investment involve issue it item its itself job join joy judge jump keep key kid kill kind know knowledge land
-large last late laugh law legal lead leader leaf learn least leave left leg lesson let level lie life lift light like
-likely line list listen look lose love low main maintain major make man manage manager manual many market match
-matter may maybe mean manage matter measure medical meet member memory mental mention message method middle might
-million mind minute modern moment money month more morning most move movement movie mr mrs much music must my myself
-name national natural nature near nearly necessary need neighbor network never new news newspaper next night nine no
-nobody north not note notice notion now number occur of off offer officer often oil ok old on once one only onto open
-operation opinion opportunity or order organization other others our out outside over own owner page pain paper parent
-part partner party pass past patient pattern pay peace people perform period place plan play player point police
-political poll politics poor popular population position positive power practical predict prepare president pressure
-price principle priority process produce product program project promise protect provide public purpose put quality
-question quickly quite race radio raise range rate rather reach read ready real realize reason receive recent recently
-recognize record reduce reflect region relate relationship religious report represent request require research resource
-respond response rest result return reveal rich right ring rise risk road role rock room rule run running rush save
-say science scientist scientific screen sea search season seat second section security see seek seem select self sell senate
-send senior sense series serious serve service set settlement several share she shift short should shoulder show
-side sight sign signal significant simple simply since single sister sit site situation six size skill skin small
-so social society soft software soldier some somebody someone something sometimes standard star start state station
-stay statement stock stop step straight street strategy structure student study success successful such sudden
-suggest suggest summer support sure surface survive symbol system table talk target task teacher technology tell
-term text than thank that the their them then there these they thing think third this those though thought
-thousand threat three through throw time today together tonight tomorrow too total touch tough toward towel town
-trade tradition training transit treat treatment tree true truth turn twenty two type under understand union until
-up upon us use used useful user valid value variable variety various very victim view visit visual voice vote wait
-walk wall want war watch water way we weapon wear week weigh weight well west western what whatever when where
-whether which while white whole whose why wide win wind window wish with within without woman wonder word work
-worker world worry worth would wrap write writer written writing wrong yard year yes yet you young your yours
-yourself zone zero
-
-abiotic absorption acid active adaptation adenine aerobic aerosol aggregate alga algae allele allometry amino
-ammonium anatomy animal anomaly antibiotic antibody antigen aquatic aqueous asexual assimilation atmosphere atom
-autecology autoecology autotroph bacteria bacterium base biodiversity biogeochemical biomass biome biosphere biotic
-blood body bond botany buffer calorie carbohydrate carbon catalyst cell cellular cellulose charge chemical
-chemistry chlorophyll chloroplast chromosome circulation circulatory climate climax clone codon community competition
-compound concentration concept consumer consumers consumption core cortex cycle cytoplasm decomposer decomposition density
-desalination desert detritivore detrivores diffusion digestion diploid diversity dna dominant dormancy dormant
-ecology ecosystem ectotherm element embryo emission endocrine endotherm energy enzyme equilibrium erosion essential
-estuary eukaryote evaporation evolution excretion experiment extinction fauna feedback female fermentation fertilization
-fiber fission fitness flora food forest formula fossil frequency friction fungus gamete gas gene generation
-genetic genetics genome genotype genus geology glucose glycerol glycoprotein greenhouse growth habitat haploid
-heat hemoglobin herbivore heredity heterotroph homeostasis hormone host humidity hybrid hydrocarbon hydrogen
-hydrolysis hypothesis immune immunity individual infection inheritance inorganic insect instinct interaction
-intercellular intestine ion isotope kinetic kingdom lactate larva layer leaf light lipid liquid litter liver
-lymph macroecology macromolecule male mammal marine mass matter meiosis membrane metabolism meter microbe
-microbiology microclimate microhabitat microscope migration mineral mitochondrion mitosis mixture molecule mollusk
-monosaccharide morphology mutation mutualism mycology natural necrosis negative neutral neutron niche nitrogen
-nocturnal node nomad nucleic nucleotide nucleus nutrient nutrition offspring omnivore ontology order organ
-organelle organic organism osmosis oxidation oxygen ozone parasite parasitism pathogen peptide permeability ph
-phenotype phloem phosphate phosphorus photosynthesis physiology pigment planetary plankton plant plasma plasmid
-plate pollen pollinator pollution polymer polypeptide polysaccharide population positive predator prey producer
-productivity prokaryote protein proton protozoa radiation reaction receptor recessive recombinant recycle reflex
-region reproduction reservoir respiration response ribosome rna root saliva sample saprophyte saturated savanna
-scale science scientific scientist season secondary secretion sediment seed selection semipermeable sense sensory
-sequence serology sex sexual shelter shoot sibling sight skeleton skin soil solar solute solution solvent
-speciation species specific specimen spectrum sperm spore stability stimulus stomata stratum structure study studied
-substance substrate succession sugar sunlight suspension symbiosis syn-ecology synecology synthesis system taxonomy
-temperature terrestrial territory theory thermal tissue toxin trace trait transcription transformation translation
-transmission transpiration transport tree trophic tundra turgor uncertainty urea urine vaccine vacuole vapor
-variance vascular vector vegetation velocity venom vertebrate vesicle virus viscous vitamin volume water wavelength
-weather weight wildlife wood yeast yield zoology zygote
-`;
-
-const DICT = new Set(
-  VOCAB_RAW.trim()
-    .split(/\s+/)
-    .filter(Boolean)
-    .map(w => w.toLowerCase())
-);
+// Built-in 40,700+ clean English offline vocabulary
+const DICT = new Set(VOCAB_TEXT.split(' '));
 
 // In-memory set for words ignored during this editing session
 const sessionIgnored = new Set();
@@ -284,6 +191,29 @@ function isWordValid(w, userDict) {
   return false;
 }
 
+// Fast candidate generation using edit distance 1
+function getCandidates(w, maxResults = 3) {
+  const letters = 'abcdefghijklmnopqrstuvwxyz';
+  const cands = new Set();
+  for (let i = 0; i < w.length; i++) cands.add(w.slice(0, i) + w.slice(i + 1));
+  for (let i = 0; i < w.length - 1; i++) cands.add(w.slice(0, i) + w[i + 1] + w[i] + w.slice(i + 2));
+  for (let i = 0; i < w.length; i++) {
+    for (const c of letters) cands.add(w.slice(0, i) + c + w.slice(i + 1));
+  }
+  for (let i = 0; i <= w.length; i++) {
+    for (const c of letters) cands.add(w.slice(0, i) + c + w.slice(i));
+  }
+  const userDict = getUserDict();
+  const valid = [];
+  for (const cand of cands) {
+    if (cand.length >= 2 && (DICT.has(cand) || userDict.has(cand))) {
+      valid.push(cand);
+      if (valid.length >= maxResults) break;
+    }
+  }
+  return valid;
+}
+
 // Check word and get suggestions
 export function checkWord(rawWord) {
   if (!rawWord) return { misspelled: false, suggestions: [] };
@@ -301,27 +231,20 @@ export function checkWord(rawWord) {
     return { misspelled: true, clean, suggestions: sugs };
   }
 
-  // 2. Levenshtein search over vocabulary
-  const candidates = [];
-  for (const v of DICT) {
-    if (Math.abs(v.length - lw.length) > 2) continue;
-    const d = lev(lw, v, 2);
-    if (d <= 2) candidates.push({ word: v, d });
-    if (candidates.length > 25) break;
+  // 2. Fast candidate generation (edit distance 1)
+  const cands = getCandidates(lw, 3);
+  if (cands.length > 0) {
+    return {
+      misspelled: true,
+      clean,
+      suggestions: cands.map(c => matchCase(clean, c))
+    };
   }
-  for (const u of userDict) {
-    if (Math.abs(u.length - lw.length) > 2) continue;
-    const d = lev(lw, u, 2);
-    if (d <= 2) candidates.push({ word: u, d });
-  }
-
-  candidates.sort((a, b) => a.d - b.d);
-  const sugs = candidates.slice(0, 3).map(c => matchCase(clean, c.word));
 
   return {
     misspelled: true,
     clean,
-    suggestions: sugs
+    suggestions: []
   };
 }
 

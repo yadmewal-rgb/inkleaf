@@ -821,7 +821,40 @@ export async function initSync() {
   if (!session) { setStatus('signin', 'Tap to sign in with Google once and start live sync.'); clearTimeout(loopT); return; }
   fullRun(false);
   openLive();
+  syncUserSettings().catch(() => {});
   schedule();
+}
+
+export async function syncUserSettings() {
+  if (!session || off) return;
+  try {
+    const res = await http(server + '/settings', {
+      headers: { Authorization: 'Bearer ' + session.token }
+    });
+    if (res.ok) {
+      const data = await res.json();
+      const localKey = localStorage.getItem('inkleaf.geminiKey') || '';
+      if (!localKey && data.geminiKey) {
+        localStorage.setItem('inkleaf.geminiKey', data.geminiKey);
+      } else if (localKey && localKey !== data.geminiKey) {
+        pushUserSettings({ geminiKey: localKey });
+      }
+    }
+  } catch {}
+}
+
+export async function pushUserSettings({ geminiKey, geminiModel }) {
+  if (!session || off) return;
+  try {
+    await http(server + '/settings', {
+      method: 'PUT',
+      headers: {
+        Authorization: 'Bearer ' + session.token,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({ geminiKey, geminiModel })
+    });
+  } catch {}
 }
 
 // ---------------------------------------------------------------- backup files
@@ -1928,6 +1961,7 @@ export async function openSettings() {
         const val = e.target.value.trim();
         if (val) localStorage.setItem('inkleaf.geminiKey', val);
         else localStorage.removeItem('inkleaf.geminiKey');
+        pushUserSettings({ geminiKey: val });
       }
     });
 
@@ -1937,6 +1971,7 @@ export async function openSettings() {
       onchange: e => {
         setHwModel(e.target.value);
         drawHw();
+        pushUserSettings({ geminiModel: e.target.value });
       }
     }, [
       h('option', { value: 'auto', selected: curPref === 'auto' || !curPref }, 'Auto (Best Available: 3.8 ➔ 3.5 fallback) — Recommended'),
@@ -2021,7 +2056,7 @@ export async function openSettings() {
   const offModelChanged = bus.on('hw-model-changed', () => drawHw());
 
   const m = modal({
-    title: 'Settings (v59)',
+    title: 'Settings (v60)',
     wide: true,
     onClose: () => { offUsage(); offHwStatus(); offModelChanged(); },
     body: h('div', null,
@@ -2030,7 +2065,7 @@ export async function openSettings() {
         style: 'align-items: center; justify-content: space-between; padding: 10px 14px; background: var(--surface-2); border-radius: 10px; margin-bottom: 16px;'
       },
         h('div', null,
-          h('div', { style: 'font-weight: 600; font-size: 14.5px;' }, 'Inkleaf v59'),
+          h('div', { style: 'font-weight: 600; font-size: 14.5px;' }, 'Inkleaf v60'),
           h('div', { class: 'bk-sub', style: 'margin-top: 2px;' }, 'Handwriting notes · Real-time sync · PWA')
         ),
         h('button', {
