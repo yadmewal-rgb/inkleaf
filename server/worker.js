@@ -126,6 +126,8 @@ export class User extends DurableObject {
       CREATE TABLE IF NOT EXISTS sessions (h TEXT PRIMARY KEY, created INTEGER, seen INTEGER, label TEXT);
       CREATE TABLE IF NOT EXISTS recs (k TEXT, id TEXT, s INTEGER, size INTEGER, parts INTEGER, info TEXT, gz INTEGER, PRIMARY KEY (k, id));
       CREATE INDEX IF NOT EXISTS recs_s ON recs (s);
+      CREATE INDEX IF NOT EXISTS recs_s_k ON recs (s, k);
+      CREATE INDEX IF NOT EXISTS recs_k_size ON recs (k, size);
       CREATE TABLE IF NOT EXISTS parts (k TEXT, id TEXT, n INTEGER, data BLOB, PRIMARY KEY (k, id, n));
       CREATE TABLE IF NOT EXISTS pending (up TEXT, n INTEGER, data BLOB, t INTEGER, PRIMARY KEY (up, n));
       CREATE TABLE IF NOT EXISTS shares (secret TEXT PRIMARY KEY, docId TEXT, canWrite INTEGER, created INTEGER, allowedEmails TEXT);
@@ -176,7 +178,18 @@ export class User extends DurableObject {
     return this.gat;
   }
 
-  usedBytes() { return Number(this.sql.exec('SELECT COALESCE(SUM(size), 0) AS b FROM recs WHERE size > 0').toArray()[0].b); }
+  usedBytes() {
+    if (this._cachedBytes != null) return this._cachedBytes;
+    const cached = this.kvGet('total_bytes');
+    if (cached != null) {
+      this._cachedBytes = Number(cached);
+      return this._cachedBytes;
+    }
+    const b = Number(this.sql.exec('SELECT COALESCE(SUM(size), 0) AS b FROM recs WHERE size > 0').toArray()[0].b);
+    this._cachedBytes = b;
+    this.kvSet('total_bytes', b);
+    return b;
+  }
   // Each person's share of the service: QUOTA_MB, except the owner (the first address in ALLOWED), who gets
   // OWNER_QUOTA_MB. The owner's address stays in the ALLOWED secret, never in the code.
   quota() {
@@ -701,6 +714,10 @@ export class User extends DurableObject {
       this.sql.exec(`INSERT INTO recs (k, id, s, size, parts, info, gz) VALUES (?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT (k, id) DO UPDATE SET s = excluded.s, size = excluded.size, parts = excluded.parts, info = excluded.info, gz = excluded.gz`,
         k, id, s, size, parts, q.get('info') || '', q.get('gz') === '1' ? 1 : 0);
+      const oldSize = (cur && cur.size > 0 ? cur.size : 0);
+      const newSize = (size > 0 ? size : 0);
+      this._cachedBytes = Math.max(0, this.usedBytes() - oldSize + newSize);
+      this.kvSet('total_bytes', this._cachedBytes);
       if (k !== 'b') this.broadcast(s);
       return json({ s });
     }
@@ -708,6 +725,10 @@ export class User extends DurableObject {
     // DELETE /blob/k/id : an attached file leaves a marker in the feed (size -1) so other devices drop it too;
     // a snapshot just goes.
     if (p[0] === 'blob' && KINDS.has(p[1]) && p[2] && req.method === 'DELETE') {
+      const curDel = this.sql.exec('SELECT size FROM recs WHERE k = ? AND id = ?', p[1], p[2]).toArray()[0];
+      const oldSize = (curDel && curDel.size > 0 ? curDel.size : 0);
+      this._cachedBytes = Math.max(0, this.usedBytes() - oldSize);
+      this.kvSet('total_bytes', this._cachedBytes);
       this.sql.exec('DELETE FROM parts WHERE k = ? AND id = ?', p[1], p[2]);
       // A snapshot just goes; so does a file that moved to the person's Google Drive (?moved=1): it still exists.
       if (p[1] === 'b' || url.searchParams.get('moved') === '1') { this.sql.exec('DELETE FROM recs WHERE k = ? AND id = ?', p[1], p[2]); return json({ ok: true }); }

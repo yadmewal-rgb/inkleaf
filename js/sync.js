@@ -491,6 +491,7 @@ const IDLE_TEXT = 'Live sync is on. Everything is up to date.';
 const FILES_TEXT = 'Live sync is on. Still transferring files (PDFs, pictures)...';
 
 function setIdle() {
+  syncFailCount = 0;
   if (assetActive || assetQ.length) setStatus('syncing', FILES_TEXT); else setStatus('ok', IDLE_TEXT);
 }
 
@@ -694,8 +695,10 @@ function pullSoon() {
 
 // ---------------------------------------------------------------- scheduling
 const ready = () => !!session && !off && navigator.onLine;
+let syncFailCount = 0;
 
 function fail(e, interactive) {
+  syncFailCount++;
   if (!e.signin && e.name !== 'TypeError' && navigator.onLine) health.err = { t: Date.now(), msg: e.message };
   if (e.signin) { setStatus('signin', 'Sync paused. Tap to sign in again.'); return; }
   if (e.name === 'TypeError' || !navigator.onLine) { // the request never reached the service
@@ -725,7 +728,9 @@ function run(fn, interactive) {
 
 function schedule() {
   clearTimeout(loopT);
-  loopT = setTimeout(tick, wsLive ? POLL_LIVE : openDocs.size ? POLL_NOLIVE : POLL_IDLE);
+  const base = wsLive ? POLL_LIVE : openDocs.size ? POLL_NOLIVE : POLL_IDLE;
+  const delay = syncFailCount > 0 ? Math.min(60000, base * Math.pow(1.8, Math.min(syncFailCount, 4))) : base;
+  loopT = setTimeout(tick, delay);
 }
 
 async function tick() {
