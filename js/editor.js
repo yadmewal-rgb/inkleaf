@@ -5261,49 +5261,108 @@ export async function mountEditor(root, docId, opts = {}) {
   // focus: ids of strokes of the highlight to show first (a tap on it in the tray).
   async function highlightsDialog(focus) {
     commitText();
-    const rows = [];
+    const rawRows = [];
     for (let i = 0; i < pages.length; i++) {
       const pg = pages[i], groups = hlGroups(pg);
       if (!groups.length) continue;
       let lines = null;
       if (pg.pdf && !pg.tpl) { try { lines = await pageText(pg.pdf.a, pg.pdf.i); } catch { /* not on this device */ } }
-      for (const g of groups) rows.push({ pg, i, ...g, text: lines ? textUnder(pg, lines, g.items) : '' });
+      for (const g of groups) {
+        const z = Math.min(...g.items.map(it => it.z || 0));
+        const m = Math.min(...g.items.map(it => it.m || 0));
+        rawRows.push({ pg, i, ...g, z, m, text: lines ? textUnder(pg, lines, g.items) : '' });
+      }
     }
-    if (!rows.length) { toast('Nothing is highlighted in this notebook yet.'); return; }
-    // Full screen: every highlight as a full-width picture, one under the other, in page order. X closes it.
-    const all = rows.filter(r => r.text).map(r => `p. ${r.i + 1}: ${r.text}`).join('\n\n');
+    if (!rawRows.length) { toast('Nothing is highlighted in this notebook yet.'); return; }
+
+    let curSort = prefs.hlSort || 'marked'; // 'marked' = in order marked (Page 1, 11, 9...), 'page' = notebook page order (1, 9, 11...)
+
+    function sortRows() {
+      const rows = rawRows.slice();
+      if (curSort === 'marked') {
+        rows.sort((a, b) => (a.z || a.m || 0) - (b.z || b.m || 0));
+      } else {
+        rows.sort((a, b) => a.i - b.i || a.b.y - b.b.y || a.b.x - b.b.x);
+      }
+      return rows;
+    }
+
     const close = () => { view.remove(); document.removeEventListener('keydown', onEsc, true); };
     const onEsc = e => { if (e.key === 'Escape') { e.stopPropagation(); close(); } };
     const btn = (label, fn, cls = 'btn sm') => h('button', { class: cls, type: 'button', onclick: fn }, label);
     let target = null;
-    const list = h('div', { class: 'hlv-list' }, rows.map(r => {
-      const pic = h('canvas', { class: 'hlv-pic' });
-      hlShot(r.pg, r.items).then(src => { pic.width = src.width; pic.height = src.height; pic.getContext('2d').drawImage(src, 0, 0); }).catch(() => {});
-      const card = h('div', { class: 'hlv-card' },
-        h('div', { class: 'hlv-bar' },
-          h('span', { class: 'tag-dot', style: { background: r.items[0].c } }),
-          h('b', null, `Page ${r.i + 1}`),
-          h('div', { class: 'grow' }),
-          cardToggle(r),
-          btn('Go to it', () => { close(); goToRect(r.pg, r.b); })),
-        pic);
-      if (focus && r.items.some(it => focus.has(it.id))) target = card;
-      return card;
-    }));
+    const list = h('div', { class: 'hlv-list' });
+
+    function buildCards() {
+      list.replaceChildren();
+      const rows = sortRows();
+      rows.forEach((r, idx) => {
+        const pic = h('canvas', { class: 'hlv-pic' });
+        hlShot(r.pg, r.items).then(src => { pic.width = src.width; pic.height = src.height; pic.getContext('2d').drawImage(src, 0, 0); }).catch(() => {});
+        const card = h('div', { class: 'hlv-card' },
+          h('div', { class: 'hlv-bar' },
+            h('span', { class: 'tag-dot', style: { background: r.items[0].c } }),
+            h('b', null, `Page ${r.i + 1}`),
+            curSort === 'marked' ? h('span', { class: 'badge sm', style: 'margin-left: 6px; font-size: 11px; color: var(--muted); background: var(--surface-2); padding: 1px 6px; border-radius: 4px;' }, `#${idx + 1} marked`) : null,
+            h('div', { class: 'grow' }),
+            cardToggle(r),
+            btn('Go to it', () => { close(); goToRect(r.pg, r.b); })),
+          pic);
+        if (focus && r.items.some(it => focus.has(it.id))) target = card;
+        list.append(card);
+      });
+      if (target) requestAnimationFrame(() => target.scrollIntoView({ block: 'center' }));
+    }
+
+    const sortChips = h('div', { class: 'chips sm', style: 'margin: 0 8px;' });
+    function renderSortChips() {
+      sortChips.replaceChildren(
+        h('button', {
+          class: 'chip' + (curSort === 'marked' ? ' on' : ''),
+          type: 'button',
+          title: 'Arrange highlights in the order you marked them (e.g. Page 1, 11, 9, 15, 12)',
+          onclick: () => {
+            if (curSort === 'marked') return;
+            curSort = 'marked';
+            prefs.hlSort = 'marked';
+            savePrefs();
+            renderSortChips();
+            buildCards();
+          }
+        }, 'Order marked'),
+        h('button', {
+          class: 'chip' + (curSort === 'page' ? ' on' : ''),
+          type: 'button',
+          title: 'Arrange highlights by page order (1, 9, 11, 12, 15)',
+          onclick: () => {
+            if (curSort === 'page') return;
+            curSort = 'page';
+            prefs.hlSort = 'page';
+            savePrefs();
+            renderSortChips();
+            buildCards();
+          }
+        }, 'Page order')
+      );
+    }
+    renderSortChips();
+    buildCards();
+
+    const all = rawRows.filter(r => r.text).map(r => `p. ${r.i + 1}: ${r.text}`).join('\n\n');
     const view = h('div', { class: 'hlview' },
       h('div', { class: 'hlv-head' },
-        h('b', { class: 'hlv-title' }, `Highlights (${rows.length})`),
+        h('b', { class: 'hlv-title' }, `Highlights (${rawRows.length})`),
+        sortChips,
         h('div', { class: 'hlv-acts' },
           all ? btn('Copy the text', async () => { try { await navigator.clipboard.writeText(all); toast('Highlighted text copied'); } catch { toast('This browser would not copy the text.'); } }) : null,
           prefs.hlTray ? btn('Hide from screen', () => { prefs.hlTray = false; savePrefs(); drawTray(); }) : btn('Show them on screen', () => { prefs.hlTray = true; savePrefs(); drawTray(); }),
           btn('Highlights notebook', () => { close(); highlightsNotebook(); }),
           btn('Export as PDF', () => { close(); exportPdf(); }),
-          rows.some(r => !groupCard(r)) ? btn('Make the missing flashcards', e => { const n = rows.filter(r => !groupCard(r)); for (const r of n) setGroupCard(r, true); toast(`${n.length} flashcard${n.length === 1 ? '' : 's'} added`); e.currentTarget.remove(); close(); highlightsDialog(); }) : null),
+          rawRows.some(r => !groupCard(r)) ? btn('Make the missing flashcards', e => { const n = rawRows.filter(r => !groupCard(r)); for (const r of n) setGroupCard(r, true); toast(`${n.length} flashcard${n.length === 1 ? '' : 's'} added`); e.currentTarget.remove(); close(); highlightsDialog(); }) : null),
         h('button', { class: 'ic hlv-x', type: 'button', title: 'Close (Esc)', html: I.close, onclick: close })),
       list);
     el.append(view);
     document.addEventListener('keydown', onEsc, true);
-    if (target) requestAnimationFrame(() => target.scrollIntoView({ block: 'center' }));
   }
 
   // --- highlight flashcards. A card made from a highlight remembers its strokes (h = their ids) and always
@@ -5406,10 +5465,21 @@ export async function mountEditor(root, docId, opts = {}) {
 
   // Pictures of highlights are made one at a time at one scale, so those of the same page share one page render.
   // --- the highlights as a document of their own (like an Evernote annotation summary)
-  // Every highlight in reading order, as a PNG picture with its size in page units.
+  // Highlights in the chosen sort order (order marked, or page order), as PNG pictures with 1 line above and below.
   async function highlightCards(say) {
     const rows = [];
-    pages.forEach((pg, i) => { for (const g of hlGroups(pg).sort((a, b) => a.b.y - b.b.y || a.b.x - b.b.x)) rows.push({ pg, i, ...g }); });
+    pages.forEach((pg, i) => {
+      for (const g of hlGroups(pg)) {
+        const z = Math.min(...g.items.map(it => it.z || 0));
+        const m = Math.min(...g.items.map(it => it.m || 0));
+        rows.push({ pg, i, ...g, z, m });
+      }
+    });
+    if ((prefs.hlSort || 'marked') === 'marked') {
+      rows.sort((a, b) => (a.z || a.m || 0) - (b.z || b.m || 0));
+    } else {
+      rows.sort((a, b) => a.i - b.i || a.b.y - b.b.y || a.b.x - b.b.x);
+    }
     const out = [];
     for (let n = 0; n < rows.length; n++) {
       const r = rows[n];
@@ -5417,7 +5487,8 @@ export async function mountEditor(root, docId, opts = {}) {
       const reg = await hlRegion(r.pg, r.items), c = await hlShot(r.pg, r.items);
       const blob = await new Promise(res => c.toBlob(res, 'image/png'));
       if (!blob) continue;
-      out.push({ bytes: new Uint8Array(await blob.arrayBuffer()), w: reg.w, h: reg.h, label: `Page ${r.i + 1}`, pageId: r.pg.id });
+      const label = (prefs.hlSort || 'marked') === 'marked' ? `Page ${r.i + 1} · Highlight #${n + 1}` : `Page ${r.i + 1}`;
+      out.push({ bytes: new Uint8Array(await blob.arrayBuffer()), w: reg.w, h: reg.h, label, pageId: r.pg.id });
     }
     return out;
   }

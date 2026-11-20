@@ -46,6 +46,7 @@ export const DEFAULTS = {
   hl: { color: '#ffd43b', size: mmToPt(5.5), mode: 'free' }, // mode: free, or follow PDF text as hl / ul / st
   hlTray: false,  // false = keep highlights tray closed by default; open on demand from More > Highlights
   hlCards: false, // automatic flashcards from highlights
+  hlSort: 'marked', // 'marked' = in order marked (Page 1, 11, 9...), 'page' = notebook page order (1, 9, 11...)
   eraser: { size: mmToPt(5.5), mode: 'stroke', only: 'all' },
   shape: { kind: 'rect', color: '#1971c2', size: mmToPt(0.8), fill: null },
   text: { color: INK, size: 16, b: false, i: false, u: false, ff: 'sans', al: 'l' },

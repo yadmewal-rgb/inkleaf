@@ -3,51 +3,35 @@
 **Written:** 2026-11-20 by agy (Antigravity). **Next:** Claude Code or agy.
 
 ## What the owner asked
-1. "how can this type of mistakes happen by this" (with photo of "are" marked as spelling mistake with suggestions age, area, arm)
-2. "i think i asked you to put my Gemini key throughout my logins so that i can use HW in all my devices, what happen when my one device index a word in notes then will it need to do the same in all devices or it sync in all devices ?"
-3. "if i click on inkleaf icon , it should land me to home page"
-4. "add translation or can it use devices own dictionary like in iPad when we long press any word in browser or in any app iPad can detect word and can show options like copy, translate and many other"
-5. "option to paste something with tap and hold , features with tap and hold are missing , can you suggest any ?"
+1. "is there any option for = like we did for highlighted part wich can be seen at one place, can it be arranged in order i mark them wirth highlight for example if i mark something on page 1 and then on page 11 and then page 9 and then page 15 and then page 12 then it can be arrenged in this order 1, 11,9,15,12 with only highlighted part (same with 1 line above and below )"
+2. "show screenshots in better quality from next time"
 
-## Done (v60 Release)
-1. **Tap & Hold Quick Action Menu (`js/editor.js`, `css/app.css`)**:
-   - Holding down a finger, Apple Pencil, or stylus for 550ms (or right-clicking with a mouse) anywhere on the notebook page opens a floating quick menu right at that spot.
-   - **Paste here:** Pastes copied handwriting strokes, photos, or text from system clipboard directly at the tap position.
-   - **Handwriting context actions:** Holding on recognized handwriting or text offers **Copy as text**, **Translate**, and **Look up in dictionary**.
-   - **Quick insertions:** **Add text here**, **Add sticky note**, and **Insert picture/photo** at the tap point.
-   - **Item actions:** When tapped on an existing item: **Select with Lasso**, **Duplicate**, and **Delete**.
-2. **Translate & iPad Native Dictionary Menu (`js/editor.js`, `js/icons.js`, `css/app.css`)**:
-   - In the Word Popover, added an Apple-optimized selectable card (`spell-pop-word-box`) with `-webkit-user-select: all`. Touching or holding it on iPad triggers **iPadOS's native callout menu (Look Up, Translate, Copy, Share)**.
-   - Added direct action buttons in the popover:
-     - 📋 **Copy text**
-     - 🌐 **Translate** (opens Google Translate)
-     - 📖 **Look up in dictionary** (opens Wiktionary definition)
-   - In the Lasso tool selection bar, selecting handwriting displays **Copy handwriting as text** and **Translate handwriting**.
-3. **Inkleaf Logo Click ➔ Home Navigation (`js/library.js`, `js/editor.js`, `css/app.css`)**:
-   - Clicking the Inkleaf logo / brand icon anywhere in the library header navigates directly to the home page (`#/`).
-   - Top-left exit button in the notebook editor returns to Library home (`#/`).
-4. **Offline 40,736-Word Vocabulary (`js/vocab.js`, `js/spellcheck.js`)**:
-   - Bundled the comprehensive 40,736 English dictionary extracted from the offline model directly into `js/vocab.js`.
-   - Included all English verb inflections (`are`, `were`, `was`, `am`, `been`, `is`, `has`, `had`), academic, scientific, and ecology terms.
-   - Fixed candidate edit generator so common words are 100% valid, and typos generate accurate replacements with zero dummy `the, their` fallbacks.
-5. **Gemini Key Cross-Device Profile Sync (`server/worker.js`, `js/sync.js`)**:
-   - Added `GET /settings` and `PUT /settings` to the User Durable Object.
-   - Entering a Gemini key or choosing an AI model in Settings automatically syncs it to Cloudflare and populates it when logging into Inkleaf on iPad or phone.
-   - Cloudflare OCR fallback now reads the user's stored `geminiKey`.
-   - Clarified that handwriting index (`page.hw`) syncs across all devices, so other devices never re-index or repeat AI requests.
-6. **App Version & Cache**:
-   - Bumped to `v60` in `sw.js` and `js/sync.js`. Added `js/vocab.js` to offline shell cache.
+## Done (v61 Release)
+1. **Highlights Arranged in Creation Order ("Order Marked") (`js/editor.js`, `js/editor-consts.js`)**:
+   - Added an **"Order marked"** vs **"Page order"** toggle right in the Highlights full-screen dialog header (`hlv-head`).
+   - When set to **"Order marked"**, highlights are arranged in the exact order you drew them (`z` / `m` creation timestamp):
+     e.g. **Page 1 ➔ Page 11 ➔ Page 9 ➔ Page 15 ➔ Page 12**!
+   - Each highlight card in the list displays a badge with its sequence number (e.g. `#1 marked`, `#2 marked`).
+   - Tapping **"Page order"** switches back to numerical page sequence (1, 9, 11, 12, 15).
+   - The preference is saved in `prefs.hlSort` and remembered across sessions.
+2. **Highlights Notebook & PDF Export in Mark Order (`js/editor.js`)**:
+   - Clicking **"Highlights notebook"** creates a notebook arranged in your chosen sequence (e.g. 1 ➔ 11 ➔ 9 ➔ 15 ➔ 12), with each card displaying its page and highlight number.
+   - Each highlight image is automatically cropped by `hlRegion` to **only the highlighted text snippet plus 1 line above and 1 line below for context**.
+3. **High-Resolution Screenshots Rule (`AGENTS.md`)**:
+   - Documented in `AGENTS.md` that all website/desktop screenshots must be formatted at full 1000px width (`-Width 1000`).
 
 ## Tested
-- Verified JS syntax across all 8 modified files with `node --check`.
-- Verified `checkWord` on `are`, `were`, `studied`, `glucose`, `thier`, `hierachy` in Node: all returned accurate results in <1ms.
-- Verified visual layout of Tap & Hold menu, word popover, and brand navigation with Edge CDP browser automation.
+- Verified JS syntax across modified files with `node --check`.
+- Verified in browser automation that:
+  - Toggle switches between "Order marked" and "Page order".
+  - Cards order correctly by creation timestamp: Page 1, Page 11, Page 9, Page 15, Page 12.
+  - Each card shows 1 line above and 1 line below with yellow highlight.
 - Verified proof screenshot:
-  - `C:\Users\yadram\AgentTools\shots\tap_and_hold_features_row.png` (inspected with `read_file`, confirmed sharp display of all options).
+  - `C:\Users\yadram\AgentTools\shots\highlights_order_row.png` (inspected with `read_file` at full 1000px crisp resolution).
 
 ## Live now
 - Committed locally to branch `main`.
 - Running locally at http://localhost:8080.
 
 ## Owner must do
-- Push to GitHub: Run `git push origin main` in PowerShell when ready to deploy to GitHub Pages.
+- Push to GitHub: Run `git push origin main` in PowerShell when ready to release to GitHub Pages.
