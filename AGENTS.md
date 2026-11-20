@@ -58,6 +58,7 @@ util.js, icons.js. `sw.js` = service worker (bump its cache version, e.g. v40 ->
   touch devices.
 - Layers and hold-to-erase were REMOVED at the owner's request; don't bring them back.
 - Apple Pencil double-tap/squeeze are not available to web apps (pressure, tilt, hover are).
+- Screenshots for chat: Always capture and resize website/desktop screenshots at full 1000px width (`shots.ps1 ... -Width 1000`) so all menus, text, and labels are crisp and easy to read.
 
 ## Open ideas (not chosen yet; ask before building)
 AI features (handwriting search, ask about a page), Android APK via PWABuilder, live shared notebooks with friends,
