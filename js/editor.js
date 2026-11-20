@@ -2433,7 +2433,86 @@ export async function mountEditor(root, docId, opts = {}) {
     if (prefs.tool === 'lasso') renderOpts();
   }
 
+  // Insert an image blob or file onto a page (at specific page coordinates px, py or in view centre)
+  async function insertImageBlob(pv, blobOrFile, px, py) {
+    if (!pv || !pv.page) pv = currentPv();
+    if (!pv || !pv.page) return;
+    const pg = pv.page;
+    const asset = await imageAsset(blobOrFile, 3200);
+    const src = asset;
+    const f = Math.min(1, (pg.w * 0.85) / src.w, (pg.h * 0.75) / src.h);
+    const iw = Math.max(20, Math.round(src.w * f));
+    const ih = Math.max(20, Math.round(src.h * f));
+    let ix = 0, iy = 0;
+    if (px != null && py != null) {
+      ix = clamp(px, 8, Math.max(8, pg.w - iw - 8));
+      iy = clamp(py, 8, Math.max(8, pg.h - ih - 8));
+    } else {
+      const [cx, cy] = viewCentre(pv);
+      ix = clamp(cx - iw / 2, 8, Math.max(8, pg.w - iw - 8));
+      iy = clamp(cy - ih / 2, 8, Math.max(8, pg.h - ih - 8));
+    }
+    const it = {
+      id: uid(), t: 'im', a: asset.id,
+      x: Math.round(ix), y: Math.round(iy),
+      w: iw, h: ih, z: nextZ(), m: Date.now()
+    };
+    await R.loadImage(asset.id);
+    addItems(pg, [it]);
+    pushUndo({ pageId: pg.id, add: [it], remove: [] });
+    dirty(pg);
+    paintInk(pv);
+    setTool('lasso');
+    setSel(pv, [it]);
+    toast('Pasted photo');
+    return it;
+  }
+
   async function pasteClip() {
+    // 1. Try system clipboard first (images or text from other apps)
+    if (navigator.clipboard) {
+      try {
+        if (navigator.clipboard.read) {
+          const items = await navigator.clipboard.read().catch(() => []);
+          for (const item of items) {
+            const imgType = (item.types || []).find(t => t.startsWith('image/') || t.includes('png') || t.includes('jpeg') || t.includes('webp'));
+            if (imgType) {
+              const blob = await item.getType(imgType);
+              if (blob) {
+                await insertImageBlob(currentPv(), blob, null, null);
+                return;
+              }
+            }
+          }
+        }
+        if (navigator.clipboard.readText) {
+          const text = await navigator.clipboard.readText().catch(() => '');
+          if (text && text.trim()) {
+            const pv = currentPv(), pg = pv.page;
+            const [cx, cy] = viewCentre(pv);
+            const newItem = {
+              id: uid(), t: 'tx', s: text.trim(),
+              x: Math.round(clamp(cx - 150, 8, pg.w - 320)),
+              y: Math.round(clamp(cy - 20, 8, pg.h - 60)),
+              w: Math.min(360, pg.w - 40),
+              fs: 16, c: prefs.textColor || '#1a1a1a', ff: 'sans', m: Date.now()
+            };
+            addItems(pg, [newItem]);
+            pushUndo({ pageId: pg.id, add: [newItem], remove: [] });
+            dirty(pg);
+            paintInk(pv);
+            setTool('lasso');
+            setSel(pv, [newItem]);
+            toast('Pasted text');
+            return;
+          }
+        }
+      } catch (err) {
+        console.warn('System clipboard read failed:', err);
+      }
+    }
+
+    // 2. Internal clipItems (copied/cut strokes, shapes, images within Inkleaf)
     const src = (await db.getMeta('clip')) || clipItems; // the stored copy first: it may have been made in another tab or pane
     if (!src || !src.length) { toast('Nothing copied yet.'); return; }
     await placeItems(src);
@@ -2461,40 +2540,37 @@ export async function mountEditor(root, docId, opts = {}) {
 
   async function pasteAt(pv, px, py) {
     if (!pv || !pv.page) return;
-    // 1. Try reading system clipboard
+    let permBlocked = false;
+
+    // 1. Try reading system clipboard (photos, images, text copied in other apps / browser)
     if (navigator.clipboard) {
       try {
         if (navigator.clipboard.read) {
-          const items = await navigator.clipboard.read().catch(() => []);
+          const items = await navigator.clipboard.read().catch(err => {
+            if (err && (err.name === 'NotAllowedError' || /permission/i.test(err.message))) permBlocked = true;
+            return [];
+          });
           for (const item of items) {
-            const imgType = (item.types || []).find(t => t.startsWith('image/'));
+            const imgType = (item.types || []).find(t => t.startsWith('image/') || t.includes('png') || t.includes('jpeg') || t.includes('webp'));
             if (imgType) {
               const blob = await item.getType(imgType);
-              const assetId = uid();
-              await db.setAsset(assetId, blob);
-              const img = await R.loadImage(assetId);
-              const maxW = Math.min(400, pv.page.w - 40);
-              const w = Math.min(img.width || 300, maxW);
-              const hgt = Math.round(w * ((img.height || 300) / (img.width || 300)));
-              const newItem = { id: uid(), t: 'im', a: assetId, x: Math.round(px), y: Math.round(py), w: Math.round(w), h: Math.round(hgt), z: nextZ(), m: Date.now() };
-              addItems(pv.page, [newItem]);
-              pushUndo({ pageId: pv.page.id, add: [newItem], remove: [] });
-              dirty(pv.page);
-              paintInk(pv);
-              setTool('lasso');
-              setSel(pv, [newItem]);
-              toast('Pasted image at tap');
-              return;
+              if (blob) {
+                await insertImageBlob(pv, blob, px, py);
+                return;
+              }
             }
           }
         }
         if (navigator.clipboard.readText) {
-          const text = await navigator.clipboard.readText().catch(() => '');
+          const text = await navigator.clipboard.readText().catch(err => {
+            if (err && (err.name === 'NotAllowedError' || /permission/i.test(err.message))) permBlocked = true;
+            return '';
+          });
           if (text && text.trim()) {
             const newItem = {
               id: uid(), t: 'tx', s: text.trim(),
               x: Math.round(px), y: Math.round(py),
-              w: Math.min(360, pv.page.w - px - 20),
+              w: Math.min(360, Math.max(120, pv.page.w - px - 20)),
               fs: 16, c: prefs.textColor || '#1a1a1a', ff: 'sans', m: Date.now()
             };
             addItems(pv.page, [newItem]);
@@ -2507,10 +2583,12 @@ export async function mountEditor(root, docId, opts = {}) {
             return;
           }
         }
-      } catch {}
+      } catch (err) {
+        console.warn('System clipboard read failed:', err);
+      }
     }
 
-    // 2. Try internal clipItems
+    // 2. Try internal clipItems (cut/copied strokes, shapes, items)
     const src = (await db.getMeta('clip')) || clipItems;
     if (src && src.length) {
       commitText();
@@ -2529,7 +2607,11 @@ export async function mountEditor(root, docId, opts = {}) {
       return;
     }
 
-    toast('Clipboard is empty');
+    if (permBlocked) {
+      toast("Clipboard access blocked. Use 'Insert picture/photo' or allow clipboard.", 3600);
+    } else {
+      toast('Clipboard is empty');
+    }
   }
 
   function openCanvasContextMenu(clientX, clientY) {
@@ -4454,7 +4536,7 @@ export async function mountEditor(root, docId, opts = {}) {
       if (!blob) throw new Error('the picture is too large for this device to process');
       data = await blob.arrayBuffer();
     }
-    const asset = { id: uid(), mime, name: file.name, data, modified: Date.now() };
+    const asset = { id: uid(), mime, name: file.name || 'Pasted image', data, modified: Date.now() };
     await db.put('assets', asset);
     return { ...asset, w: Math.round(src.w * k), h: Math.round(src.h * k) };
   }
@@ -6482,6 +6564,59 @@ export async function mountEditor(root, docId, opts = {}) {
     if (e.key === ' ') { spaceDown = false; vp.classList.remove('grab'); }
   }
 
+  async function onNativePaste(e) {
+    if (activeEd && activeEd !== me) return;
+    if (readOnly) return;
+    if (e.target && e.target.closest && e.target.closest('input, textarea, [contenteditable="true"], dialog')) return;
+    const cd = e.clipboardData;
+    if (!cd) return;
+
+    // Check files (e.g. copied image file from desktop or photo app)
+    const files = Array.from(cd.files || []);
+    const imgFile = files.find(f => f.type && f.type.startsWith('image/'));
+    if (imgFile) {
+      e.preventDefault();
+      const pv = currentPv();
+      await insertImageBlob(pv, imgFile, null, null);
+      return;
+    }
+
+    // Check items (e.g. copied image from Chrome or Safari)
+    const items = Array.from(cd.items || []);
+    const imgItem = items.find(it => it.type && it.type.startsWith('image/'));
+    if (imgItem) {
+      e.preventDefault();
+      const blob = imgItem.getAsFile();
+      if (blob) {
+        const pv = currentPv();
+        await insertImageBlob(pv, blob, null, null);
+        return;
+      }
+    }
+
+    // Check plain text
+    const text = cd.getData('text/plain');
+    if (text && text.trim()) {
+      e.preventDefault();
+      const pv = currentPv(), pg = pv.page;
+      const [cx, cy] = viewCentre(pv);
+      const newItem = {
+        id: uid(), t: 'tx', s: text.trim(),
+        x: Math.round(clamp(cx - 150, 8, pg.w - 320)),
+        y: Math.round(clamp(cy - 20, 8, pg.h - 60)),
+        w: Math.min(360, pg.w - 40),
+        fs: 16, c: prefs.textColor || '#1a1a1a', ff: 'sans', m: Date.now()
+      };
+      addItems(pg, [newItem]);
+      pushUndo({ pageId: pv.page.id, add: [newItem], remove: [] });
+      dirty(pg);
+      paintInk(pv);
+      setTool('lasso');
+      setSel(pv, [newItem]);
+      toast('Pasted text');
+    }
+  }
+
   // --- full screen: hides the title bar and, where the browser allows it, the browser's own bars too
   const nativeFull = () => document.fullscreenElement || document.webkitFullscreenElement;
 
@@ -6593,6 +6728,7 @@ export async function mountEditor(root, docId, opts = {}) {
     clearInterval(timerInt);
     window.removeEventListener('keydown', onKey);
     window.removeEventListener('keyup', onKeyUp);
+    window.removeEventListener('paste', onNativePaste);
     document.removeEventListener('visibilitychange', onVisibility);
     document.removeEventListener('fullscreenchange', onFsChange);
     document.removeEventListener('webkitfullscreenchange', onFsChange);
@@ -6681,6 +6817,7 @@ export async function mountEditor(root, docId, opts = {}) {
   for (const t of ['touchstart', 'touchmove', 'gesturestart', 'gesturechange', 'dblclick']) vp.addEventListener(t, stopNative, { passive: false });
   window.addEventListener('keydown', onKey);
   window.addEventListener('keyup', onKeyUp);
+  window.addEventListener('paste', onNativePaste);
   document.addEventListener('visibilitychange', onVisibility);
   document.addEventListener('fullscreenchange', onFsChange);
   document.addEventListener('webkitfullscreenchange', onFsChange);
