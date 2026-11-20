@@ -3,44 +3,34 @@
 **Written:** 2026-11-20 by agy (Antigravity). **Next:** Claude Code or agy.
 
 ## What the owner asked
-1. "can 3.8 be added ?" -> Added Gemini 3.8 Flash to Settings model list and server worker whitelist.
-2. "also when i am writing in our app, i think it sometime consider my writing as scribble , it should distiunguis bewtween writing and scribble"
-3. "you can move content to here" (with screenshots pointing from floating PDF contents dialog to left sidebar) and "like goodnotes".
+"while taking notes or marking on pdf , pdf slides due to accidental touch on scrollbar on the right edge , how can we solve this ?"
 
-## Done (v55 Release)
-1. **Gemini 3.8 Flash Model Support (`js/sync.js`, `server/worker.js`)**:
-   - Added **Gemini 3.8 Flash (Latest · deep reasoning)** to the Handwriting AI Model dropdown in Settings.
-   - Added `gemini-3.8-flash` to the allowed model whitelist on the Cloudflare sync service worker.
-2. **Intelligent Handwriting vs. Scribble-to-Erase Detection (`js/editor.js`)**:
-   - **Forward progression analysis (`isAdvancingHandwriting`)**: Handwriting (including cursive words like "minimum", "in", "water") naturally oscillates up and down as the pen moves forward across the page. The app now tracks whether turning points advance forward along the writing line; if they do, the stroke is recognized as handwriting and is **never** erased.
-   - **Higher reversal threshold**: Increased minimum required directional reversals from 4 to 6 for horizontal scratch-outs, and 7 for vertical scribbles. Letters with 3–5 turns like "w", "m", "u", "v", and "n" will never accidentally trigger scribble erasing.
-   - **Multi-sweep target hit test**: Previously, if a stroke touched an existing item at just 1 point, the existing item could be deleted. Now, an item is only erased if the scribble crosses over it at least 3 separate times across distinct back-and-forth sweeps.
-   - **Path density check**: Requires dense zigzag path length (`len >= 2.8 * (bw + bh)`) so fast writing isn't misclassified.
-3. **GoodNotes-style 3-Tab Sidebar (`js/editor.js`, `css/app.css`)**:
-   - Top segmented bar: **Thumbnails**, **Bookmarks**, and **Outlines**.
-   - Table of contents integrated directly into the sidebar with one-tap jumping, active chapter highlighting in green, and inline AI outline generator.
-4. **Live Share Permission & Removal Controls (`js/sync.js`, `js/library.js`)**:
-   - Dedicated red `✕` button to remove individual friends.
-   - View only / Can edit dropdown for each person.
-   - Single red "Stop sharing notebook" button.
-5. **Version & Cache**:
-   - Bumped to `v55` in `sw.js` and `js/sync.js`.
+## Done (v56 Release)
+1. **Accidental Palm Touch Prevention on Scrollbar (`js/editor.js`, `css/app.css`)**:
+   - **Auto-hides during handwriting/annotation**: The scrollbar is now hidden (`opacity: 0; pointer-events: none;`) while writing notes. The right margin is completely inert, so a resting palm cannot touch or trigger it.
+   - **Smooth appearance on scroll**: When two fingers scroll or pages glide, the scrollbar smoothly appears (`opacity: 1; pointer-events: auto;`), and automatically fades away 1.4 seconds after scrolling stops.
+   - **Touch Palm Rejection**: If the stylus is on the screen or was used within the last 800ms (`PALM_MS`), touches on the scrollbar are completely ignored.
+   - **No Track-Tap Jumps on Touch**: On touch devices, tapping or touching the empty track no longer jumps the page. Only intentionally dragging the thumb pill moves the view.
+2. **Scrollbar Placement Options in More Menu (`js/editor.js`, `js/editor-consts.js`)**:
+   - Added a menu option in the More (`...`) menu: **`Scrollbar: auto-hide (right edge) | left edge | hidden`**.
+   - Right-handed writers can move the scrollbar to the **left edge** away from the resting palm, or hide it entirely if they prefer two-finger scrolling.
+3. **App Version & Cache**:
+   - Bumped service worker cache to `inkleaf-v56` in `sw.js`.
+   - Bumped app version to `v56` in `js/sync.js`.
 
 ## Tested
-- Verified JS syntax with `node --check`.
-- Ran unit tests verifying handwriting words, cursive strokes, nearby strokes, and genuine scribbles.
-- Ran live browser tests via Chrome CDP capturing:
-  - Settings dialog showing `Gemini 3.8 Flash (Latest · deep reasoning)`.
-  - Scribble vs writing detection.
-  - Sidebar tabs and Outline jump.
-- Screenshots saved:
-  - `C:\Users\yadram\AgentTools\shots\settings_gemini_38.png`
-  - `C:\Users\yadram\AgentTools\shots\scribble_vs_writing_row.png`
-  - `C:\Users\yadram\AgentTools\shots\share_modal_updated.png`
+- Verified JS syntax with `node --check js/editor.js`, `js/sync.js`, `js/editor-consts.js`, `sw.js`.
+- Ran automated browser test via Edge CDP in Inkleaf editor:
+  - Verified resting scrollbar is hidden and inert (`pointer-events: none`).
+  - Verified scrolling flashes scrollbar with page count indicator (`2 / 4`).
+  - Verified More menu item `Scrollbar: auto-hide (right edge)`.
+  - Verified cycling between `left edge`, `hidden`, and `auto-hide (right edge)`.
+- Combined screenshot saved and verified:
+  - `C:\Users\yadram\AgentTools\shots\scrollbar_fix_row.png`
 
 ## Live now
 - Committed locally to branch `main`.
 - Running locally at http://localhost:8080.
 
 ## Owner must do
-- Push to GitHub: Run `git push origin main` in PowerShell to deploy `v55` to GitHub Pages and Cloudflare Worker.
+- Push to GitHub: Run `git push origin main` in PowerShell when ready to release `v56` to GitHub Pages.

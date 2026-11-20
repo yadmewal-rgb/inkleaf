@@ -829,12 +829,22 @@ body.split-dragging iframe, body.split-dragging canvas { pointer-events: none; }
 .usage-fill { height: 100%; background: var(--accent); border-radius: 4px; }
 .usage-fill.warn { background: #e03131; }
 
-/* Scroll bar along the right edge of the pages (drag to travel, tap the track to jump). */
-.overlay > .vscroll { right: 0; top: 0; width: 22px; pointer-events: auto; touch-action: none; cursor: pointer; }
-.vs-thumb { position: absolute; right: 4px; top: 0; width: 8px; border-radius: 6px; background: rgba(90, 94, 102, .45); transition: width .12s, background .12s; }
-.vscroll:hover .vs-thumb, .vscroll.drag .vs-thumb { width: 12px; background: rgba(60, 64, 72, .7); }
-.vs-tip { position: absolute; right: 26px; top: 0; padding: 4px 9px; border-radius: 8px; background: var(--accent); color: var(--accent-ink, #fff); font-size: 13px; font-weight: 600; white-space: nowrap; pointer-events: none; }
-@media (pointer: coarse) { .overlay > .vscroll { width: 28px; } .vs-thumb { width: 10px; } }
+/* Scroll bar along the edge of the pages (auto-hides when writing notes). */
+.overlay > .vscroll {
+  right: 0; top: 0; width: 20px; pointer-events: none; touch-action: none; cursor: pointer;
+  opacity: 0; transition: opacity .22s ease;
+}
+.overlay > .vscroll.visible, .overlay > .vscroll.drag, .overlay > .vscroll:hover {
+  opacity: 1; pointer-events: auto;
+}
+.overlay > .vscroll.left { right: auto; left: 0; }
+.overlay > .vscroll.left .vs-thumb { right: auto; left: 4px; }
+.overlay > .vscroll.left .vs-tip { right: auto; left: 24px; }
+.overlay > .vscroll.hidden-bar { display: none !important; }
+.vs-thumb { position: absolute; right: 4px; top: 0; width: 7px; border-radius: 6px; background: rgba(90, 94, 102, .45); transition: width .12s, background .12s; pointer-events: auto; }
+.vscroll:hover .vs-thumb, .vscroll.drag .vs-thumb { width: 11px; background: rgba(60, 64, 72, .7); }
+.vs-tip { position: absolute; right: 24px; top: 0; padding: 4px 9px; border-radius: 8px; background: var(--accent); color: var(--accent-ink, #fff); font-size: 13px; font-weight: 600; white-space: nowrap; pointer-events: none; }
+@media (pointer: coarse) { .overlay > .vscroll { width: 22px; } .vs-thumb { width: 7px; } }
 
 /* Settings: sync health */
 .health { margin: 4px 0 10px; font-size: 13px; }

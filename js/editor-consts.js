@@ -51,7 +51,8 @@ export const DEFAULTS = {
   text: { color: INK, size: 16, b: false, i: false, u: false, ff: 'sans', al: 'l' },
   fingerDraw: null, // null = automatic: fingers draw until a stylus has been seen
   openRead: null,
-  penSeen: false
+  penSeen: false,
+  scrollbar: 'right' // 'right' = right edge (auto-hide), 'left' = left edge, 'hidden' = hidden
 };
 
 // opts: page (1-based page to open at), q (text to find), pane / other (side by side: this pane's index, the other notebook)

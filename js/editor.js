@@ -333,7 +333,7 @@ export async function mountEditor(root, docId, opts = {}) {
         updateVisible();
         positionOverlays();
         updateIndicator();
-        updateScrollbar();
+        updateScrollbar(true);
       });
     }
   }
@@ -750,19 +750,39 @@ export async function mountEditor(root, docId, opts = {}) {
     applyView();
   }
 
-  // --- scroll bar along the right edge: drag it to travel through a long notebook quickly, or tap the track to
-  // jump there. While dragging, a bubble shows the page number.
+  // --- scroll bar along the edge: drag it to travel through a long notebook quickly.
+  // Auto-hides when writing notes to prevent accidental palm slides, and uses palm rejection.
   const sbThumb = h('div', { class: 'vs-thumb' }), sbTip = h('div', { class: 'vs-tip', hidden: true });
   const sbar = h('div', { class: 'vscroll', hidden: true }, sbThumb, sbTip);
   overlay.append(sbar);
-  let sbShown = { top: -1, hgt: -1 }, sbDrag = null;
+  let sbShown = { top: -1, hgt: -1 }, sbDrag = null, sbFadeTimer = 0;
+
+  function updateScrollbarLayout() {
+    const side = prefs.scrollbar || 'right';
+    sbar.classList.toggle('left', side === 'left');
+    sbar.classList.toggle('hidden-bar', side === 'hidden');
+  }
+  updateScrollbarLayout();
+
   const sbGeom = () => {
     const vh = vpRect.height - (zw ? zwin.offsetHeight : trayH), ch = worldH * scale, range = Math.max(1, ch - vh + 24);
     const th = Math.max(40, Math.min(vh, vh * vh / Math.max(ch, 1)));
     return { vh, ch, range, th, room: Math.max(1, vh - th) };
   };
-  function updateScrollbar() {
-    const g = sbGeom(), show = !hz && g.ch > g.vh + 4;
+
+  function flashScrollbar() {
+    if (hz || sbar.hidden || prefs.scrollbar === 'hidden') return;
+    sbar.classList.add('visible');
+    clearTimeout(sbFadeTimer);
+    if (!sbDrag) {
+      sbFadeTimer = setTimeout(() => {
+        if (!sbDrag && !destroyed) sbar.classList.remove('visible');
+      }, 1400);
+    }
+  }
+
+  function updateScrollbar(scrolling = false) {
+    const g = sbGeom(), show = !hz && g.ch > g.vh + 4 && prefs.scrollbar !== 'hidden';
     if (sbar.hidden === show) sbar.hidden = !show;
     if (!show) return;
     sbar.style.height = g.vh + 'px';
@@ -773,6 +793,7 @@ export async function mountEditor(root, docId, opts = {}) {
       sbThumb.style.transform = `translateY(${top}px)`;
       if (sbDrag) { sbTip.style.transform = `translateY(${top + hgt / 2 - 14}px)`; sbTip.textContent = `${pvs.indexOf(currentPv()) + 1} / ${pvs.length}`; }
     }
+    if (scrolling) flashScrollbar();
   }
   function sbTo(frac) {
     const g = sbGeom();
@@ -781,14 +802,26 @@ export async function mountEditor(root, docId, opts = {}) {
     applyView();
   }
   sbar.addEventListener('pointerdown', e => {
+    // 1. Palm rejection: resting hand while stylus is writing or hovering is ignored
+    if (e.pointerType === 'touch' && ((action && action.ptype === 'pen') || performance.now() - lastPenT < PALM_MS)) {
+      return;
+    }
+    // 2. Prevent accidental slide: on touch devices, touching the empty track never jumps the page
+    if (e.pointerType === 'touch' && e.target !== sbThumb) {
+      return;
+    }
     e.preventDefault();
     e.stopPropagation();
     const g = sbGeom(), r = sbar.getBoundingClientRect(), y = e.clientY - r.top;
     let top0 = sbShown.top;
-    if (e.target !== sbThumb) { top0 = clamp(y - g.th / 2, 0, g.room); sbTo(top0 / g.room); } // a tap on the track jumps there
+    if (e.target !== sbThumb) {
+      top0 = clamp(y - g.th / 2, 0, g.room);
+      sbTo(top0 / g.room);
+    }
     try { sbar.setPointerCapture(e.pointerId); } catch { /* synthetic pointer */ }
     sbDrag = { id: e.pointerId, y0: e.clientY, top0 };
-    sbar.classList.add('drag');
+    sbar.classList.add('drag', 'visible');
+    clearTimeout(sbFadeTimer);
     sbTip.hidden = false;
     sbShown.top = -1;
     updateScrollbar();
@@ -797,7 +830,14 @@ export async function mountEditor(root, docId, opts = {}) {
     if (!sbDrag || e.pointerId !== sbDrag.id) return;
     sbTo((sbDrag.top0 + e.clientY - sbDrag.y0) / sbGeom().room);
   });
-  const sbEnd = e => { if (sbDrag && e.pointerId === sbDrag.id) { sbDrag = null; sbar.classList.remove('drag'); sbTip.hidden = true; } };
+  const sbEnd = e => {
+    if (sbDrag && e.pointerId === sbDrag.id) {
+      sbDrag = null;
+      sbar.classList.remove('drag');
+      sbTip.hidden = true;
+      flashScrollbar();
+    }
+  };
   sbar.addEventListener('pointerup', sbEnd);
   sbar.addEventListener('pointercancel', sbEnd);
 
@@ -5760,6 +5800,17 @@ export async function mountEditor(root, docId, opts = {}) {
           toast(prefs.scribble ? 'Scribble over writing with the pen to erase it' : 'Scribble to erase is off');
         }
       },
+      {
+        label: 'Scrollbar: ' + (prefs.scrollbar === 'hidden' ? 'hidden' : prefs.scrollbar === 'left' ? 'left edge' : 'auto-hide (right edge)'),
+        icon: I.flow,
+        onClick: () => {
+          prefs.scrollbar = prefs.scrollbar === 'left' ? 'hidden' : prefs.scrollbar === 'hidden' ? 'right' : 'left';
+          savePrefs();
+          updateScrollbarLayout();
+          updateScrollbar(true);
+          toast(prefs.scrollbar === 'hidden' ? 'Scrollbar hidden' : prefs.scrollbar === 'left' ? 'Scrollbar on left edge' : 'Scrollbar on right edge (auto-hides while writing)');
+        }
+      },
       { label: 'Gestures', icon: I.finger, onClick: gestureHelp },
       { label: dbg ? 'Close input test' : 'Input test', icon: I.pen, onClick: toggleDebug },
       {
@@ -5920,6 +5971,7 @@ export async function mountEditor(root, docId, opts = {}) {
     destroyed = true;
     findTok++;
     stopInertia();
+    clearTimeout(sbFadeTimer);
     ro.disconnect();
     if (thumbObs) thumbObs.disconnect();
     clearInterval(timerInt);
