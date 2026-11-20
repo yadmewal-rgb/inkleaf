@@ -9,8 +9,6 @@ const VER = 2;
 const KEY = 'inkleaf.hw';
 const USAGE_KEY = 'inkleaf.hwUsage';
 const DEFAULT_LIMIT = 1500;
-export const DEFAULT_MODEL = 'gemini-3.5-flash-lite';
-const IDLE_MS = 45e3; // the worker (and the memory the model takes) is let go after this long without work
 
 function todayKey() {
   const d = new Date();
@@ -54,13 +52,81 @@ export function setHwLimit(n) {
   bus.emit('hw-usage', u);
 }
 
+// Tiered model cascade in order of reasoning capability & efficiency:
+// Tier 1: 3.8 Flash, 3.8 Flash Lite
+// Tier 2: 3.7 Flash, 3.7 Flash Lite
+// Tier 3: 3.6 Flash, 3.6 Flash Lite
+// Tier 4: 3.5 Flash, 3.5 Flash Lite, 3.1 Flash Lite, 2.5 Flash
+export const MODEL_CASCADE = [
+  'gemini-3.8-flash',
+  'gemini-3.8-flash-lite',
+  'gemini-3.7-flash',
+  'gemini-3.7-flash-lite',
+  'gemini-3.6-flash',
+  'gemini-3.6-flash-lite',
+  'gemini-3.5-flash',
+  'gemini-3.5-flash-lite',
+  'gemini-3.1-flash-lite',
+  'gemini-2.5-flash'
+];
+
+export const DEFAULT_MODEL = 'auto';
+const IDLE_MS = 45e3; // the worker (and the memory the model takes) is let go after this long without work
+
+// In-memory active model for this session: resets to top available model (gemini-3.8-flash) on every fresh load!
+let sessionActiveModel = null;
+
+export function getHwModelConfig() {
+  return localStorage.getItem('inkleaf.geminiModel') || 'auto';
+}
+
+export function getActiveHwModel() {
+  const cfg = getHwModelConfig();
+  if (cfg !== 'auto' && MODEL_CASCADE.includes(cfg)) {
+    return sessionActiveModel || cfg;
+  }
+  if (!sessionActiveModel) {
+    sessionActiveModel = MODEL_CASCADE[0];
+  }
+  return sessionActiveModel;
+}
+
+export function resetSessionActiveModel() {
+  const cfg = getHwModelConfig();
+  if (cfg !== 'auto' && MODEL_CASCADE.includes(cfg)) {
+    sessionActiveModel = cfg;
+  } else {
+    sessionActiveModel = MODEL_CASCADE[0];
+  }
+  bus.emit('hw-model-changed', { model: getActiveHwModel(), pref: cfg });
+}
+
+export function stepDownModel(failedModel) {
+  const cur = sessionActiveModel || failedModel || MODEL_CASCADE[0];
+  const idx = MODEL_CASCADE.indexOf(cur);
+  if (idx >= 0 && idx < MODEL_CASCADE.length - 1) {
+    const nextModel = MODEL_CASCADE[idx + 1];
+    sessionActiveModel = nextModel;
+    console.warn(`[AI Waterfall] Model ${cur} unavailable or limit hit -> stepping down to ${nextModel}`);
+    bus.emit('hw-model-changed', { model: sessionActiveModel, fallbackFrom: cur, pref: getHwModelConfig() });
+    return nextModel;
+  }
+  return null;
+}
+
 export function getHwModel() {
-  return localStorage.getItem('inkleaf.geminiModel') || DEFAULT_MODEL;
+  return getActiveHwModel();
 }
 
 export function setHwModel(m) {
-  if (m) localStorage.setItem('inkleaf.geminiModel', m.trim());
-  else localStorage.removeItem('inkleaf.geminiModel');
+  if (!m || m === 'auto') {
+    localStorage.removeItem('inkleaf.geminiModel');
+    sessionActiveModel = MODEL_CASCADE[0];
+  } else {
+    localStorage.setItem('inkleaf.geminiModel', m.trim());
+    sessionActiveModel = m.trim();
+  }
+  bus.emit('hw-model-changed', { model: getActiveHwModel(), pref: getHwModelConfig() });
 }
 
 export const hwOn = () => { try { return localStorage.getItem(KEY) === '1'; } catch { return false; } };
@@ -152,6 +218,25 @@ export function batchedPicture(runs) {
   return dataUrl.split(',')[1] || '';
 }
 
+async function callDirectGemini(b64, N, prompt, model, directKey) {
+  return await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${directKey}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      contents: [{
+        parts: [
+          { text: prompt },
+          { inline_data: { mime_type: 'image/jpeg', data: b64 } }
+        ]
+      }],
+      generationConfig: {
+        temperature: 0,
+        responseMimeType: N > 1 ? 'application/json' : 'text/plain'
+      }
+    })
+  });
+}
+
 async function readBatch(runs) {
   if (!runs.length) return [];
   if (!canMakeHwCall()) {
@@ -163,56 +248,92 @@ async function readBatch(runs) {
 
   const N = runs.length;
   const prompt = `This image has ${N} numbered rows of handwriting (red number at the left of each row). Transcribe each row exactly as written. Reply with a JSON array of ${N} strings, one per row, in order. Use "" for a row with only ticks, crosses, lines or marks.`;
-  const model = getHwModel();
   const directKey = localStorage.getItem('inkleaf.geminiKey');
 
   let resultStrings = null;
 
-  if (navigator.onLine) {
+  if (typeof navigator !== 'undefined' && navigator.onLine) {
+    // ---------------------------------------------------------------------------------
+    // Provider 1: Direct Gemini API (if user configured their own key in Settings)
+    // ---------------------------------------------------------------------------------
     if (directKey) {
-      const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${directKey}`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          contents: [{
-            parts: [
-              { text: prompt },
-              { inline_data: { mime_type: 'image/jpeg', data: b64 } }
-            ]
-          }],
-          generationConfig: {
-            temperature: 0,
-            responseMimeType: 'application/json'
-          }
-        })
-      });
-
-      if (!res.ok) {
-        const err = await res.text().catch(() => '');
-        throw new Error(`Gemini API error (${res.status}): ${err.slice(0, 120)}`);
-      }
-
-      const j = await res.json();
-      const raw = (j?.candidates?.[0]?.content?.parts?.[0]?.text || '').trim();
-      if (raw) {
+      let currentModel = getActiveHwModel();
+      while (currentModel) {
         try {
-          const arr = JSON.parse(raw);
-          if (Array.isArray(arr) && arr.length === N) {
-            resultStrings = arr.map(s => String(s || '').trim());
+          const res = await callDirectGemini(b64, N, prompt, currentModel, directKey);
+          if (res.ok) {
+            const j = await res.json();
+            const raw = (j?.candidates?.[0]?.content?.parts?.[0]?.text || '').trim();
+            if (raw) {
+              try {
+                const arr = JSON.parse(raw);
+                if (Array.isArray(arr) && arr.length === N) {
+                  resultStrings = arr.map(s => String(s || '').trim());
+                  break; // Successful transcription with current model!
+                }
+              } catch {}
+            }
           }
-        } catch {}
+
+          // If direct call was not successful:
+          if (!res.ok) {
+            const errBody = await res.text().catch(() => '');
+            console.warn(`[Direct Gemini] Model ${currentModel} returned HTTP ${res.status}: ${errBody.slice(0, 100)}`);
+            // Model not found (404), rate limit/quota (429), or temporary overload (503) -> step down to next model
+            if (res.status === 404 || res.status === 429 || res.status === 503) {
+              currentModel = stepDownModel(currentModel);
+              continue;
+            } else {
+              // Bad API key (400, 401, 403) -> break direct loop and shift to Provider 2 (Cloudflare)
+              console.warn('[Direct Gemini] Key error or permission issue. Shifting to Cloudflare.');
+              break;
+            }
+          }
+        } catch (netErr) {
+          console.warn(`[Direct Gemini] Network error for model ${currentModel}:`, netErr);
+          break; // network issue -> fall through to Cloudflare
+        }
+        currentModel = stepDownModel(currentModel);
       }
-    } else if (cloudOcrFn) {
-      const raw = await cloudOcrFn(b64, N, model);
-      if (Array.isArray(raw) && raw.length === N) {
-        resultStrings = raw.map(s => String(s || '').trim());
+    }
+
+    // ---------------------------------------------------------------------------------
+    // Provider 2: Cloudflare Worker OCR (if direct Gemini not configured or failed)
+    // ---------------------------------------------------------------------------------
+    if (!resultStrings && cloudOcrFn) {
+      let currentModel = getActiveHwModel();
+      while (currentModel) {
+        try {
+          const raw = await cloudOcrFn(b64, N, currentModel);
+          if (Array.isArray(raw) && raw.length === N) {
+            resultStrings = raw.map(s => String(s || '').trim());
+            break; // Successful transcription via Cloudflare!
+          } else if (raw && raw.error) {
+            console.warn(`[Cloudflare OCR] Model ${currentModel} returned error:`, raw.error);
+            currentModel = stepDownModel(currentModel);
+          } else {
+            // Null or empty response
+            currentModel = stepDownModel(currentModel);
+          }
+        } catch (cfErr) {
+          console.warn(`[Cloudflare OCR] Exception for model ${currentModel}:`, cfErr);
+          break;
+        }
       }
     }
   }
 
+  // If successful with either Gemini direct or Cloudflare worker
   if (resultStrings) {
     recordHwCall(1);
     return resultStrings;
+  }
+
+  // ---------------------------------------------------------------------------------
+  // Provider 3: On-Device Fallback (Offline or Cloud limits exhausted)
+  // ---------------------------------------------------------------------------------
+  if (typeof navigator !== 'undefined' && !navigator.onLine) {
+    throw new Error('Offline. Indexing will resume when online.');
   }
 
   throw new Error('AI transcription returned invalid format or failed');
@@ -220,40 +341,56 @@ async function readBatch(runs) {
 
 async function read(img) {
   if (!img) return '';
-  if (navigator.onLine && canMakeHwCall()) {
+  if (typeof navigator !== 'undefined' && navigator.onLine && canMakeHwCall()) {
     try {
       const b64 = imgToBase64(img);
       if (b64) {
         const directKey = localStorage.getItem('inkleaf.geminiKey');
-        const model = getHwModel();
+        const prompt = 'Transcribe all handwritten words and notes in this image. Return ONLY the transcribed text. Do not add quotes, markdown, or commentary.';
+
+        // Try direct Gemini with active model waterfall
         if (directKey) {
-          const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${directKey}`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              contents: [{
-                parts: [
-                  { text: 'Transcribe all handwritten words and notes in this image. Return ONLY the transcribed text. Do not add quotes, markdown, or commentary.' },
-                  { inline_data: { mime_type: 'image/jpeg', data: b64 } }
-                ]
-              }],
-              generationConfig: { temperature: 0.1 }
-            })
-          });
-          if (res.ok) {
-            const j = await res.json();
-            const txt = (j?.candidates?.[0]?.content?.parts?.[0]?.text || '').trim();
-            if (txt) {
-              recordHwCall(0);
-              return txt;
+          let currentModel = getActiveHwModel();
+          while (currentModel) {
+            try {
+              const res = await callDirectGemini(b64, 1, prompt, currentModel, directKey);
+              if (res.ok) {
+                const j = await res.json();
+                const txt = (j?.candidates?.[0]?.content?.parts?.[0]?.text || '').trim();
+                if (txt) {
+                  recordHwCall(0);
+                  return txt;
+                }
+              }
+              if (res.status === 404 || res.status === 429 || res.status === 503) {
+                currentModel = stepDownModel(currentModel);
+                continue;
+              }
+              break;
+            } catch {
+              break;
             }
           }
         }
+
+        // Try Cloudflare worker with active model waterfall
         if (cloudOcrFn) {
-          const txt = await cloudOcrFn(b64, 1, model);
-          if (txt) {
-            recordHwCall(0);
-            return typeof txt === 'string' ? txt.trim() : String(txt[0] || '').trim();
+          let currentModel = getActiveHwModel();
+          while (currentModel) {
+            try {
+              const txt = await cloudOcrFn(b64, 1, currentModel);
+              if (txt && typeof txt === 'string' && txt.trim()) {
+                recordHwCall(0);
+                return txt.trim();
+              }
+              if (Array.isArray(txt) && txt.length > 0 && String(txt[0] || '').trim()) {
+                recordHwCall(0);
+                return String(txt[0]).trim();
+              }
+              currentModel = stepDownModel(currentModel);
+            } catch {
+              break;
+            }
           }
         }
       }
@@ -541,7 +678,12 @@ let failCount = 0;
 if (typeof window !== 'undefined') {
   window.addEventListener('online', () => {
     failCount = 0;
-    if (hwOn() && queue.size) run();
+    status.err = '';
+    console.log('[AI Search] Online connection restored. Resetting model waterfall to top tier and indexing pending pages...');
+    resetSessionActiveModel();
+    if (hwOn()) {
+      indexAll();
+    }
   });
 }
 

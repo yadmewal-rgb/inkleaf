@@ -13,7 +13,7 @@ import { db, assetIdsOf } from './db.js';
 import { h, uid, bus, loadScript, downloadBlob, bufToB64, b64ToBuf } from './util.js';
 import { modal, toast, confirmBox, busy } from './ui.js';
 import { I } from './icons.js';
-import { hwOn, setHwOn, status as hwStatus, setCloudOcr, getHwUsage, setHwLimit, getHwModel, setHwModel } from './hwsearch.js';
+import { hwOn, setHwOn, status as hwStatus, setCloudOcr, getHwUsage, setHwLimit, getHwModel, setHwModel, getHwModelConfig, getActiveHwModel, MODEL_CASCADE } from './hwsearch.js';
 
 const SERVER = 'https://inkleaf-sync.yadmewal.workers.dev';
 // drive.appdata: Inkleaf's hidden app folder (files it syncs); drive.file: only files Inkleaf itself creates, used
@@ -226,7 +226,7 @@ async function call(path, opts = {}) {
   return r;
 }
 
-export async function syncOcr(imageB64, n = 1, model = 'gemini-3.5-flash-lite') {
+export async function syncOcr(imageB64, n = 1, model = 'gemini-3.8-flash') {
   if (!session || !navigator.onLine) return null;
   try {
     const r = await call('/ocr', {
@@ -234,11 +234,14 @@ export async function syncOcr(imageB64, n = 1, model = 'gemini-3.5-flash-lite') 
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ image: imageB64, n, model })
     });
-    if (!r.ok) return null;
+    if (!r.ok) {
+      const errJson = await r.json().catch(() => ({}));
+      return { error: errJson.error || `HTTP_${r.status}`, detail: errJson.detail };
+    }
     const j = await r.json().catch(() => null);
     return j && j.text ? j.text : null;
-  } catch {
-    return null;
+  } catch (e) {
+    return { error: 'network-failed', detail: e.message };
   }
 }
 setCloudOcr(syncOcr);
@@ -1912,7 +1915,8 @@ export async function openSettings() {
       : st.state === 'working' ? `Reading handwriting (${st.left} left)...`
       : 'Ready. Uses fast Cloud AI (Gemini) with page batching when online.';
     const gemKey = localStorage.getItem('inkleaf.geminiKey') || '';
-    const curModel = getHwModel();
+    const curPref = getHwModelConfig();
+    const activeModel = getActiveHwModel();
     const usage = getHwUsage();
     const pct = Math.min(100, Math.round(((usage.calls || 0) / (usage.limit || 1500)) * 100));
 
@@ -1929,14 +1933,27 @@ export async function openSettings() {
     const modelSelect = h('select', {
       class: 'inp sm',
       style: 'margin-top: 4px; width: 100%;',
-      onchange: e => setHwModel(e.target.value)
+      onchange: e => {
+        setHwModel(e.target.value);
+        drawHw();
+      }
     }, [
-      h('option', { value: 'gemini-3.8-flash', selected: curModel === 'gemini-3.8-flash' }, 'Gemini 3.8 Flash (Latest · deep reasoning)'),
-      h('option', { value: 'gemini-3.5-flash-lite', selected: curModel === 'gemini-3.5-flash-lite' }, 'Gemini 3.5 Flash Lite (Recommended · fast & low quota)'),
-      h('option', { value: 'gemini-3.5-flash', selected: curModel === 'gemini-3.5-flash' }, 'Gemini 3.5 Flash'),
-      h('option', { value: 'gemini-3.1-flash-lite', selected: curModel === 'gemini-3.1-flash-lite' }, 'Gemini 3.1 Flash Lite'),
-      h('option', { value: 'gemini-2.5-flash', selected: curModel === 'gemini-2.5-flash' }, 'Gemini 2.5 Flash')
+      h('option', { value: 'auto', selected: curPref === 'auto' || !curPref }, 'Auto (Best Available: 3.8 ➔ 3.5 fallback) — Recommended'),
+      h('option', { value: 'gemini-3.8-flash', selected: curPref === 'gemini-3.8-flash' }, 'Gemini 3.8 Flash (Latest · deep reasoning)'),
+      h('option', { value: 'gemini-3.8-flash-lite', selected: curPref === 'gemini-3.8-flash-lite' }, 'Gemini 3.8 Flash Lite (Fast reasoning)'),
+      h('option', { value: 'gemini-3.7-flash', selected: curPref === 'gemini-3.7-flash' }, 'Gemini 3.7 Flash'),
+      h('option', { value: 'gemini-3.7-flash-lite', selected: curPref === 'gemini-3.7-flash-lite' }, 'Gemini 3.7 Flash Lite'),
+      h('option', { value: 'gemini-3.6-flash', selected: curPref === 'gemini-3.6-flash' }, 'Gemini 3.6 Flash'),
+      h('option', { value: 'gemini-3.6-flash-lite', selected: curPref === 'gemini-3.6-flash-lite' }, 'Gemini 3.6 Flash Lite'),
+      h('option', { value: 'gemini-3.5-flash', selected: curPref === 'gemini-3.5-flash' }, 'Gemini 3.5 Flash'),
+      h('option', { value: 'gemini-3.5-flash-lite', selected: curPref === 'gemini-3.5-flash-lite' }, 'Gemini 3.5 Flash Lite (Low quota & fast)'),
+      h('option', { value: 'gemini-3.1-flash-lite', selected: curPref === 'gemini-3.1-flash-lite' }, 'Gemini 3.1 Flash Lite'),
+      h('option', { value: 'gemini-2.5-flash', selected: curPref === 'gemini-2.5-flash' }, 'Gemini 2.5 Flash')
     ]);
+
+    const activeModelBadge = h('div', { class: 'bk-sub', style: 'font-size: 11px; margin-top: 4px; color: var(--muted);' },
+      `Active now: ${activeModel}${curPref === 'auto' && activeModel !== 'gemini-3.8-flash' ? ' (auto fallback)' : ''} · Fallback path: 3.8 ➔ 3.7 ➔ 3.6 ➔ 3.5 ➔ Cloudflare ➔ Device`
+    );
 
     const limitInp = h('input', {
       type: 'number', class: 'inp sm', min: '10', max: '10000', step: '50',
@@ -1982,8 +1999,9 @@ export async function openSettings() {
         ),
         h('p', { class: 'modal-text small', style: 'margin-bottom: 6px;' }, txt),
         on ? h('div', { class: 'field', style: 'margin-top: 6px;' },
-          h('label', { class: 'small' }, 'Model:'),
-          modelSelect
+          h('label', { class: 'small' }, 'Handwriting AI Model:'),
+          modelSelect,
+          activeModelBadge
         ) : null,
         on ? h('div', { class: 'field', style: 'margin-top: 8px;' },
           h('label', { class: 'small' }, 'Direct Gemini API Key (optional):'),
@@ -1998,18 +2016,19 @@ export async function openSettings() {
 
   const offUsage = bus.on('hw-usage', () => drawHw());
   const offHwStatus = bus.on('hw-status', () => drawHw());
+  const offModelChanged = bus.on('hw-model-changed', () => drawHw());
 
   const m = modal({
-    title: 'Settings (v57)',
+    title: 'Settings (v58)',
     wide: true,
-    onClose: () => { offUsage(); offHwStatus(); },
+    onClose: () => { offUsage(); offHwStatus(); offModelChanged(); },
     body: h('div', null,
       h('div', {
         class: 'row',
         style: 'align-items: center; justify-content: space-between; padding: 10px 14px; background: var(--surface-2); border-radius: 10px; margin-bottom: 16px;'
       },
         h('div', null,
-          h('div', { style: 'font-weight: 600; font-size: 14.5px;' }, 'Inkleaf v57'),
+          h('div', { style: 'font-weight: 600; font-size: 14.5px;' }, 'Inkleaf v58'),
           h('div', { class: 'bk-sub', style: 'margin-top: 2px;' }, 'Handwriting notes · Real-time sync · PWA')
         ),
         h('button', {

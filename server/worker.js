@@ -539,8 +539,19 @@ export class User extends DurableObject {
       const image = body.image;
       const mimeType = body.mimeType || 'image/jpeg';
       const n = Math.max(1, Math.min(40, Number(body.n) || 1));
-      const allowedModels = new Set(['gemini-3.8-flash', 'gemini-3.5-flash-lite', 'gemini-3.5-flash', 'gemini-3.1-flash-lite', 'gemini-2.5-flash']);
-      const model = allowedModels.has(body.model) ? body.model : 'gemini-3.5-flash-lite';
+      const allowedModels = new Set([
+        'gemini-3.8-flash',
+        'gemini-3.8-flash-lite',
+        'gemini-3.7-flash',
+        'gemini-3.7-flash-lite',
+        'gemini-3.6-flash',
+        'gemini-3.6-flash-lite',
+        'gemini-3.5-flash',
+        'gemini-3.5-flash-lite',
+        'gemini-3.1-flash-lite',
+        'gemini-2.5-flash'
+      ]);
+      const model = allowedModels.has(body.model) ? body.model : 'gemini-3.8-flash';
       if (!image) return json({ error: 'no-image' }, 400);
 
       const prompt = n > 1
@@ -549,7 +560,7 @@ export class User extends DurableObject {
 
       const geminiUrl = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`;
 
-      const res = await fetch(geminiUrl, {
+      let res = await fetch(geminiUrl, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -565,6 +576,30 @@ export class User extends DurableObject {
           }
         })
       });
+
+      // Automatic fallback if requested model is 404 (not enabled/released) or 429 (quota hit)
+      if (!res.ok && model !== 'gemini-3.5-flash-lite' && (res.status === 404 || res.status === 429 || res.status === 503)) {
+        const fallbackUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-3.5-flash-lite:generateContent?key=${apiKey}`;
+        const fallbackRes = await fetch(fallbackUrl, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            contents: [{
+              parts: [
+                { text: prompt },
+                { inline_data: { mime_type: mimeType, data: image } }
+              ]
+            }],
+            generationConfig: {
+              temperature: 0,
+              responseMimeType: n > 1 ? 'application/json' : 'text/plain'
+            }
+          })
+        });
+        if (fallbackRes.ok) {
+          res = fallbackRes;
+        }
+      }
 
       if (!res.ok) {
         const err = await res.text().catch(() => '');
