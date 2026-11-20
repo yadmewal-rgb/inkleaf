@@ -115,7 +115,9 @@ export function popMenu(anchor, items, opts) {
     : h('button', {
         class: 'mi' + (it.danger ? ' danger' : ''),
         type: 'button',
-        onclick: () => { close(); it.onClick(); }
+        onclick: () => {
+          try { it.onClick(); } finally { close(); }
+        }
       }, it.icon ? h('span', { class: 'mi-ic', html: it.icon }) : null, it.label)));
   close = popover(anchor, list, opts);
   return close;
