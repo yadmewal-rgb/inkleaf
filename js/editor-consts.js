@@ -52,7 +52,8 @@ export const DEFAULTS = {
   fingerDraw: null, // null = automatic: fingers draw until a stylus has been seen
   openRead: null,
   penSeen: false,
-  scrollbar: 'right' // 'right' = right edge (auto-hide), 'left' = left edge, 'hidden' = hidden
+  scrollbar: 'left', // 'left' = left edge (never touches right hand), 'right' = right edge, 'hidden' = hidden
+  spellcheck: true // handwriting and text spell check as you write (red dotted underline)
 };
 
 // opts: page (1-based page to open at), q (text to find), pane / other (side by side: this pane's index, the other notebook)

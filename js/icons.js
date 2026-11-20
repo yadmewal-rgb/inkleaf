@@ -76,5 +76,6 @@ export const I = {
   addPage: s('<path d="M7 3h7l5 5v11a2 2 0 01-2 2H7a2 2 0 01-2-2V5a2 2 0 012-2z"/><path d="M14 3v5h5"/><path d="M12 11.500v6M9 14.500h6"/>'),
   info: s('<circle cx="12" cy="12" r="9"/><path d="M12 11v6"/><circle cx="12" cy="7.600" r="1" fill="currentColor" stroke="none"/>'),
   calendar: s('<rect x="3" y="5" width="18" height="16" rx="2"/><path d="M3 10h18M8 3v4M16 3v4"/><rect x="7" y="13" width="3.5" height="3.5" rx=".5" fill="currentColor" stroke="none"/>'),
-  template: s('<rect x="4" y="3" width="16" height="18" rx="2"/><path d="M8 8h8M8 12h8M8 16h8"/>')
+  template: s('<rect x="4" y="3" width="16" height="18" rx="2"/><path d="M8 8h8M8 12h8M8 16h8"/>'),
+  spell: s('<path d="M4 19h16"/><path d="M4 14l5-10 5 10"/><path d="M6.5 10.5h5"/><path d="M16 11l2 2 4-4"/>')
 };

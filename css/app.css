@@ -846,6 +846,54 @@ body.split-dragging iframe, body.split-dragging canvas { pointer-events: none; }
 .vs-tip { position: absolute; right: 24px; top: 0; padding: 4px 9px; border-radius: 8px; background: var(--accent); color: var(--accent-ink, #fff); font-size: 13px; font-weight: 600; white-space: nowrap; pointer-events: none; }
 @media (pointer: coarse) { .overlay > .vscroll { width: 22px; } .vs-thumb { width: 7px; } }
 
+/* GoodNotes-style handwriting & text spell checking */
+.overlay > .spell-layer {
+  position: absolute; left: 0; top: 0; width: 100%; height: 100%;
+  pointer-events: none; z-index: 14;
+}
+.spell-mark {
+  position: absolute; pointer-events: auto; cursor: pointer; box-sizing: border-box;
+  touch-action: manipulation; -webkit-tap-highlight-color: transparent;
+  border-radius: 4px; transition: background .12s;
+}
+.spell-mark:hover {
+  background: rgba(224, 49, 49, .08);
+}
+.spell-mark-line {
+  position: absolute; left: 0; right: 0; bottom: 0; height: 3px;
+  background-image: radial-gradient(circle, #e03131 1.2px, transparent 1.2px);
+  background-size: 5px 3px; background-repeat: repeat-x; background-position: bottom;
+  pointer-events: none;
+}
+.spell-mark:hover .spell-mark-line {
+  height: 4px;
+  background-image: radial-gradient(circle, #ff6b6b 1.5px, transparent 1.5px);
+  background-size: 5px 4px;
+}
+.spell-pop {
+  min-width: 200px; max-width: 280px; padding: 6px; display: flex; flex-direction: column;
+}
+.spell-pop-head {
+  display: flex; align-items: baseline; justify-content: space-between;
+  padding: 6px 10px 4px; border-bottom: 1px solid var(--line); margin-bottom: 4px;
+}
+.spell-pop-orig {
+  font-weight: 700; font-size: 14.5px; color: #e03131; text-decoration: line-through;
+  text-decoration-thickness: 1.5px;
+}
+.spell-pop-sub {
+  font-size: 11.5px; color: var(--muted); text-transform: uppercase; letter-spacing: .5px;
+}
+.spell-sug-btn {
+  display: flex; align-items: center; justify-content: space-between;
+  width: 100%; border: 0; background: transparent; text-align: left;
+  padding: 8px 10px; border-radius: 8px; cursor: pointer; color: var(--ink);
+  transition: background .1s;
+}
+.spell-sug-btn:hover { background: var(--surface-2); }
+.spell-sug-word { font-weight: 700; font-size: 14px; color: var(--accent); }
+.spell-sug-badge { font-size: 11px; color: var(--muted); background: var(--surface-2); padding: 1px 6px; border-radius: 4px; }
+
 /* Settings: sync health */
 .health { margin: 4px 0 10px; font-size: 13px; }
 .health .dot { display: inline-block; width: 9px; height: 9px; border-radius: 50%; margin-right: 6px; background: #868e96; vertical-align: 1px; }

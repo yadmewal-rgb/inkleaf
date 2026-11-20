@@ -12,6 +12,7 @@ import { popMenu, popover, confirmBox, promptText, toast, modal, chipGroup, temp
 import { exportFlow, pdfAsPictures } from './export.js';
 import { syncNow, syncStatus, mergePage, mergeDoc, shareNotebook, sendLiveDelta, sendGuestLiveDelta } from './sync.js';
 import { matchPage, matchSync, hwOn, pageIndex, queuePages } from './hwsearch.js';
+import { findSpellingErrorsOnPage, addToUserDict, ignoreWord } from './spellcheck.js';
 import {
   GAP, MIN_S, MAX_S, COARSE, MAXPX, REGION_PX, REGION_PAD, PULL_PX, PALM_MS, INK, INK_ON_DARK, PEN_COLORS, HL_COLORS, SHAPES,
   MM, mmToPt, TAPE_COLORS, LASER_COLORS, RULER_L, RULER_W, ZOOM_TOOLS, NOTE_COLORS, FILL_COLORS, HIST_GAP, HIST_MAX, HIST_DAYS,
@@ -758,7 +759,7 @@ export async function mountEditor(root, docId, opts = {}) {
   let sbShown = { top: -1, hgt: -1 }, sbDrag = null, sbFadeTimer = 0;
 
   function updateScrollbarLayout() {
-    const side = prefs.scrollbar || 'right';
+    const side = prefs.scrollbar || 'left';
     sbar.classList.toggle('left', side === 'left');
     sbar.classList.toggle('hidden-bar', side === 'hidden');
   }
@@ -841,6 +842,171 @@ export async function mountEditor(root, docId, opts = {}) {
   sbar.addEventListener('pointerup', sbEnd);
   sbar.addEventListener('pointercancel', sbEnd);
 
+  // --- handwriting and text spell checking (temporary red dotted underline like GoodNotes)
+  const spellLayer = h('div', { class: 'spell-layer' });
+  overlay.append(spellLayer);
+  let activeSpellMarks = [], spellTimer = 0;
+
+  function positionSpellMarks() {
+    if (prefs.spellcheck === false) {
+      spellLayer.replaceChildren();
+      return;
+    }
+    for (const mark of activeSpellMarks) {
+      if (!mark.el) continue;
+      const pv = mark.pv || pvs.find(v => v.page.id === mark.pageId);
+      if (!pv || !inRange(pv, 0)) {
+        mark.el.style.display = 'none';
+        continue;
+      }
+      mark.el.style.display = '';
+      const [sx, sy] = toScreen(pv, mark.box.x0, mark.box.y0);
+      const sw = Math.max(16, mark.box.w * scale);
+      const sh = Math.max(10, mark.box.h * scale);
+      mark.el.style.left = sx + 'px';
+      mark.el.style.top = sy + 'px';
+      mark.el.style.width = sw + 'px';
+      mark.el.style.height = sh + 'px';
+    }
+  }
+
+  function renderSpellMarks() {
+    spellLayer.replaceChildren();
+    if (prefs.spellcheck === false) return;
+    for (const mark of activeSpellMarks) {
+      const line = h('div', { class: 'spell-mark-line' });
+      const el = h('div', {
+        class: 'spell-mark',
+        title: `Spelling: "${mark.word}" — tap for suggestions`,
+        onclick: e => {
+          e.stopPropagation();
+          showSpellPopover(el, mark);
+        }
+      }, line);
+      mark.el = el;
+      spellLayer.append(el);
+    }
+  }
+
+  async function updateSpellMarks() {
+    if (destroyed) return;
+    if (prefs.spellcheck === false) {
+      spellLayer.replaceChildren();
+      activeSpellMarks = [];
+      return;
+    }
+    const visPvs = pvs.filter(pv => inRange(pv, 0));
+    const allErrors = [];
+    for (const pv of visPvs) {
+      let hw = pv.page.hw;
+      if (!hw) {
+        try { hw = await pageIndex(pv.page.id); } catch {}
+      }
+      const errs = findSpellingErrorsOnPage(pv.page, hw);
+      for (const err of errs) {
+        err.pv = pv;
+        allErrors.push(err);
+      }
+    }
+    activeSpellMarks = allErrors;
+    renderSpellMarks();
+    positionSpellMarks();
+  }
+
+  function showSpellPopover(anchor, mark) {
+    const sugs = mark.suggestions || [];
+    let close = () => {};
+    const body = h('div', { class: 'spell-pop' },
+      h('div', { class: 'spell-pop-head' },
+        h('span', { class: 'spell-pop-orig' }, mark.clean || mark.word),
+        h('span', { class: 'spell-pop-sub' }, 'Spelling')
+      ),
+      h('div', { class: 'spell-pop-sugs' },
+        sugs.length ? sugs.map(s => h('button', {
+          class: 'spell-sug-btn',
+          type: 'button',
+          onclick: () => {
+            close();
+            applySpellCorrection(mark, s);
+          }
+        },
+          h('span', { class: 'spell-sug-word' }, s),
+          h('span', { class: 'spell-sug-badge' }, 'Suggestion')
+        )) : h('div', { style: 'padding: 8px 10px; font-size: 13px; color: var(--muted);' }, 'No suggestions found')
+      ),
+      h('div', { class: 'sep' }),
+      h('button', {
+        class: 'mi',
+        type: 'button',
+        onclick: () => {
+          close();
+          ignoreWord(mark.clean || mark.word);
+          updateSpellMarks();
+        }
+      }, h('span', { class: 'mi-ic', html: I.eye }), 'Ignore'),
+      h('button', {
+        class: 'mi',
+        type: 'button',
+        onclick: () => {
+          close();
+          addToUserDict(mark.clean || mark.word);
+          updateSpellMarks();
+          toast(`Added "${mark.clean || mark.word}" to dictionary`);
+        }
+      }, h('span', { class: 'mi-ic', html: I.book }), 'Add to dictionary')
+    );
+    close = popover(anchor, body, { align: 'left' });
+  }
+
+  function applySpellCorrection(mark, replacement) {
+    const pv = mark.pv || pvs.find(v => v.page.id === mark.pageId);
+    if (!pv || !pv.page) return;
+
+    if (mark.kind === 'ink') {
+      const oldItems = pv.page.items.filter(it => it.t === 's' && mark.ids.includes(it.id));
+      if (!oldItems.length) return;
+      const fs = Math.max(12, Math.min(36, Math.round(mark.box.h * 0.85)));
+      const newItem = {
+        id: uid(),
+        t: 'tx',
+        s: replacement,
+        x: mark.box.x0,
+        y: mark.box.y0,
+        w: Math.max(mark.box.w, 40),
+        fs,
+        c: mark.color || '#1a1a1a',
+        ff: 'sans',
+        m: Date.now()
+      };
+      pv.page.items = pv.page.items.filter(it => !mark.ids.includes(it.id));
+      pv.page.items.push(newItem);
+      pushUndo({
+        pageId: pv.page.id,
+        add: [newItem],
+        remove: oldItems
+      });
+      dirty(pv.page);
+      renderPv(pv);
+      toast(`Corrected to "${replacement}" (undo anytime)`);
+    } else if (mark.kind === 'tx' && mark.item) {
+      const oldItem = { ...mark.item };
+      const idx = mark.item.s.indexOf(mark.word);
+      if (idx !== -1) {
+        mark.item.s = mark.item.s.slice(0, idx) + replacement + mark.item.s.slice(idx + mark.word.length);
+        mark.item.m = Date.now();
+        pushUndo({
+          pageId: pv.page.id,
+          add: [{ ...mark.item }],
+          remove: [oldItem]
+        });
+        dirty(pv.page);
+        renderPv(pv);
+        toast(`Corrected to "${replacement}" (undo anytime)`);
+      }
+    }
+    updateSpellMarks();
+  }
+
   // Runs on every frame while scrolling, so it only touches the page (and storage) when something changed.
   let indShown = '', posSaved = -1;
   function updateIndicator() {
@@ -894,6 +1060,13 @@ export async function mountEditor(root, docId, opts = {}) {
     if (panelOpen) refreshThumb(page);
     if (zw && zw.pv.page === page) queueZoom();
     queueTray();
+    clearTimeout(spellTimer);
+    spellTimer = setTimeout(() => {
+      if (!destroyed && prefs.spellcheck !== false) {
+        if (hwOn()) queuePages([page.id], 1);
+        updateSpellMarks();
+      }
+    }, 900);
   }
 
   // Saving copies whole pages on the main thread. Done while the pen is moving it makes the ink stutter, so a
@@ -2420,6 +2593,7 @@ export async function mountEditor(root, docId, opts = {}) {
       Object.assign(zframe.style, { left: sx + 'px', top: sy + 'px', width: zw.w * scale + 'px', height: zw.h * scale + 'px' });
     }
     if (ruler) positionRuler();
+    positionSpellMarks();
   }
 
   // --- tape: a strip that hides what is under it until it is tapped
@@ -5801,14 +5975,24 @@ export async function mountEditor(root, docId, opts = {}) {
         }
       },
       {
-        label: 'Scrollbar: ' + (prefs.scrollbar === 'hidden' ? 'hidden' : prefs.scrollbar === 'left' ? 'left edge' : 'auto-hide (right edge)'),
+        label: 'Scrollbar: ' + (prefs.scrollbar === 'hidden' ? 'hidden' : prefs.scrollbar === 'right' ? 'right edge' : 'left edge (for right hand)'),
         icon: I.flow,
         onClick: () => {
-          prefs.scrollbar = prefs.scrollbar === 'left' ? 'hidden' : prefs.scrollbar === 'hidden' ? 'right' : 'left';
+          prefs.scrollbar = (prefs.scrollbar || 'left') === 'left' ? 'right' : (prefs.scrollbar === 'right' ? 'hidden' : 'left');
           savePrefs();
           updateScrollbarLayout();
           updateScrollbar(true);
-          toast(prefs.scrollbar === 'hidden' ? 'Scrollbar hidden' : prefs.scrollbar === 'left' ? 'Scrollbar on left edge' : 'Scrollbar on right edge (auto-hides while writing)');
+          toast(prefs.scrollbar === 'hidden' ? 'Scrollbar hidden' : prefs.scrollbar === 'right' ? 'Scrollbar on right edge' : 'Scrollbar on left edge (away from right hand)');
+        }
+      },
+      {
+        label: 'Spell check as you write: ' + (prefs.spellcheck !== false ? 'on' : 'off'),
+        icon: I.spell,
+        onClick: () => {
+          prefs.spellcheck = prefs.spellcheck === false;
+          savePrefs();
+          updateSpellMarks();
+          toast(prefs.spellcheck ? 'Spell check as you write is on (red dotted underlines for errors)' : 'Spell check is off');
         }
       },
       { label: 'Gestures', icon: I.finger, onClick: gestureHelp },
@@ -5972,6 +6156,7 @@ export async function mountEditor(root, docId, opts = {}) {
     findTok++;
     stopInertia();
     clearTimeout(sbFadeTimer);
+    clearTimeout(spellTimer);
     ro.disconnect();
     if (thumbObs) thumbObs.disconnect();
     clearInterval(timerInt);
@@ -6002,7 +6187,14 @@ export async function mountEditor(root, docId, opts = {}) {
     bus.on('remote-record', onRemote),
     bus.on('sync-status', showSync),
     bus.on('live-message', onLive),
-    bus.on('hw-page', e => { if (e && e.docId === doc.id) { if (!findBar.hidden) runFind(); if (panelOpen) fillPanel(); } })
+    bus.on('hw-page', e => {
+      if (e && e.docId === doc.id) {
+        if (!findBar.hidden) runFind();
+        if (panelOpen) fillPanel();
+        updateSpellMarks();
+      }
+    }),
+    bus.on('spell-dict-updated', () => updateSpellMarks())
   ];
 
   function onLive(m) {
@@ -6082,6 +6274,7 @@ export async function mountEditor(root, docId, opts = {}) {
   ro.observe(vp);
   if (opts.q) { findInp.value = opts.q; openFind(); } // opened from a library search: show the matches
   drawTray();
+  setTimeout(updateSpellMarks, 200);
 
   return { destroy, outlineDialog, openOutlines };
 }
