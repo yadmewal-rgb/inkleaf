@@ -406,12 +406,10 @@ async function pushRecord(kind, rec) {
   throw new Error('This record keeps changing on another device; it will be sent on the next round.');
 }
 
-// Where a file is kept: under 200 MB on the sync service (quick to fetch on every device), bigger ones in the
-// hidden app folder of the person's Google Drive. Every PDF also gets a visible copy in the "Inkleaf" folder of
-// their Drive, so Drive always holds a whole copy. If the service is full, a small file goes to Drive instead.
-// st entry: {sz: bytes, s: version on the service, drive: 1 if in the hidden Drive folder, full: 1 if the service
-// refused it, vis: 1 once the visible copy is done (or not needed)}.
-let BIG = 200 * 1048576;
+// Where a file is kept: under 500 MB on the sync service (fast edge CDN to fetch on every device),
+// bigger ones in the hidden app folder of the person's Google Drive. Every PDF also gets a visible copy in
+// the "Inkleaf" folder of their Drive, so Drive always holds a whole copy. If the service is full, a file goes to Drive instead.
+let BIG = 500 * 1048576;
 export const _setBig = n => { BIG = n; }; // tests use a small limit
 function assetPlaced(s, linked) {
   if (!s || s.sz == null) return false;
@@ -434,7 +432,7 @@ async function pushAsset(id) {
     if (!await driveFind(id)) await driveUpload(id, a.data, a.mime || 'application/octet-stream', a.name || '');
     cur.drive = 1;
   }
-  if (linked && cur.sz >= BIG) { // a big file does not stay on the service (older versions put everything there)
+  if (linked && cur.sz >= BIG) { // a big file does not stay on the service
     const r = await http(server + '/meta/a/' + encodeURIComponent(id), { headers: { Authorization: 'Bearer ' + session.token } });
     if (r.ok) await call('/blob/a/' + encodeURIComponent(id) + '?moved=1', { method: 'DELETE' }).catch(() => {});
     delete cur.s;
@@ -444,32 +442,47 @@ async function pushAsset(id) {
   health.sent = Date.now();
 }
 
-// Fetch a file this device lacks. item: its entry on the sync service, if known; otherwise Drive is asked first.
+// Fetch a file this device lacks. Checks Cloudflare sync service first (fast edge CDN), then falls back to Drive.
 async function pullAsset(id, item) {
   const name = 'a_' + id;
   const have = await db.get('assets', id);
   if (have && (have.data || have.deleted)) { if (!st[name]) st[name] = item && item.s ? { s: item.s } : { drive: 1 }; return false; }
   let rec = null;
-  if (!(item && item.parts) && await driveToken()) { // a file listed on the service comes from there
-    const f = await driveFind(id);
-    if (f) {
-      const data = await (await drive(`/drive/v3/files/${f.id}?alt=media`)).arrayBuffer();
-      rec = { id, mime: f.mimeType || 'application/octet-stream', name: f.description || '', data, modified: Date.now() };
-      st[name] = { drive: 1 };
-    }
-  }
-  if (!rec) {
-    if (!item || !item.parts) {
+
+  // 1. Try Cloudflare sync service first (super fast CDN edge streaming)
+  if (!item || !item.parts) {
+    try {
       const r = await http(server + '/meta/a/' + encodeURIComponent(id), { headers: { Authorization: 'Bearer ' + session.token } });
-      if (!r.ok) return false; // nowhere yet: the device that has it will send it
-      item = await r.json();
-    }
-    const bytes = await getBlob(item);
-    let info = {};
-    try { info = JSON.parse(item.info || '{}'); } catch { /* none */ }
-    rec = { id, mime: info.mime || 'application/octet-stream', name: info.name || '', data: bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength), modified: Date.now() };
-    st[name] = { lm: rec.modified, s: item.s };
+      if (r.ok) item = await r.json();
+    } catch {}
   }
+  if (item && item.parts) {
+    try {
+      const bytes = await getBlob(item);
+      let info = {};
+      try { info = JSON.parse(item.info || '{}'); } catch {}
+      rec = { id, mime: info.mime || 'application/octet-stream', name: info.name || '', data: bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength), modified: Date.now() };
+      st[name] = { lm: rec.modified, s: item.s };
+    } catch (e) {
+      console.warn('Failed to fetch asset from sync service, trying Drive fallback', e);
+    }
+  }
+
+  // 2. If not on sync service or failed, fall back to Google Drive
+  if (!rec && await driveToken()) {
+    try {
+      const f = await driveFind(id);
+      if (f) {
+        const data = await (await drive(`/drive/v3/files/${f.id}?alt=media`)).arrayBuffer();
+        rec = { id, mime: f.mimeType || 'application/octet-stream', name: f.description || '', data, modified: Date.now() };
+        st[name] = { drive: 1 };
+      }
+    } catch (e) {
+      console.warn('Failed to fetch asset from Google Drive', e);
+    }
+  }
+
+  if (!rec) return false;
   await db.put('assets', rec, true);
   bus.emit('remote-record', { kind: 'a', rec: { id } });
   return true;
@@ -2090,7 +2103,7 @@ export async function openSettings() {
   const offModelChanged = bus.on('hw-model-changed', () => drawHw());
 
   const m = modal({
-    title: 'Settings (v63)',
+    title: 'Settings (v64)',
     wide: true,
     onClose: () => { offUsage(); offHwStatus(); offModelChanged(); },
     body: h('div', null,
@@ -2099,7 +2112,7 @@ export async function openSettings() {
         style: 'align-items: center; justify-content: space-between; padding: 10px 14px; background: var(--surface-2); border-radius: 10px; margin-bottom: 16px;'
       },
         h('div', null,
-          h('div', { style: 'font-weight: 600; font-size: 14.5px;' }, 'Inkleaf v63'),
+          h('div', { style: 'font-weight: 600; font-size: 14.5px;' }, 'Inkleaf v64'),
           h('div', { class: 'bk-sub', style: 'margin-top: 2px;' }, 'Handwriting notes · Real-time sync · PWA')
         ),
         h('button', {
@@ -2157,7 +2170,7 @@ export async function openSettings() {
       h('div', { class: 'row' },
         h('button', { class: 'btn', type: 'button', onclick: async e => { const b = e.currentTarget; b.disabled = true; await autoBackup(true); b.disabled = false; fillBk(); } }, 'Back up now')),
       h('div', { style: 'margin-top: 24px; padding-top: 14px; border-top: 1px solid var(--line); text-align: center; color: var(--muted); font-size: 12.5px;' },
-        'Inkleaf v63 · Build 2026.11'
+        'Inkleaf v64 · Build 2026.11'
       )
     )
   });

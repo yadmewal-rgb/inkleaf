@@ -22,7 +22,7 @@ const lsSet = (k, v) => { try { localStorage.setItem(k, v); } catch { /* private
 export const openedAt = id => Number(lsGet('inkleaf.opened.' + id, 0));
 export const markOpened = id => lsSet('inkleaf.opened.' + id, String(Date.now()));
 
-export async function importPdf(file, folderId) {
+export async function importPdf(file, folderId, customTitle = null) {
   const b = busy('Importing PDF...');
   try {
     const buf = await file.arrayBuffer();
@@ -40,13 +40,15 @@ export async function importPdf(file, folderId) {
       if (i % 10 === 0) b.set(`Importing PDF... page ${i + 1} of ${pdf.numPages}`);
     }
     const doc = {
-      id: docId, title: file.name.replace(/\.pdf$/i, '') || 'Imported PDF', folderId: folderId || null,
+      id: docId, title: (customTitle || file.name.replace(/\.pdf$/i, '') || 'Imported PDF').trim(),
+      folderId: folderId || null,
       cover: '#b23a48', pages: pages.map(p => p.id), template: 'blank', paper: 'white',
       w: pages[0].w, h: pages[0].h, thumb: null, created: t, modified: t
     };
     await db.putMany('pages', pages);
     await db.put('docs', doc);
     pdf.destroy();
+    bus.emit('synced');
     return doc;
   } catch (e) {
     console.error(e);
@@ -55,6 +57,147 @@ export async function importPdf(file, folderId) {
   } finally {
     b.done();
   }
+}
+
+export async function appendPdfToDoc(file, docId) {
+  const b = busy('Adding PDF pages...');
+  try {
+    const doc = await db.get('docs', docId);
+    if (!doc) return null;
+    const buf = await file.arrayBuffer();
+    const pdf = await openPdf(new Uint8Array(buf.slice(0)));
+    const t = Date.now();
+    const asset = { id: uid(), mime: 'application/pdf', name: file.name, data: buf, modified: t };
+    await db.put('assets', asset);
+    const newPages = [];
+    const r2 = v => Math.round(v * 100) / 100;
+    for (let i = 0; i < pdf.numPages; i++) {
+      const p = await pdf.getPage(i + 1);
+      const v = p.getViewport({ scale: 1 });
+      newPages.push(newPage(docId, { w: r2(v.width), h: r2(v.height), pdf: { a: asset.id, i } }));
+      if (i % 10 === 0) b.set(`Adding PDF page ${i + 1} of ${pdf.numPages}`);
+    }
+    await db.putMany('pages', newPages);
+    doc.pages = [...(doc.pages || []), ...newPages.map(p => p.id)];
+    doc.modified = t;
+    await db.put('docs', doc);
+    pdf.destroy();
+    bus.emit('synced');
+    toast(`Added ${newPages.length} pages to "${doc.title}"`, 3500);
+    return doc;
+  } catch (e) {
+    console.error(e);
+    toast(e && e.name === 'PasswordException' ? 'This PDF is password-protected.' : 'Could not add PDF to notebook.');
+    return null;
+  } finally {
+    b.done();
+  }
+}
+
+export async function promptImportPdf(file, currentFolderId = null) {
+  if (!file) return null;
+  const isPdf = /pdf$/i.test(file.type) || /\.pdf$/i.test(file.name);
+  if (!isPdf) {
+    if (/\.(inkleaf|json)$/i.test(file.name)) {
+      const ids = await importBackup(file);
+      if (ids.length === 1) location.hash = '#/d/' + ids[0];
+      return ids;
+    }
+    toast('Please select a PDF file.');
+    return null;
+  }
+
+  const [allFolders, allDocs] = await Promise.all([db.all('folders'), db.all('docs')]);
+  const liveFolders = allFolders.filter(f => !f.deleted && !f.trashed);
+  const existingDocs = allDocs.filter(d => !d.deleted && !d.trashed && !d.sys);
+
+  const baseName = file.name.replace(/\.pdf$/i, '') || 'Imported PDF';
+  let mode = 'new';
+  let selectedFolder = currentFolderId || '';
+  let selectedDoc = existingDocs[0] ? existingDocs[0].id : '';
+
+  return new Promise(resolve => {
+    const titleInput = h('input', {
+      type: 'text',
+      value: baseName,
+      placeholder: 'Notebook title',
+      style: 'width: 100%; box-sizing: border-box; margin-top: 6px; padding: 8px 10px; border-radius: 6px; border: 1px solid var(--line); background: var(--surface-1); color: var(--text); font-size: 14px;'
+    });
+
+    const folderSelect = h('select', {
+      style: 'width: 100%; box-sizing: border-box; margin-top: 6px; padding: 8px 10px; border-radius: 6px; border: 1px solid var(--line); background: var(--surface-1); color: var(--text); font-size: 14px;',
+      onchange: e => { selectedFolder = e.target.value; }
+    }, [
+      h('option', { value: '' }, '📁 Library root (no folder)'),
+      ...liveFolders.map(f => h('option', { value: f.id, selected: f.id === currentFolderId }, '📁 ' + f.name))
+    ]);
+
+    const docSelect = h('select', {
+      style: 'width: 100%; box-sizing: border-box; margin-top: 6px; padding: 8px 10px; border-radius: 6px; border: 1px solid var(--line); background: var(--surface-1); color: var(--text); font-size: 14px;',
+      onchange: e => { selectedDoc = e.target.value; }
+    }, existingDocs.map(d => h('option', { value: d.id }, '📓 ' + d.title)));
+
+    const newSec = h('div', { style: 'margin-top: 14px;' }, [
+      h('label', { class: 'bk-sub', style: 'font-weight: 600;' }, 'Notebook name:'),
+      titleInput,
+      h('label', { class: 'bk-sub', style: 'font-weight: 600; margin-top: 10px; display: block;' }, 'Destination folder:'),
+      folderSelect
+    ]);
+
+    const appendSec = h('div', { style: 'margin-top: 14px;', hidden: true }, [
+      h('label', { class: 'bk-sub', style: 'font-weight: 600;' }, 'Select notebook to append to:'),
+      docSelect,
+      h('div', { class: 'bk-sub', style: 'margin-top: 6px;' }, 'All pages from this PDF will be added to the end of the notebook.')
+    ]);
+
+    const rNew = h('input', {
+      type: 'radio', name: 'pdf-import-dest', checked: true,
+      onchange: () => { mode = 'new'; newSec.hidden = false; appendSec.hidden = true; }
+    });
+    const rAppend = h('input', {
+      type: 'radio', name: 'pdf-import-dest', disabled: !existingDocs.length,
+      onchange: () => { mode = 'append'; newSec.hidden = true; appendSec.hidden = false; }
+    });
+
+    const m = modal({
+      title: 'Open PDF in Inkleaf',
+      wide: false,
+      body: h('div', null, [
+        h('div', { class: 'bk-sub', style: 'margin-bottom: 12px; font-size: 13.5px;' }, `Choose how to open or add "${file.name}":`),
+        h('div', { style: 'padding: 12px 14px; background: var(--surface-2); border-radius: 10px; display: flex; flex-direction: column; gap: 10px;' }, [
+          h('label', { style: 'display: flex; align-items: center; gap: 8px; cursor: pointer; font-weight: 500;' }, [
+            rNew,
+            h('span', null, 'Create as a new notebook')
+          ]),
+          h('label', { style: 'display: flex; align-items: center; gap: 8px; cursor: pointer; font-weight: 500;' }, [
+            rAppend,
+            h('span', null, existingDocs.length ? 'Add pages to an existing notebook' : 'Add to existing notebook (no notebooks yet)')
+          ])
+        ]),
+        newSec,
+        appendSec,
+        h('div', { class: 'row', style: 'justify-content: flex-end; gap: 8px; margin-top: 20px;' }, [
+          h('button', { class: 'btn', type: 'button', onclick: () => { m.close(); resolve(null); } }, 'Cancel'),
+          h('button', {
+            class: 'btn primary',
+            type: 'button',
+            onclick: async () => {
+              m.close();
+              if (mode === 'new') {
+                const doc = await importPdf(file, selectedFolder || null, titleInput.value.trim() || baseName);
+                if (doc) location.hash = '#/d/' + doc.id;
+                resolve(doc);
+              } else {
+                const doc = await appendPdfToDoc(file, selectedDoc);
+                if (doc) location.hash = '#/d/' + doc.id;
+                resolve(doc);
+              }
+            }
+          }, 'Open in Inkleaf')
+        ])
+      ])
+    });
+  });
 }
 
 // Notebooks that show in the library: not deleted, not in the bin, not inside a folder that is in the bin, not hidden.
@@ -290,7 +433,7 @@ export async function mountLibrary(root, folderId, opts = {}) {
       const f = pdfInp.files[0];
       pdfInp.value = '';
       if (!f) return;
-      const doc = await importPdf(f, folderId);
+      const doc = await promptImportPdf(f, folderId);
       if (doc) location.hash = '#/d/' + doc.id;
     }
   });
@@ -1090,7 +1233,7 @@ export async function mountLibrary(root, folderId, opts = {}) {
     if (nb) { await importBackup(nb); render(); return; }
     const f = files.find(x => /pdf$/i.test(x.type) || /\.pdf$/i.test(x.name));
     if (!f) return;
-    if (await importPdf(f, folderId)) render();
+    if (await promptImportPdf(f, folderId)) render();
   });
 
   const offs = [bus.on('synced', render), bus.on('sync-status', showSync)];

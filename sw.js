@@ -1,5 +1,5 @@
 // Offline support: network first, falling back to the cached copy.
-const CACHE = 'inkleaf-v63';
+const CACHE = 'inkleaf-v64';
 const SHELL = [
   './', 'index.html', 'manifest.webmanifest', 'css/app.css',
   'js/app.js', 'js/util.js', 'js/icons.js', 'js/ui.js', 'js/db.js', 'js/render.js',
@@ -23,7 +23,33 @@ self.addEventListener('activate', e => {
 
 self.addEventListener('fetch', e => {
   const url = new URL(e.request.url);
-  if (e.request.method !== 'GET' || url.origin !== location.origin) return;
+  if (url.origin !== location.origin) return;
+
+  // Web Share Target: incoming file shared from phone or other app
+  if (e.request.method === 'POST') {
+    e.respondWith((async () => {
+      try {
+        const formData = await e.request.formData();
+        const files = formData.getAll('files');
+        if (files && files.length) {
+          const cache = await caches.open('inkleaf-shared');
+          await cache.put('shared_file', new Response(files[0], {
+            headers: {
+              'X-File-Name': encodeURIComponent(files[0].name || 'shared.pdf'),
+              'X-File-Type': files[0].type || 'application/pdf'
+            }
+          }));
+          return Response.redirect('./?shared=1', 303);
+        }
+      } catch (err) {
+        console.error('Share target failed', err);
+      }
+      return Response.redirect('./', 303);
+    })());
+    return;
+  }
+
+  if (e.request.method !== 'GET') return;
   e.respondWith(
     // "no-cache" re-checks with the server every time, so a newly published version shows up straight away.
     fetch(e.request.url, { cache: 'no-cache' })

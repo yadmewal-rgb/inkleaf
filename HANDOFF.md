@@ -3,26 +3,35 @@
 **Written:** 2026-11-21 by agy (Antigravity). **Next:** Claude Code or agy.
 
 ## What the owner asked
-1. "syncing is very slow, what does it mean by - space used on the sunc service 85 MB of 2000"
-2. "use more then 4 , and if i opened a folder in the app or opened any pdf , try to load that particular first , do you find any problem in photo ?"
-3. Photo showing Settings with snapshots in Google Drive and "Inkleaf version 54 · Build 2026.11" at the bottom.
+1. "load PDFs less than 500MB to cloudflare also for faster sync"
+2. "when we share a pdf from phone (like from other app and files) , can option appear like open in inkleaf, and then open or add in perticular folder of add to exixting notes like this ?"
+3. Photo review from user showing Settings snapshots and "Inkleaf version 54 · Build 2026.11" at bottom.
 
-## Done (v63 Release)
-1. **Accelerated Sync Concurrency (`js/sync.js`)**:
-   - Increased parallel asset/file transfers from 2 to **6 simultaneous downloads/uploads** (`CONCURRENT_ASSETS = 6`).
-   - Increased record pool syncing from 4 to 6 for faster backlog clearing.
-2. **Priority Loading for Open Notebooks, PDFs & Folders (`js/sync.js`, `js/library.js`)**:
-   - Implemented priority queueing (`priority = true`) in `queueAsset()`.
-   - When you open any notebook or PDF (`editor-open`), its pages, images, and PDF backgrounds immediately jump to the **FRONT of the queue** to load first before any background notebooks.
-   - When you open any folder in the Library (`folder-open`), notebooks inside that folder are immediately prioritized for file fetching.
-3. **Fixed Footer Version Label in Settings (`js/sync.js`)**:
-   - Replaced old hardcoded `'Inkleaf version 54'` footer with `'Inkleaf v63 · Build 2026.11'`.
-4. **PWA Version Bump (`sw.js`, `js/sync.js`)**:
-   - Bumped to `v63` so all devices update cache.
+## Done (v64 Release)
+1. **500 MB Cloudflare Upload Limit & Edge-First Streaming (`js/sync.js`)**:
+   - Raised the direct Cloudflare upload threshold from 200 MB to **500 MB** (`BIG = 500 * 1048576`). PDFs and assets under 500 MB now sync directly through Cloudflare's edge network rather than offloading to Google Drive.
+   - Updated `pullAsset()` to always query Cloudflare's edge cache first before querying Google Drive. This eliminates multi-second Drive search latency when syncing files on other devices.
+2. **Mobile Web Share Target & File Handling (`manifest.webmanifest`, `sw.js`, `js/app.js`)**:
+   - Added `share_target` (`POST multipart/form-data`) in `manifest.webmanifest` to allow sharing PDFs directly into Inkleaf from Android file managers and other mobile apps.
+   - Intercepted incoming share requests in `sw.js`, storing the incoming PDF file in the `inkleaf-shared` cache and redirecting to `./?shared=1`.
+   - In `js/app.js`, automatically loads shared files and triggers the import dialog.
+   - Added File Handling API (`launchQueue`) for desktop/Chrome OS.
+3. **Interactive PDF Import Modal (`js/library.js`)**:
+   - Implemented `promptImportPdf()` dialog with two distinct modes:
+     - **"Create as a new notebook"**: Set custom title and choose target folder (Library root or any folder).
+     - **"Add pages to an existing notebook"**: Choose an existing notebook to append all PDF pages to the end.
+   - Added `appendPdfToDoc()` helper to unpack PDF pages and append to `doc.pages`.
+   - Wired the dialog to the top "Import PDF" button, the empty-folder import button, and drag-and-drop.
+4. **Settings & PWA Cache Bump (`sw.js`, `js/sync.js`)**:
+   - Updated cache to `inkleaf-v64`.
+   - Updated Settings title and footer to `Inkleaf v64 · Build 2026.11`.
 
 ## Tested
-- Verified JS syntax with `node --check` across `sw.js`, `js/sync.js`, `js/library.js`.
-- Verified priority queueing shifts open document assets to head of queue.
+- Syntax checked `sw.js`, `js/sync.js`, `js/library.js`, and `js/app.js` with `node --check`.
+- Headless browser verification with screenshots for both dialog modes:
+  - Mode 1: Create as a new notebook with folder selector.
+  - Mode 2: Add pages to an existing notebook with dropdown.
+- Verified visual layout saved at `C:\Users\yadram\AgentTools\shots\pdf_import_modes_row.png`.
 
 ## Live now
 - Committed locally to branch `main`.

@@ -1,4 +1,4 @@
-import { mountLibrary } from './library.js';
+import { mountLibrary, promptImportPdf } from './library.js';
 import { mountEditor } from './editor.js';
 import { initSync, openSettings, fetchLiveDoc, openLiveGuestSocket, closeLiveGuestSocket, signIn } from './sync.js';
 import { toast } from './ui.js';
@@ -144,4 +144,35 @@ window.addEventListener('hashchange', go);
   if ('serviceWorker' in navigator && window.isSecureContext) navigator.serviceWorker.register('sw.js').catch(e => console.warn('Offline mode unavailable', e));
   await initSync().catch(e => console.error(e));
   go();
+
+  // Handle incoming shared file from Web Share Target (shared from phone / other app)
+  if (location.search.includes('shared=1')) {
+    history.replaceState(null, '', location.pathname + location.hash);
+    try {
+      const cache = await caches.open('inkleaf-shared');
+      const res = await cache.match('shared_file');
+      if (res) {
+        const blob = await res.blob();
+        const name = decodeURIComponent(res.headers.get('X-File-Name') || 'shared.pdf');
+        const type = res.headers.get('X-File-Type') || 'application/pdf';
+        const file = new File([blob], name, { type });
+        await cache.delete('shared_file');
+        setTimeout(() => promptImportPdf(file), 400);
+      }
+    } catch (err) {
+      console.warn('Failed to retrieve shared file', err);
+    }
+  }
+
+  // Handle incoming file launched with PWA (File Handling API)
+  if ('launchQueue' in window) {
+    window.launchQueue.setConsumer(async launchParams => {
+      if (launchParams.files && launchParams.files.length) {
+        for (const handle of launchParams.files) {
+          const file = await handle.getFile();
+          if (file) promptImportPdf(file);
+        }
+      }
+    });
+  }
 })();
