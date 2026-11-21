@@ -32,7 +32,7 @@ export const TAGS = {
 };
 export const SEC_COLORS = ['#1971c2', '#e8590c', '#2f9e44', '#9c36b5', '#e03131', '#0c8599'];
 export const fmtWhen = t => new Date(t).toLocaleString([], { day: 'numeric', month: 'short', hour: 'numeric', minute: '2-digit' });
-export const TM = { open: false, running: false, t0: 0, acc: 0, dur: 0 }; // the timer, shared by every notebook (dur 0 = stopwatch)
+export const TM = { open: false, running: false, t0: 0, acc: 0, dur: 25 * 60000, mode: 'focus', round: 1, compact: true, pos: null }; // Pomodoro timer & clock, shared across notebooks
 
 export const DEFAULTS = {
   noteColor: '#ffe066',

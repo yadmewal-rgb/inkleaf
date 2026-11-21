@@ -58,7 +58,14 @@ util.js, icons.js. `sw.js` = service worker (bump its cache version, e.g. v40 ->
   touch devices.
 - Layers and hold-to-erase were REMOVED at the owner's request; don't bring them back.
 - Apple Pencil double-tap/squeeze are not available to web apps (pressure, tilt, hover are).
-- Screenshots for chat: Always capture and resize website/desktop screenshots at full 1000px width (`shots.ps1 ... -Width 1000`) so all menus, text, and labels are crisp and easy to read.
+- Screenshots for chat: Always capture and resize website/desktop screenshots at full 1000px width with high DPI (`shots.ps1 ... -Width 1000` or `--force-device-scale-factor=1.5`) so all menus, text, and labels are crisp and easy to read.
+- Pomodoro & Clock Widget specifications (owner chosen):
+  - Retro flip-clock design with dark rounded cards and horizontal split line.
+  - Shows study countdown (Focus 25m / Break 5m / Long 15m) with session round counter in the bottom-left corner of the minutes card (`01`, `02`, etc.).
+  - Side vertical action buttons: Skip (`⏭`), Play/Pause (`⏸`/`▶`), and Stop/Reset (`⏹`).
+  - Tap-to-peek Clock: Tapping the cards temporarily reveals the real current wall-clock time (`TIME PM 12:10`) and auto-hides back to the timer after 1.5 seconds.
+  - Scalable: Compact mini mode (~65% scale) so it stays unobtrusive during fullscreen handwriting on iPad/laptop, with ability to scale or toggle size.
+  - Stability: Keep as an isolated DOM overlay layer above the viewport (`overlay.append(...)`); never interfere with canvas stroke rendering or sync loop.
 
 ## Open ideas (not chosen yet; ask before building)
 AI features (handwriting search, ask about a page), Android APK via PWABuilder, live shared notebooks with friends,

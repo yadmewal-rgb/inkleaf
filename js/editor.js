@@ -4980,49 +4980,193 @@ export async function mountEditor(root, docId, opts = {}) {
     if (!quiet) toast(on ? 'Read-only: nothing you touch will draw. Tap the eye to write again.' : 'Writing is on again', 2600);
   }
 
-  // --- timer: a stopwatch, or a countdown for timed practice. It keeps running when you switch notebooks.
-  let timerEl = null, timerInt = 0;
+  // --- Retro Flip Pomodoro & Clock: study countdown with round tracking and tap-to-peek real time.
+  let timerEl = null, timerInt = 0, peekTimeout = 0;
   const tmNow = () => TM.acc + (TM.running ? Date.now() - TM.t0 : 0);
-  const tmFmt = ms => { const s = Math.round(ms / 1000), hh = Math.floor(s / 3600); return (hh ? hh + ':' : '') + String(Math.floor(s % 3600 / 60)).padStart(hh ? 2 : 1, '0') + ':' + String(s % 60).padStart(2, '0'); };
 
   function toggleTimer(open = !TM.open) {
     TM.open = open;
     timerBtn.classList.toggle('on', open);
     clearInterval(timerInt);
+    clearTimeout(peekTimeout);
     if (timerEl) { timerEl.remove(); timerEl = null; }
     if (!open) return;
-    const time = h('button', { class: 'tm-time', type: 'button', title: 'Set a countdown', onclick: setCountdown });
-    const play = h('button', { class: 'ic sm', type: 'button', onclick: () => { if (TM.running) { TM.acc = tmNow(); TM.running = false; } else { if (TM.dur && TM.acc >= TM.dur) TM.acc = 0; TM.t0 = Date.now(); TM.running = true; } tick(); } });
-    const tick = () => {
-      let ms = tmNow();
-      if (TM.dur && TM.running && ms >= TM.dur) { // countdown finished
+
+    if (!TM.dur) TM.dur = 25 * 60000;
+    if (!TM.mode) TM.mode = 'focus';
+    if (!TM.round) TM.round = 1;
+
+    let peekClock = false, lastTap = 0;
+
+    const leftDigits = h('span', { class: 'flip-digits' }, '25');
+    const rightDigits = h('span', { class: 'flip-digits' }, '00');
+    const roundTag = h('span', { class: 'flip-round-tag' }, String(TM.round).padStart(2, '0'));
+    const statusTag = h('span', { class: 'flip-status-tag' }, TM.mode === 'focus' ? 'FOCUS' : 'BREAK');
+
+    const leftCard = h('div', { class: 'flip-card' }, statusTag, leftDigits, roundTag);
+    const rightCard = h('div', { class: 'flip-card' }, rightDigits);
+    const cards = h('div', { class: 'flip-cards', title: 'Tap: Peek Clock (1.5s) · Double-tap: Toggle Size' }, leftCard, rightCard);
+
+    const onPlayPause = () => {
+      if (TM.running) {
+        TM.acc = tmNow();
         TM.running = false;
-        TM.acc = ms = TM.dur;
-        timerEl.classList.add('done');
-        toast('Time is up', 5000);
-        beep();
+      } else {
+        if (TM.dur && TM.acc >= TM.dur) TM.acc = 0;
+        TM.t0 = Date.now();
+        TM.running = true;
       }
-      time.textContent = tmFmt(TM.dur ? Math.max(0, TM.dur - ms) : ms);
-      play.innerHTML = TM.running ? I.pause : I.play;
-      play.title = TM.running ? 'Pause' : 'Start';
+      tick();
+    };
+
+    const onSkip = () => {
+      if (TM.mode === 'focus') {
+        TM.mode = (TM.round || 1) >= 4 ? 'long' : 'break';
+        TM.dur = (TM.mode === 'long' ? 15 : 5) * 60000;
+      } else {
+        TM.mode = 'focus';
+        TM.round = ((TM.round || 1) % 4) + 1;
+        TM.dur = 25 * 60000;
+      }
+      TM.acc = 0;
+      TM.t0 = Date.now();
+      if (timerEl) timerEl.classList.remove('done');
+      tick();
+    };
+
+    const onReset = () => {
+      TM.acc = 0;
+      TM.t0 = Date.now();
+      TM.running = false;
+      if (timerEl) timerEl.classList.remove('done');
+      tick();
+    };
+
+    const closeBtn = h('button', { class: 'flip-btn close', type: 'button', title: 'Close timer', html: I.close, onclick: () => toggleTimer(false) });
+    const skipBtn = h('button', { class: 'flip-btn', type: 'button', title: 'Skip to next stage', html: I.skip, onclick: onSkip });
+    const playBtn = h('button', { class: 'flip-btn', type: 'button', title: 'Start / Pause', html: TM.running ? I.pause : I.play, onclick: onPlayPause });
+    const stopBtn = h('button', { class: 'flip-btn', type: 'button', title: 'Reset', html: I.stop, onclick: onReset });
+
+    const actions = h('div', { class: 'flip-actions' }, closeBtn, skipBtn, playBtn, stopBtn);
+
+    timerEl = h('div', { class: 'timer' + (TM.compact !== false ? '' : ' standard'), title: 'Drag to position' }, cards, actions);
+    if (TM.pos) {
+      timerEl.style.left = TM.pos.left + 'px';
+      timerEl.style.top = TM.pos.top + 'px';
+      timerEl.style.right = 'auto';
+    }
+
+    const showPeekClock = () => {
+      peekClock = true;
+      clearTimeout(peekTimeout);
+      const now = new Date();
+      let hours = now.getHours();
+      const minutes = now.getMinutes();
+      const ampm = hours >= 12 ? 'PM' : 'AM';
+      hours = hours % 12 || 12;
+
+      leftDigits.textContent = String(hours).padStart(2, '0');
+      rightDigits.textContent = String(minutes).padStart(2, '0');
+      roundTag.style.display = 'none';
+      statusTag.textContent = 'TIME ' + ampm;
+      statusTag.className = 'flip-status-tag time-mode';
+
+      peekTimeout = setTimeout(() => {
+        peekClock = false;
+        tick();
+      }, 1500);
+    };
+
+    cards.addEventListener('pointerup', e => {
+      if (e.target.closest('button')) return;
+      const now = Date.now();
+      if (now - lastTap < 350) {
+        TM.compact = !TM.compact;
+        timerEl.classList.toggle('standard', !TM.compact);
+        lastTap = 0;
+        clearTimeout(peekTimeout);
+        peekClock = false;
+        tick();
+      } else {
+        lastTap = now;
+        showPeekClock();
+      }
+    });
+
+    // Draggable
+    let isDrag = false, dragX = 0, dragY = 0, startLeft = 0, startTop = 0;
+    timerEl.addEventListener('pointerdown', e => {
+      if (e.target.closest('button')) return;
+      isDrag = true;
+      dragX = e.clientX;
+      dragY = e.clientY;
+      const rect = timerEl.getBoundingClientRect();
+      startLeft = rect.left;
+      startTop = rect.top;
+      timerEl.setPointerCapture(e.pointerId);
+    });
+    timerEl.addEventListener('pointermove', e => {
+      if (!isDrag) return;
+      const dx = e.clientX - dragX;
+      const dy = e.clientY - dragY;
+      if (Math.abs(dx) > 3 || Math.abs(dy) > 3) {
+        const pad = 8;
+        const left = Math.max(pad, Math.min(window.innerWidth - timerEl.offsetWidth - pad, startLeft + dx));
+        const top = Math.max(pad, Math.min(window.innerHeight - timerEl.offsetHeight - pad, startTop + dy));
+        timerEl.style.left = left + 'px';
+        timerEl.style.top = top + 'px';
+        timerEl.style.right = 'auto';
+        TM.pos = { left, top };
+      }
+    });
+    timerEl.addEventListener('pointerup', () => { isDrag = false; });
+    timerEl.addEventListener('pointercancel', () => { isDrag = false; });
+
+    const tick = () => {
+      if (!timerEl) return;
+      let ms = tmNow();
+      let rem = Math.max(0, (TM.dur || 25 * 60000) - ms);
+
+      if (TM.running && rem <= 0) {
+        TM.running = false;
+        TM.acc = TM.dur;
+        timerEl.classList.add('done');
+        beep();
+
+        if (TM.mode === 'focus') {
+          toast('Focus round ' + (TM.round || 1) + ' completed! Time for a break.', 6000);
+          TM.mode = (TM.round || 1) >= 4 ? 'long' : 'break';
+          TM.dur = (TM.mode === 'long' ? 15 : 5) * 60000;
+        } else {
+          toast('Break finished! Ready to focus?', 6000);
+          TM.mode = 'focus';
+          TM.round = ((TM.round || 1) % 4) + 1;
+          TM.dur = 25 * 60000;
+        }
+        TM.acc = 0;
+        rem = TM.dur;
+      }
+
+      if (!peekClock) {
+        const s = Math.round(rem / 1000);
+        const mm = Math.floor(s / 60);
+        const ss = s % 60;
+        leftDigits.textContent = String(mm).padStart(2, '0');
+        rightDigits.textContent = String(ss).padStart(2, '0');
+        roundTag.textContent = String(TM.round || 1).padStart(2, '0');
+        roundTag.style.display = 'block';
+        statusTag.textContent = TM.mode === 'focus' ? 'FOCUS' : 'BREAK';
+        statusTag.className = 'flip-status-tag' + (TM.mode !== 'focus' ? ' break-mode' : '');
+      }
+
+      playBtn.innerHTML = TM.running ? I.pause : I.play;
+      playBtn.classList.toggle('active', TM.running);
       if (TM.running) timerEl.classList.remove('done');
     };
-    timerEl = h('div', { class: 'timer' }, time, play,
-      h('button', { class: 'ic sm', type: 'button', title: 'Reset', html: I.rotate, onclick: () => { TM.acc = 0; TM.t0 = Date.now(); timerEl.classList.remove('done'); tick(); } }),
-      h('button', { class: 'ic sm', type: 'button', title: 'Close the timer', html: I.close, onclick: () => { TM.running = false; TM.acc = 0; toggleTimer(false); } }));
+
     overlay.append(timerEl);
     tick();
     timerInt = setInterval(tick, 250);
-    async function setCountdown() {
-      const v = await promptText('Countdown in minutes (0 for a stopwatch)', TM.dur ? String(TM.dur / 60000) : '', 'For example 30');
-      if (v == null) return;
-      const m = parseFloat(v);
-      TM.dur = m > 0 ? Math.round(m * 60000) : 0;
-      TM.acc = 0;
-      TM.running = false;
-      timerEl.classList.remove('done');
-      tick();
-    }
   }
 
   function beep() {

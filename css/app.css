@@ -502,17 +502,88 @@ button.pageind:hover { background: var(--surface-2); }
 /* the pages panel sits on the left, under the sidebar button */
 .panel { right: auto; left: 0; border-left: 0; border-right: 1px solid var(--line); }
 
-/* timer */
+/* --- Retro Flip Pomodoro & Clock --- */
 .timer {
-  top: 10px; right: 10px; z-index: 2; pointer-events: auto; display: flex; align-items: center; gap: 2px; padding: 4px 6px 4px 4px;
-  background: var(--surface); border: 1px solid var(--line); border-radius: 999px; box-shadow: var(--shadow);
+  position: absolute;
+  top: 12px; right: 16px; z-index: 45;
+  display: inline-flex; align-items: center;
+  gap: calc(7px * var(--pomo-scale, 0.65));
+  background: rgba(14, 15, 18, 0.95);
+  padding: calc(8px * var(--pomo-scale, 0.65)) calc(10px * var(--pomo-scale, 0.65));
+  border-radius: calc(18px * var(--pomo-scale, 0.65));
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  box-shadow: 0 10px 28px rgba(0, 0, 0, 0.65);
+  cursor: grab;
+  touch-action: none;
+  user-select: none;
+  -webkit-user-select: none;
+  --pomo-scale: 0.65;
+  transition: box-shadow 0.15s ease;
 }
-.tm-time { border: 0; background: transparent; font: 600 17px/1 var(--font); font-variant-numeric: tabular-nums; padding: 6px 10px; border-radius: 999px; min-width: 64px; }
-.tm-time:hover { background: var(--surface-2); }
+.timer:active { cursor: grabbing; }
+.timer.standard { --pomo-scale: 0.95; }
 .timer.done { border-color: var(--danger); animation: tmflash .7s steps(2) 6; }
-.timer.done .tm-time { color: var(--danger); }
-@keyframes tmflash { 50% { background: #ffe3e3; } }
-.ed.full:not(.mini) .timer { top: 66px; }
+@keyframes tmflash { 50% { background: rgba(192, 57, 43, 0.5); } }
+
+.flip-cards {
+  display: flex; align-items: center; gap: calc(5px * var(--pomo-scale, 0.65));
+  cursor: pointer; position: relative;
+}
+.flip-card {
+  position: relative;
+  width: calc(64px * var(--pomo-scale, 0.65));
+  height: calc(72px * var(--pomo-scale, 0.65));
+  background: #18191c;
+  border-radius: calc(12px * var(--pomo-scale, 0.65));
+  display: flex; align-items: center; justify-content: center;
+  box-shadow: 0 3px 10px rgba(0, 0, 0, 0.5), inset 0 1px 0 rgba(255, 255, 255, 0.08);
+  border: 1px solid rgba(255, 255, 255, 0.05);
+  overflow: hidden;
+}
+.flip-card::after {
+  content: ''; position: absolute; left: 0; right: 0; top: 50%; height: 1.5px;
+  background: rgba(0, 0, 0, 0.9); box-shadow: 0 1px 0 rgba(255, 255, 255, 0.07);
+  z-index: 5;
+}
+.flip-digits {
+  font-size: calc(46px * var(--pomo-scale, 0.65));
+  font-weight: 800; color: #9a9ca3;
+  letter-spacing: -0.03em; line-height: 1;
+  font-variant-numeric: tabular-nums;
+}
+.flip-round-tag {
+  position: absolute; bottom: calc(5px * var(--pomo-scale, 0.65)); left: calc(7px * var(--pomo-scale, 0.65));
+  font-size: calc(10px * var(--pomo-scale, 0.65)); font-weight: 800; color: #555861;
+  letter-spacing: 0.04em; z-index: 6;
+}
+.flip-status-tag {
+  position: absolute; top: calc(5px * var(--pomo-scale, 0.65)); left: calc(7px * var(--pomo-scale, 0.65));
+  font-size: calc(8.5px * var(--pomo-scale, 0.65)); font-weight: 800; letter-spacing: 0.06em;
+  text-transform: uppercase; color: #5fbf9f; z-index: 6;
+}
+.flip-status-tag.time-mode { color: #e59866; }
+.flip-status-tag.break-mode { color: #5dade2; }
+
+.flip-actions {
+  display: flex; flex-direction: column; align-items: center;
+  gap: calc(5px * var(--pomo-scale, 0.65)); padding-left: 1px;
+}
+.flip-btn {
+  width: calc(20px * var(--pomo-scale, 0.65));
+  height: calc(20px * var(--pomo-scale, 0.65));
+  border-radius: calc(6px * var(--pomo-scale, 0.65));
+  border: 0; background: transparent; color: #656770;
+  display: flex; align-items: center; justify-content: center;
+  cursor: pointer; padding: 0; transition: all 0.12s ease;
+}
+.flip-btn:hover { background: #23252a; color: #ececf0; }
+.flip-btn.active { color: #5fbf9f; }
+.flip-btn.close { color: #555861; }
+.flip-btn.close:hover { color: var(--danger); }
+.flip-btn svg {
+  width: calc(13px * var(--pomo-scale, 0.65));
+  height: calc(13px * var(--pomo-scale, 0.65));
+}
 
 /* details of a notebook or folder */
 .details .gest-row b { flex: none; max-width: 45%; }
