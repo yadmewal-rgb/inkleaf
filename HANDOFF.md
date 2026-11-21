@@ -39,5 +39,5 @@
    - Updated Settings to `Inkleaf v67 · Build 2026.11`.
 
 ## Live now
-- Tested locally on http://localhost:8080.
-- Ready to commit and push to `origin/main` upon owner confirmation.
+- Pushed to `origin/main` (live on https://yadmewal-rgb.github.io/inkleaf/).
+- Running locally at http://localhost:8080.
