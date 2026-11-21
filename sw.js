@@ -30,13 +30,24 @@ self.addEventListener('fetch', e => {
     e.respondWith((async () => {
       try {
         const formData = await e.request.formData();
+        let targetFile = null;
         const files = formData.getAll('files');
-        if (files && files.length) {
+        if (files && files.length && files[0] && files[0].size > 0) {
+          targetFile = files[0];
+        } else {
+          for (const [k, v] of formData.entries()) {
+            if (v && (typeof v === 'object') && (v.size > 0 || v.name)) {
+              targetFile = v;
+              break;
+            }
+          }
+        }
+        if (targetFile) {
           const cache = await caches.open('inkleaf-shared');
-          await cache.put('shared_file', new Response(files[0], {
+          await cache.put('shared_file', new Response(targetFile, {
             headers: {
-              'X-File-Name': encodeURIComponent(files[0].name || 'shared.pdf'),
-              'X-File-Type': files[0].type || 'application/pdf'
+              'X-File-Name': encodeURIComponent(targetFile.name || 'shared.pdf'),
+              'X-File-Type': targetFile.type || 'application/pdf'
             }
           }));
           return Response.redirect('./?shared=1', 303);
