@@ -31,5 +31,5 @@
    - Automated test verified Focus 1 -> Break 1 -> Focus 2 auto-transitions and captured screenshots.
 
 ## Live now
-- Tested locally on http://localhost:8080.
-- Committed locally, ready to push upon owner confirmation.
+- Pushed to `origin/main` (live on https://yadmewal-rgb.github.io/inkleaf/).
+- Running locally at http://localhost:8080.
