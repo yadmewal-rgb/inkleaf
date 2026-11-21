@@ -5042,14 +5042,29 @@ export async function mountEditor(root, docId, opts = {}) {
       tick();
     };
 
+    const setCountdown = async () => {
+      const curMin = TM.dur ? Math.round(TM.dur / 60000) : 25;
+      const v = await promptText('Countdown in minutes (e.g. 25, 45, 50)', String(curMin), 'For example 25');
+      if (v == null) return;
+      const m = parseFloat(v);
+      if (!isNaN(m) && m > 0) {
+        TM.dur = Math.round(m * 60000);
+        TM.acc = 0;
+        TM.running = false;
+        if (timerEl) timerEl.classList.remove('done');
+        tick();
+      }
+    };
+
     const closeBtn = h('button', { class: 'flip-btn close', type: 'button', title: 'Close timer', html: I.close, onclick: () => toggleTimer(false) });
+    const setBtn = h('button', { class: 'flip-btn', type: 'button', title: 'Set minutes', html: I.settings, onclick: setCountdown });
     const skipBtn = h('button', { class: 'flip-btn', type: 'button', title: 'Skip to next stage', html: I.skip, onclick: onSkip });
     const playBtn = h('button', { class: 'flip-btn', type: 'button', title: 'Start / Pause', html: TM.running ? I.pause : I.play, onclick: onPlayPause });
     const stopBtn = h('button', { class: 'flip-btn', type: 'button', title: 'Reset', html: I.stop, onclick: onReset });
 
-    const actions = h('div', { class: 'flip-actions' }, closeBtn, skipBtn, playBtn, stopBtn);
+    const actions = h('div', { class: 'flip-actions' }, closeBtn, setBtn, skipBtn, playBtn, stopBtn);
 
-    timerEl = h('div', { class: 'timer' + (TM.compact !== false ? '' : ' standard'), title: 'Drag to position' }, cards, actions);
+    timerEl = h('div', { class: 'timer' + (TM.compact !== false ? '' : ' standard'), title: 'Drag to move · Tap to peek clock' }, cards, actions);
     if (TM.pos) {
       timerEl.style.left = TM.pos.left + 'px';
       timerEl.style.top = TM.pos.top + 'px';
@@ -5077,50 +5092,66 @@ export async function mountEditor(root, docId, opts = {}) {
       }, 1500);
     };
 
-    cards.addEventListener('pointerup', e => {
-      if (e.target.closest('button')) return;
-      const now = Date.now();
-      if (now - lastTap < 350) {
-        TM.compact = !TM.compact;
-        timerEl.classList.toggle('standard', !TM.compact);
-        lastTap = 0;
-        clearTimeout(peekTimeout);
-        peekClock = false;
-        tick();
-      } else {
-        lastTap = now;
-        showPeekClock();
+    // Unified Dragging & Tapping on the widget
+    let isDown = false, hasMoved = false;
+    let startX = 0, startY = 0;
+    let elemLeft = 0, elemTop = 0;
+
+    timerEl.addEventListener('pointerdown', e => {
+      if (e.target.closest('button')) return; // buttons handle their own clicks
+      isDown = true;
+      hasMoved = false;
+      startX = e.clientX;
+      startY = e.clientY;
+      elemLeft = timerEl.offsetLeft;
+      elemTop = timerEl.offsetTop;
+      try { timerEl.setPointerCapture(e.pointerId); } catch {}
+    });
+
+    timerEl.addEventListener('pointermove', e => {
+      if (!isDown) return;
+      const dx = e.clientX - startX;
+      const dy = e.clientY - startY;
+      if (!hasMoved && (Math.abs(dx) > 3 || Math.abs(dy) > 3)) {
+        hasMoved = true;
+      }
+      if (hasMoved) {
+        const pad = 6;
+        const maxW = (overlay.clientWidth || window.innerWidth) - timerEl.offsetWidth - pad;
+        const maxH = (overlay.clientHeight || window.innerHeight) - timerEl.offsetHeight - pad;
+        const newLeft = Math.max(pad, Math.min(maxW, elemLeft + dx));
+        const newTop = Math.max(pad, Math.min(maxH, elemTop + dy));
+        timerEl.style.left = newLeft + 'px';
+        timerEl.style.top = newTop + 'px';
+        timerEl.style.right = 'auto';
+        TM.pos = { left: newLeft, top: newTop };
       }
     });
 
-    // Draggable
-    let isDrag = false, dragX = 0, dragY = 0, startLeft = 0, startTop = 0;
-    timerEl.addEventListener('pointerdown', e => {
-      if (e.target.closest('button')) return;
-      isDrag = true;
-      dragX = e.clientX;
-      dragY = e.clientY;
-      const rect = timerEl.getBoundingClientRect();
-      startLeft = rect.left;
-      startTop = rect.top;
-      timerEl.setPointerCapture(e.pointerId);
-    });
-    timerEl.addEventListener('pointermove', e => {
-      if (!isDrag) return;
-      const dx = e.clientX - dragX;
-      const dy = e.clientY - dragY;
-      if (Math.abs(dx) > 3 || Math.abs(dy) > 3) {
-        const pad = 8;
-        const left = Math.max(pad, Math.min(window.innerWidth - timerEl.offsetWidth - pad, startLeft + dx));
-        const top = Math.max(pad, Math.min(window.innerHeight - timerEl.offsetHeight - pad, startTop + dy));
-        timerEl.style.left = left + 'px';
-        timerEl.style.top = top + 'px';
-        timerEl.style.right = 'auto';
-        TM.pos = { left, top };
+    const onPointerEnd = e => {
+      if (!isDown) return;
+      isDown = false;
+      try { timerEl.releasePointerCapture(e.pointerId); } catch {}
+
+      // If user tapped without dragging, peek clock or double-tap toggle size
+      if (!hasMoved && !e.target.closest('button')) {
+        const now = Date.now();
+        if (now - lastTap < 350) {
+          TM.compact = !TM.compact;
+          timerEl.classList.toggle('standard', !TM.compact);
+          lastTap = 0;
+          clearTimeout(peekTimeout);
+          peekClock = false;
+          tick();
+        } else {
+          lastTap = now;
+          showPeekClock();
+        }
       }
-    });
-    timerEl.addEventListener('pointerup', () => { isDrag = false; });
-    timerEl.addEventListener('pointercancel', () => { isDrag = false; });
+    };
+
+    timerEl.addEventListener('pointerup', onPointerEnd);
+    timerEl.addEventListener('pointercancel', onPointerEnd);
 
     const tick = () => {
       if (!timerEl) return;

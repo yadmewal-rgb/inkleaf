@@ -506,6 +506,10 @@ button.pageind:hover { background: var(--surface-2); }
 .timer {
   position: absolute;
   top: 12px; right: 16px; z-index: 45;
+  pointer-events: auto !important;
+  touch-action: none !important;
+  user-select: none;
+  -webkit-user-select: none;
   display: inline-flex; align-items: center;
   gap: calc(7px * var(--pomo-scale, 0.65));
   background: rgba(14, 15, 18, 0.95);
@@ -514,11 +518,12 @@ button.pageind:hover { background: var(--surface-2); }
   border: 1px solid rgba(255, 255, 255, 0.1);
   box-shadow: 0 10px 28px rgba(0, 0, 0, 0.65);
   cursor: grab;
-  touch-action: none;
-  user-select: none;
-  -webkit-user-select: none;
   --pomo-scale: 0.65;
   transition: box-shadow 0.15s ease;
+}
+.timer * {
+  pointer-events: auto;
+  touch-action: none;
 }
 .timer:active { cursor: grabbing; }
 .timer.standard { --pomo-scale: 0.95; }

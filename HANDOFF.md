@@ -29,6 +29,17 @@
    - Updated service worker cache to `inkleaf-v65`.
    - Updated Settings to `Inkleaf v65 · Build 2026.11`.
 
+## Done (v66 Release)
+1. **Fixed Dragging & Pointer Events (`css/app.css`, `js/editor.js`)**:
+   - Added explicit `pointer-events: auto !important` and `touch-action: none !important` to `.timer` and all its children so touch and mouse clicks never fall through to the canvas underneath.
+   - Unified dragging and tapping on `timerEl`: accurately drags using `timerEl.offsetLeft` and `timerEl.offsetTop` without jumping or toolbar offset issues.
+   - Accurately discriminates drag (> 3px movement) from quick tap (peek clock) and double-tap (toggle scale).
+2. **Added Countdown Time Setting (`js/editor.js`)**:
+   - Added gear / settings button (`⚙`) in the side action strip that opens the "Countdown in minutes" prompt so the user can easily set any custom countdown length (e.g. 25, 45, 60 minutes).
+3. **PWA Cache Bump (`sw.js`, `js/sync.js`)**:
+   - Bumped service worker cache to `inkleaf-v66`.
+   - Updated Settings to `Inkleaf v66 · Build 2026.11`.
+
 ## Live now
 - Pushed to `origin/main` (live on https://yadmewal-rgb.github.io/inkleaf/).
 - Running locally at http://localhost:8080.
