@@ -1,37 +1,32 @@
 # Handoff
 
-**Written:** 2026-11-20 by agy (Antigravity). **Next:** Claude Code or agy.
+**Written:** 2026-11-21 by agy (Antigravity). **Next:** Claude Code or agy.
 
 ## What the owner asked
-1. "when i copy a photo and try to paste , not able to paste it in either ipad or in chrome"
-2. "by tap and hold"
-3. Screenshot showing: `Sync service error 500: {"error":"server","message":"Exceeded allowed rows read in Durable Objects free tier."}`
+1. "syncing is very slow, what does it mean by - space used on the sunc service 85 MB of 2000"
+2. "use more then 4 , and if i opened a folder in the app or opened any pdf , try to load that particular first , do you find any problem in photo ?"
+3. Photo showing Settings with snapshots in Google Drive and "Inkleaf version 54 · Build 2026.11" at the bottom.
 
-## Done (v62 Release & Cloudflare Optimization)
-1. **Fixed Photo Pasting in Tap & Hold Menu (`js/editor.js`)**:
-   - Fixed crash in `pasteAt()`: replaced non-existent `db.setAsset(assetId, blob)` with `insertImageBlob(pv, blob, px, py)`.
-   - `insertImageBlob()` processes image files and blobs using `imageAsset()`, saving to IndexedDB `assets` store with `db.put('assets', asset)` and pre-caching with `R.loadImage(asset.id)`.
-   - The photo is placed at your tap location (or centered if no location), rendered on the page canvas, and automatically selected with the lasso tool.
-   - If iOS Safari or Chrome blocks clipboard access (`NotAllowedError`), shows a helpful message: *"Clipboard access blocked. Use 'Insert picture/photo' or allow clipboard."*
-2. **Native Keyboard & Browser Paste (`js/editor.js`)**:
-   - Added global `paste` event handler (`onNativePaste`) so copying a photo anywhere and pressing `Ctrl+V` (or `Cmd+V` on iPad) pastes the photo directly onto the page without needing async permission prompts.
-   - Updated `pasteClip()` to check system clipboard images first before falling back to internal copies.
-3. **Fixed Cloudflare Durable Objects Quota Overuse (`server/worker.js`, `js/sync.js`)**:
-   - **Root cause of error 500:** On Cloudflare's free tier, Durable Objects has a daily quota on database rows read. Every time `/me` or status was queried, the server ran `SELECT SUM(size) FROM recs`, scanning thousands of rows each time.
-   - **Fix 1 (Eliminated table scans):** Replaced `SELECT SUM(size)` in `usedBytes()` with a cached `total_bytes` counter updated incrementally on blob add/delete. Status checks now read **0 to 1 row** instead of thousands!
-   - **Fix 2 (Database index):** Added composite index `CREATE INDEX IF NOT EXISTS recs_s_k ON recs (s, k);` so feed queries scan only matching rows.
-   - **Fix 3 (Client backoff):** Added exponential backoff to `schedule()` in `js/sync.js` up to 60 seconds so client doesn't hammer the server during transient errors.
-   - **Daily quota reset:** Cloudflare resets the daily counter at 00:00 UTC (5:30 AM IST). Once reset, these optimizations prevent the limit from ever being hit again.
+## Done (v63 Release)
+1. **Accelerated Sync Concurrency (`js/sync.js`)**:
+   - Increased parallel asset/file transfers from 2 to **6 simultaneous downloads/uploads** (`CONCURRENT_ASSETS = 6`).
+   - Increased record pool syncing from 4 to 6 for faster backlog clearing.
+2. **Priority Loading for Open Notebooks, PDFs & Folders (`js/sync.js`, `js/library.js`)**:
+   - Implemented priority queueing (`priority = true`) in `queueAsset()`.
+   - When you open any notebook or PDF (`editor-open`), its pages, images, and PDF backgrounds immediately jump to the **FRONT of the queue** to load first before any background notebooks.
+   - When you open any folder in the Library (`folder-open`), notebooks inside that folder are immediately prioritized for file fetching.
+3. **Fixed Footer Version Label in Settings (`js/sync.js`)**:
+   - Replaced old hardcoded `'Inkleaf version 54'` footer with `'Inkleaf v63 · Build 2026.11'`.
+4. **PWA Version Bump (`sw.js`, `js/sync.js`)**:
+   - Bumped to `v63` so all devices update cache.
 
 ## Tested
-- Verified JS syntax with `node --check` across `js/editor.js`, `js/sync.js`, `sw.js`, and `server/worker.js`.
-- Verified in browser automation that photo pasting via tap & hold and keyboard works smoothly.
-- Proof screenshot:
-  - `C:\Users\yadram\AgentTools\shots\paste_photo_verified.png` (inspected with `read_file` at full 1000px width).
+- Verified JS syntax with `node --check` across `sw.js`, `js/sync.js`, `js/library.js`.
+- Verified priority queueing shifts open document assets to head of queue.
 
 ## Live now
 - Committed locally to branch `main`.
 - Running locally at http://localhost:8080.
 
 ## Owner must do
-- Push to GitHub: Run `git push origin main` in PowerShell when ready. Cloudflare will automatically build and deploy the optimized `worker.js`.
+- Push to GitHub: Run `git push origin main` in PowerShell when ready.

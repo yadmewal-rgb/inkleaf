@@ -476,17 +476,18 @@ async function pullAsset(id, item) {
 }
 
 // Files the pages here use but this device does not have yet (they arrive by Drive, not in the change feed).
-async function fetchMissingFiles(pages) {
+async function fetchMissingFiles(pages, priority = false) {
   for (const id of assetIdsOf(pages.filter(p => !p.deleted))) {
     const a = await db.get('assets', id);
-    if (!a || (!a.data && !a.deleted)) queueAsset(id, 'pull');
+    if (!a || (!a.data && !a.deleted)) queueAsset(id, 'pull', priority);
   }
 }
 
-// Attached files can be large, so they are moved in the background, two at a time, and never hold up
-// the live syncing of pages. A failed transfer is retried after a pause.
+// Attached files (PDFs, pictures) can be large. Moved in parallel with up to 6 simultaneous transfers
+// for maximum speed, with priority given to the currently open notebook/PDF/folder.
 const assetQ = [], assetBusy = new Set(), assetRetry = new Map();
 let assetActive = 0;
+const CONCURRENT_ASSETS = 6;
 const IDLE_TEXT = 'Live sync is on. Everything is up to date.';
 const FILES_TEXT = 'Live sync is on. Still transferring files (PDFs, pictures)...';
 
@@ -496,16 +497,27 @@ function setIdle() {
 }
 
 // job: 'up' to upload a local file, or the feed entry to download.
-function queueAsset(id, job) {
+// priority: true jumps to the very front of the queue (e.g. for open notebook or folder)
+function queueAsset(id, job, priority = false) {
   const r = assetRetry.get(id);
-  if (assetBusy.has(id) || (r && r.at > Date.now())) return;
+  if (r && r.at > Date.now()) return;
+  const existingIdx = assetQ.findIndex(([qid]) => qid === id);
+  if (existingIdx !== -1) {
+    if (priority && existingIdx > 0) {
+      const item = assetQ.splice(existingIdx, 1)[0];
+      assetQ.unshift(item);
+    }
+    return;
+  }
+  if (assetBusy.has(id)) return;
   assetBusy.add(id);
-  assetQ.push([id, job]);
+  if (priority) assetQ.unshift([id, job]);
+  else assetQ.push([id, job]);
   pumpAssets();
 }
 
 function pumpAssets() {
-  while (assetActive < 2 && assetQ.length) {
+  while (assetActive < CONCURRENT_ASSETS && assetQ.length) {
     const [id, job] = assetQ.shift();
     assetActive++;
     (job === 'up' ? pushAsset(id) : pullAsset(id, job))
@@ -597,7 +609,7 @@ async function fullPass() {
   const changed = await pullChanges();
   for (const kind of ['f', 'd', 'p']) {
     const locals = await db.all(STORES[kind]);
-    await pool(4, locals, async L => {
+    await pool(6, locals, async L => {
       const s = st[kind + '_' + L.id];
       if (!s || s.lm !== L.modified) await pushRecord(kind, L);
     });
@@ -810,8 +822,25 @@ export async function initSync() {
       if (savedPages && w && w.s === 'pages') for (const id of w.ids) savedPages.add(id);
       if (session && !off) pushSoon();
     });
-    bus.on('editor-open', id => { openDocs.add(id); if (ready()) { run(pullChanges, false); } schedule(); });
+    bus.on('editor-open', async id => {
+      openDocs.add(id);
+      try {
+        const docPages = await db.byDoc(id);
+        await fetchMissingFiles(docPages, true); // Prioritize open notebook/PDF assets
+      } catch {}
+      if (ready()) { run(pullChanges, false); }
+      schedule();
+    });
     bus.on('editor-close', id => { openDocs.delete(id); schedule(); });
+    bus.on('folder-open', async folderId => {
+      try {
+        const docs = (await db.all('docs')).filter(d => !d.deleted && !d.trashed && (folderId ? d.folderId === folderId : true));
+        for (const d of docs) {
+          const docPages = await db.byDoc(d.id);
+          await fetchMissingFiles(docPages, true); // Prioritize open folder's notebooks
+        }
+      } catch {}
+    });
     window.addEventListener('online', () => { if (ready()) { fullRun(false); openLive(); } });
     setTimeout(() => autoBackup(), 8000);          // weekly snapshot, if one is due
     setInterval(() => autoBackup(), 3600e3);
@@ -2061,7 +2090,7 @@ export async function openSettings() {
   const offModelChanged = bus.on('hw-model-changed', () => drawHw());
 
   const m = modal({
-    title: 'Settings (v62)',
+    title: 'Settings (v63)',
     wide: true,
     onClose: () => { offUsage(); offHwStatus(); offModelChanged(); },
     body: h('div', null,
@@ -2070,7 +2099,7 @@ export async function openSettings() {
         style: 'align-items: center; justify-content: space-between; padding: 10px 14px; background: var(--surface-2); border-radius: 10px; margin-bottom: 16px;'
       },
         h('div', null,
-          h('div', { style: 'font-weight: 600; font-size: 14.5px;' }, 'Inkleaf v62'),
+          h('div', { style: 'font-weight: 600; font-size: 14.5px;' }, 'Inkleaf v63'),
           h('div', { class: 'bk-sub', style: 'margin-top: 2px;' }, 'Handwriting notes · Real-time sync · PWA')
         ),
         h('button', {
@@ -2128,7 +2157,7 @@ export async function openSettings() {
       h('div', { class: 'row' },
         h('button', { class: 'btn', type: 'button', onclick: async e => { const b = e.currentTarget; b.disabled = true; await autoBackup(true); b.disabled = false; fillBk(); } }, 'Back up now')),
       h('div', { style: 'margin-top: 24px; padding-top: 14px; border-top: 1px solid var(--line); text-align: center; color: var(--muted); font-size: 12.5px;' },
-        'Inkleaf version 54 · Build 2026.11'
+        'Inkleaf v63 · Build 2026.11'
       )
     )
   });

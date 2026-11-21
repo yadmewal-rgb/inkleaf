@@ -1096,6 +1096,7 @@ export async function mountLibrary(root, folderId, opts = {}) {
   const offs = [bus.on('synced', render), bus.on('sync-status', showSync)];
   showSync(syncStatus());
   purgeTrash(false).catch(e => console.warn('Bin clean-up failed', e));
+  bus.emit('folder-open', folderId);
   await render();
 
   return {
