@@ -30,5 +30,5 @@
    - Updated Settings to `Inkleaf v65 · Build 2026.11`.
 
 ## Live now
+- Pushed to `origin/main` (live on https://yadmewal-rgb.github.io/inkleaf/).
 - Running locally at http://localhost:8080.
-- Ready to push to `origin/main` for GitHub Pages release.
