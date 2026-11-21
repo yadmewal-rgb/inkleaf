@@ -5050,6 +5050,7 @@ export async function mountEditor(root, docId, opts = {}) {
       TM.dur = (p.dur || 25) * 60000;
       TM.breakDur = (p.breakDur || 5) * 60000;
       TM.loops = p.loops || 4;
+      TM.autoStart = p.autoStart !== false;
       TM.type = p.type || 'pomodoro';
       TM.mode = 'focus';
       TM.round = 1;
@@ -5092,6 +5093,7 @@ export async function mountEditor(root, docId, opts = {}) {
     const openSettingsModal = (initPreset = null) => {
       let selMode = (initPreset && initPreset.type) || TM.type || 'pomodoro';
       let selColor = (initPreset && initPreset.color) || TM.activeColor || '#e03131';
+      let selAutoStart = (initPreset && initPreset.autoStart !== undefined) ? initPreset.autoStart : (TM.autoStart !== false);
 
       const modeField = chipGroup('Timer mode', [
         { v: 'pomodoro', label: 'Pomodoro' },
@@ -5124,12 +5126,18 @@ export async function mountEditor(root, docId, opts = {}) {
       const breakField = h('div', { class: 'field' }, h('label', null, 'Break duration (min)'), breakInp);
       const loopsField = h('div', { class: 'field' }, h('label', null, 'Number of rounds / loops'), loopsInp);
 
+      const autoStartField = chipGroup('Next round', [
+        { v: true, label: 'Auto-start next round' },
+        { v: false, label: 'Pause after each round' }
+      ], selAutoStart, v => { selAutoStart = v; });
+
       const form = h('div', { class: 'pomo-settings-form' },
         modeField,
         nameField,
         colorField,
         h('div', { class: 'row two' }, durField, breakField),
-        loopsField
+        loopsField,
+        autoStartField
       );
 
       modal({
@@ -5152,6 +5160,7 @@ export async function mountEditor(root, docId, opts = {}) {
               TM.dur = dur * 60000;
               TM.breakDur = breakDur * 60000;
               TM.loops = loops;
+              TM.autoStart = selAutoStart;
               TM.mode = 'focus';
               TM.round = 1;
               TM.acc = 0;
@@ -5166,8 +5175,9 @@ export async function mountEditor(root, docId, opts = {}) {
                 existing.color = selColor;
                 existing.loops = loops;
                 existing.type = selMode;
+                existing.autoStart = selAutoStart;
               } else {
-                TM.presets.push({ id: uid(), name, dur, breakDur, color: selColor, loops, type: selMode });
+                TM.presets.push({ id: uid(), name, dur, breakDur, color: selColor, loops, type: selMode, autoStart: selAutoStart });
               }
 
               tagDot.style.background = selColor;
@@ -5195,14 +5205,32 @@ export async function mountEditor(root, docId, opts = {}) {
     const onSkip = () => {
       if (TM.type === 'stopwatch') return;
       const maxRounds = TM.loops || 4;
+      const curPreset = (TM.presets || []).find(p => p.name === TM.activeTag);
+      const focusMs = (curPreset ? curPreset.dur : 25) * 60000;
+      const breakMs = (curPreset ? curPreset.breakDur : 5) * 60000;
+
       if (TM.mode === 'focus') {
-        TM.mode = (TM.round || 1) >= maxRounds ? 'long' : 'break';
-        TM.dur = TM.mode === 'long' ? (TM.breakDur || 5 * 60000) * 3 : (TM.breakDur || 5 * 60000);
+        const isLast = (TM.round || 1) >= maxRounds;
+        TM.mode = isLast ? 'long' : 'break';
+        TM.dur = isLast ? (breakMs * 3) : breakMs;
+        toast(`Skipped to ${isLast ? 'Long break' : 'Break'}.`, 3000);
       } else {
-        TM.mode = 'focus';
-        TM.round = ((TM.round || 1) % maxRounds) + 1;
-        const curPreset = (TM.presets || []).find(p => p.name === TM.activeTag);
-        TM.dur = (curPreset ? curPreset.dur : 25) * 60000;
+        const wasLast = TM.mode === 'long' || (TM.round || 1) >= maxRounds;
+        if (wasLast) {
+          TM.running = false;
+          TM.round = 1;
+          TM.mode = 'focus';
+          TM.dur = focusMs;
+          TM.acc = 0;
+          toast(`All ${maxRounds} rounds completed!`, 4000);
+          tick();
+          return;
+        } else {
+          TM.round = (TM.round || 1) + 1;
+          TM.mode = 'focus';
+          TM.dur = focusMs;
+          toast(`Skipped to Focus round ${TM.round}.`, 3000);
+        }
       }
       TM.acc = 0;
       TM.t0 = Date.now();
@@ -5313,24 +5341,43 @@ export async function mountEditor(root, docId, opts = {}) {
         let rem = Math.max(0, (TM.dur || 25 * 60000) - ms);
 
         if (TM.running && rem <= 0) {
-          TM.running = false;
-          TM.acc = TM.dur;
-          timerEl.classList.add('done');
           beep();
+          timerEl.classList.add('done');
+          setTimeout(() => { if (timerEl) timerEl.classList.remove('done'); }, 3500);
 
           const maxRounds = TM.loops || 4;
+          const curPreset = (TM.presets || []).find(p => p.name === TM.activeTag);
+          const focusMs = (curPreset ? curPreset.dur : 25) * 60000;
+          const breakMs = (curPreset ? curPreset.breakDur : 5) * 60000;
+          const shouldAutoStart = TM.autoStart !== false;
+
           if (TM.mode === 'focus') {
-            toast('Focus round ' + (TM.round || 1) + ' completed! Time for a break.', 6000);
-            TM.mode = (TM.round || 1) >= maxRounds ? 'long' : 'break';
-            TM.dur = TM.mode === 'long' ? (TM.breakDur || 5 * 60000) * 3 : (TM.breakDur || 5 * 60000);
+            const isLast = (TM.round || 1) >= maxRounds;
+            TM.mode = isLast ? 'long' : 'break';
+            TM.dur = isLast ? (breakMs * 3) : breakMs;
+            toast(`Focus round ${TM.round || 1} completed! ${isLast ? 'Long break' : 'Break'} started.`, 5000);
           } else {
-            toast('Break finished! Ready to focus?', 6000);
-            TM.mode = 'focus';
-            TM.round = ((TM.round || 1) % maxRounds) + 1;
-            const curPreset = (TM.presets || []).find(p => p.name === TM.activeTag);
-            TM.dur = (curPreset ? curPreset.dur : 25) * 60000;
+            const wasLast = TM.mode === 'long' || (TM.round || 1) >= maxRounds;
+            if (wasLast) {
+              TM.running = false;
+              TM.round = 1;
+              TM.mode = 'focus';
+              TM.dur = focusMs;
+              TM.acc = 0;
+              toast(`🎉 All ${maxRounds} rounds completed! Great work!`, 8000);
+              tick();
+              return;
+            } else {
+              TM.round = (TM.round || 1) + 1;
+              TM.mode = 'focus';
+              TM.dur = focusMs;
+              toast(`Break finished! Focus round ${TM.round} started.`, 5000);
+            }
           }
+
           TM.acc = 0;
+          TM.t0 = Date.now();
+          TM.running = shouldAutoStart;
           rem = TM.dur;
         }
 
@@ -5341,7 +5388,7 @@ export async function mountEditor(root, docId, opts = {}) {
         rightDigits.textContent = String(ss).padStart(2, '0');
         roundTag.textContent = String(TM.round || 1).padStart(2, '0');
         roundTag.style.display = 'block';
-        statusTag.textContent = TM.mode === 'focus' ? 'FOCUS' : 'BREAK';
+        statusTag.textContent = TM.mode === 'focus' ? 'FOCUS' : (TM.mode === 'long' ? 'LONG BREAK' : 'BREAK');
         statusTag.className = 'flip-status-tag' + (TM.mode !== 'focus' ? ' break-mode' : '');
       }
 

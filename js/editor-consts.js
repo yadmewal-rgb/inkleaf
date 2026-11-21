@@ -47,10 +47,11 @@ export const TM = {
   pos: null,
   activeTag: 'pre ans reading',
   activeColor: '#e03131',
+  autoStart: true,
   presets: [
-    { id: 'p1', name: 'Focus', dur: 25, breakDur: 5, color: '#e03131', loops: 4 },
-    { id: 'p2', name: 'pre ans reading', dur: 20, breakDur: 2, color: '#e8590c', loops: 4 },
-    { id: 'p3', name: 'Study', dur: 30, breakDur: 5, color: '#2f9e44', loops: 4 }
+    { id: 'p1', name: 'Focus', dur: 25, breakDur: 5, color: '#e03131', loops: 4, autoStart: true },
+    { id: 'p2', name: 'pre ans reading', dur: 20, breakDur: 2, color: '#e8590c', loops: 4, autoStart: true },
+    { id: 'p3', name: 'Study', dur: 30, breakDur: 5, color: '#2f9e44', loops: 4, autoStart: true }
   ]
 }; // Pomodoro timer, tags & clock, shared across notebooks
 

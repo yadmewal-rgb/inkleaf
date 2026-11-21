@@ -14,30 +14,22 @@
 9. "compare it with https://play.google.com/store/apps/details?id=com.wssc.simpleclock&hl=en_IN"
 10. "C:\Users\Yadram\Pictures\Screenshots i meant for these"
 11. "add them according to our interface, and when i click on it to see time then show it beside it not on itself"
+12. "rounds not working , it stops after 1 round and 2ns round now started automatically"
 
-## Done (v67 Release)
-1. **Tag & Preset Selector Popover (`js/editor.js`, `js/editor-consts.js`, `css/app.css`)**:
-   - Added top pill button on the widget showing current active tag with a color dot and arrow (e.g. `🔴 pre ans reading ›`).
-   - Clicking the pill opens the "Select Tag" popover menu with presets (`Focus 25:00`, `pre ans reading 20:00`, `Study 30:00`), active checkmark, and a `+ Add New Preset` button.
-   - Selecting any preset updates the active tag, countdown length, color dot, and resets the timer smoothly.
-2. **Side Peek Clock ("beside it, not on itself") (`js/editor.js`, `css/app.css`)**:
-   - Tapping the flip cards displays a floating glass badge (`⏰ HH:MM AM/PM`) **BESIDE** the widget for 1.5 seconds.
-   - The countdown digits on the flip cards stay visible and uninterrupted.
-   - Intelligently positions on the right or left depending on widget screen position so it never overflows off-screen.
-3. **Timer Settings Modal (`js/editor.js`, `css/app.css`)**:
-   - Tapping `⚙` on the action strip or `+ Add New Preset` in the tag popover opens the complete Timer Settings modal.
-   - Mode switch: **Pomodoro** (countdown) vs **Stopwatch** (countup).
-   - Tag name text input.
-   - Tag color picker dots from `SEC_COLORS`.
-   - Focus duration (minutes), Break duration (minutes), and Round/Loop count inputs.
-   - Saves into `TM.presets` and immediately applies to the active session.
-4. **Tested & Verified Visually in Chrome**:
-   - Verified tag selection popover, side clock badge, and modal dialog.
-   - Captured and reviewed high-resolution screenshots.
-5. **PWA Cache Bump (`sw.js`, `js/sync.js`)**:
-   - Bumped service worker cache to `inkleaf-v67`.
-   - Updated Settings to `Inkleaf v67 · Build 2026.11`.
+## Done (v68 Release)
+1. **Auto-Start Next Round & Break Cycles (`js/editor.js`, `js/editor-consts.js`)**:
+   - Fixed the round flow so the timer does not pause when a round finishes.
+   - When **Focus Round 1** finishes, it sounds a chime and **Break 1** begins counting down automatically.
+   - When **Break 1** finishes, it sounds a chime and **Focus Round 2** begins counting down automatically with the round badge updating to `02`.
+   - After the final round (e.g. Round 4 Long Break), the session finishes cleanly with a celebration toast.
+2. **Auto-Start Setting in Timer Settings Modal (`js/editor.js`)**:
+   - Added a setting in the Timer Settings modal: "Next round: Auto-start next round" vs "Pause after each round" (defaults to Auto-start).
+3. **PWA Version Bump (`sw.js`, `js/sync.js`)**:
+   - Bumped service worker cache to `inkleaf-v68`.
+   - Updated Settings to `Inkleaf v68 · Build 2026.11`.
+4. **Tested in Chrome**:
+   - Automated test verified Focus 1 -> Break 1 -> Focus 2 auto-transitions and captured screenshots.
 
 ## Live now
-- Pushed to `origin/main` (live on https://yadmewal-rgb.github.io/inkleaf/).
-- Running locally at http://localhost:8080.
+- Tested locally on http://localhost:8080.
+- Committed locally, ready to push upon owner confirmation.
