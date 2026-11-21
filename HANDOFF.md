@@ -9,37 +9,35 @@
 4. "make it smaller or can be scaleable ? , does these extra feature affect the stability of app ?"
 5. "increase resolution of screenshots and save this to memory"
 6. "go"
+7. "not able to drag promodoro"
+8. "not working , not able to set it , it just set at there and do nothing"
+9. "compare it with https://play.google.com/store/apps/details?id=com.wssc.simpleclock&hl=en_IN"
+10. "C:\Users\Yadram\Pictures\Screenshots i meant for these"
+11. "add them according to our interface, and when i click on it to see time then show it beside it not on itself"
 
-## Done (v65 Release)
-1. **Retro Flip Pomodoro & Clock Widget (`js/editor.js`, `js/editor-consts.js`, `css/app.css`)**:
-   - Designed retro flip-clock cards with dark rounded cards and horizontal center split line.
-   - **Pomodoro Cycles:** Focus (25m), Short Break (5m), and Long Break (15m after round 4).
-   - **Round Counter:** Displays the study round (`01`, `02`, `03`, `04`) in the bottom-left corner of the minutes tile.
-   - **Tap-to-Peek Clock:** Tapping the cards temporarily reveals the real current wall-clock time (`TIME PM 12:21`) and auto-hides back to the timer after exactly 1.5 seconds.
-   - **Scalable / Compact Mode:** Built with compact mini scale (~65%) by default so it takes minimal space during fullscreen note-taking; double-tapping the cards toggles to Standard size.
-   - **Draggable Anywhere:** Drag-and-drop support with touch or mouse to position the widget anywhere on the screen without interfering with handwriting strokes.
-   - **Side Control Strip:** Action buttons for Close (`✕`), Skip to next stage (`⏭`), Play/Pause (`⏸`/`▶`), and Reset (`⏹`).
-2. **Icons (`js/icons.js`)**:
-   - Added SVG icons for `skip` (`⏭`) and `stop` (`⏹`).
-3. **App Stability & Safety**:
-   - Implemented as an isolated overlay element above the canvas; zero interference with pen/highlighter stroke rendering, memory limits, or sync loop.
-4. **Project Memory (`AGENTS.md`)**:
-   - Added Pomodoro specifications and high-resolution screenshot requirements to `AGENTS.md` so Claude Code and agy share the memory.
-5. **Cache & Settings Bump (`sw.js`, `js/sync.js`)**:
-   - Updated service worker cache to `inkleaf-v65`.
-   - Updated Settings to `Inkleaf v65 · Build 2026.11`.
-
-## Done (v66 Release)
-1. **Fixed Dragging & Pointer Events (`css/app.css`, `js/editor.js`)**:
-   - Added explicit `pointer-events: auto !important` and `touch-action: none !important` to `.timer` and all its children so touch and mouse clicks never fall through to the canvas underneath.
-   - Unified dragging and tapping on `timerEl`: accurately drags using `timerEl.offsetLeft` and `timerEl.offsetTop` without jumping or toolbar offset issues.
-   - Accurately discriminates drag (> 3px movement) from quick tap (peek clock) and double-tap (toggle scale).
-2. **Added Countdown Time Setting (`js/editor.js`)**:
-   - Added gear / settings button (`⚙`) in the side action strip that opens the "Countdown in minutes" prompt so the user can easily set any custom countdown length (e.g. 25, 45, 60 minutes).
-3. **PWA Cache Bump (`sw.js`, `js/sync.js`)**:
-   - Bumped service worker cache to `inkleaf-v66`.
-   - Updated Settings to `Inkleaf v66 · Build 2026.11`.
+## Done (v67 Release)
+1. **Tag & Preset Selector Popover (`js/editor.js`, `js/editor-consts.js`, `css/app.css`)**:
+   - Added top pill button on the widget showing current active tag with a color dot and arrow (e.g. `🔴 pre ans reading ›`).
+   - Clicking the pill opens the "Select Tag" popover menu with presets (`Focus 25:00`, `pre ans reading 20:00`, `Study 30:00`), active checkmark, and a `+ Add New Preset` button.
+   - Selecting any preset updates the active tag, countdown length, color dot, and resets the timer smoothly.
+2. **Side Peek Clock ("beside it, not on itself") (`js/editor.js`, `css/app.css`)**:
+   - Tapping the flip cards displays a floating glass badge (`⏰ HH:MM AM/PM`) **BESIDE** the widget for 1.5 seconds.
+   - The countdown digits on the flip cards stay visible and uninterrupted.
+   - Intelligently positions on the right or left depending on widget screen position so it never overflows off-screen.
+3. **Timer Settings Modal (`js/editor.js`, `css/app.css`)**:
+   - Tapping `⚙` on the action strip or `+ Add New Preset` in the tag popover opens the complete Timer Settings modal.
+   - Mode switch: **Pomodoro** (countdown) vs **Stopwatch** (countup).
+   - Tag name text input.
+   - Tag color picker dots from `SEC_COLORS`.
+   - Focus duration (minutes), Break duration (minutes), and Round/Loop count inputs.
+   - Saves into `TM.presets` and immediately applies to the active session.
+4. **Tested & Verified Visually in Chrome**:
+   - Verified tag selection popover, side clock badge, and modal dialog.
+   - Captured and reviewed high-resolution screenshots.
+5. **PWA Cache Bump (`sw.js`, `js/sync.js`)**:
+   - Bumped service worker cache to `inkleaf-v67`.
+   - Updated Settings to `Inkleaf v67 · Build 2026.11`.
 
 ## Live now
-- Pushed to `origin/main` (live on https://yadmewal-rgb.github.io/inkleaf/).
-- Running locally at http://localhost:8080.
+- Tested locally on http://localhost:8080.
+- Ready to commit and push to `origin/main` upon owner confirmation.

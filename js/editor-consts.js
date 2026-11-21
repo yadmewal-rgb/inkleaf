@@ -32,7 +32,27 @@ export const TAGS = {
 };
 export const SEC_COLORS = ['#1971c2', '#e8590c', '#2f9e44', '#9c36b5', '#e03131', '#0c8599'];
 export const fmtWhen = t => new Date(t).toLocaleString([], { day: 'numeric', month: 'short', hour: 'numeric', minute: '2-digit' });
-export const TM = { open: false, running: false, t0: 0, acc: 0, dur: 25 * 60000, mode: 'focus', round: 1, compact: true, pos: null }; // Pomodoro timer & clock, shared across notebooks
+export const TM = {
+  open: false,
+  running: false,
+  t0: 0,
+  acc: 0,
+  dur: 20 * 60000,
+  breakDur: 2 * 60000,
+  mode: 'focus',
+  type: 'pomodoro',
+  round: 1,
+  loops: 4,
+  compact: true,
+  pos: null,
+  activeTag: 'pre ans reading',
+  activeColor: '#e03131',
+  presets: [
+    { id: 'p1', name: 'Focus', dur: 25, breakDur: 5, color: '#e03131', loops: 4 },
+    { id: 'p2', name: 'pre ans reading', dur: 20, breakDur: 2, color: '#e8590c', loops: 4 },
+    { id: 'p3', name: 'Study', dur: 30, breakDur: 5, color: '#2f9e44', loops: 4 }
+  ]
+}; // Pomodoro timer, tags & clock, shared across notebooks
 
 export const DEFAULTS = {
   noteColor: '#ffe066',

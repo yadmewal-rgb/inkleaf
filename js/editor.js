@@ -4996,7 +4996,7 @@ export async function mountEditor(root, docId, opts = {}) {
     if (!TM.mode) TM.mode = 'focus';
     if (!TM.round) TM.round = 1;
 
-    let peekClock = false, lastTap = 0;
+    let lastTap = 0;
 
     const leftDigits = h('span', { class: 'flip-digits' }, '25');
     const rightDigits = h('span', { class: 'flip-digits' }, '00');
@@ -5007,12 +5007,185 @@ export async function mountEditor(root, docId, opts = {}) {
     const rightCard = h('div', { class: 'flip-card' }, rightDigits);
     const cards = h('div', { class: 'flip-cards', title: 'Tap: Peek Clock (1.5s) · Double-tap: Toggle Size' }, leftCard, rightCard);
 
+    // Top Tag Pill
+    const tagDot = h('span', { class: 'pomo-tag-dot', style: `background: ${TM.activeColor || '#e03131'};` });
+    const tagText = h('span', { class: 'pomo-tag-text' }, TM.activeTag || 'Focus');
+    const tagArrow = h('span', { class: 'pomo-tag-arrow' }, '›');
+    const tagPill = h('button', {
+      class: 'pomo-tag-pill',
+      type: 'button',
+      title: 'Select Tag / Preset',
+      onclick: e => {
+        e.stopPropagation();
+        openPresetPicker(tagPill);
+      }
+    }, tagDot, tagText, tagArrow);
+
+    const leftCol = h('div', { class: 'pomo-left-col' }, tagPill, cards);
+
+    // Side Peek Clock (shown beside widget, not replacing card digits)
+    const peekClockEl = h('div', { class: 'pomo-peek-clock', style: 'display: none;' });
+
+    const showPeekClock = () => {
+      clearTimeout(peekTimeout);
+      const now = new Date();
+      let hours = now.getHours();
+      const minutes = now.getMinutes();
+      const ampm = hours >= 12 ? 'PM' : 'AM';
+      hours = hours % 12 || 12;
+
+      peekClockEl.textContent = `⏰ ${String(hours).padStart(2, '0')}:${String(minutes).padStart(2, '0')} ${ampm}`;
+      const leftPos = timerEl ? timerEl.offsetLeft : 0;
+      peekClockEl.classList.toggle('on-right', leftPos < 130);
+      peekClockEl.style.display = 'flex';
+
+      peekTimeout = setTimeout(() => {
+        peekClockEl.style.display = 'none';
+      }, 1500);
+    };
+
+    const selectPreset = (p) => {
+      TM.activeTag = p.name;
+      TM.activeColor = p.color || '#e03131';
+      TM.dur = (p.dur || 25) * 60000;
+      TM.breakDur = (p.breakDur || 5) * 60000;
+      TM.loops = p.loops || 4;
+      TM.type = p.type || 'pomodoro';
+      TM.mode = 'focus';
+      TM.round = 1;
+      TM.acc = 0;
+      TM.running = false;
+      tagDot.style.background = TM.activeColor;
+      tagText.textContent = TM.activeTag;
+      if (timerEl) timerEl.classList.remove('done');
+      tick();
+    };
+
+    const openPresetPicker = (anchor) => {
+      let closePop = null;
+      const items = (TM.presets || []).map(p => {
+        const isActive = p.name === TM.activeTag;
+        const dot = h('span', { class: 'pomo-preset-dot', style: `background: ${p.color || '#e03131'};` });
+        const title = h('span', { class: 'pomo-preset-title' }, p.name);
+        const dur = h('span', { class: 'pomo-preset-dur' }, `${p.dur}:00`);
+        const check = isActive ? h('span', { class: 'pomo-preset-check' }, '✓') : null;
+        const left = h('div', { class: 'pomo-preset-left' }, dot, title);
+        const right = h('div', { class: 'pomo-preset-right' }, dur, check);
+        return h('div', { class: 'pomo-preset-item' + (isActive ? ' active' : ''), onclick: () => {
+          selectPreset(p);
+          if (closePop) closePop();
+        }}, left, right);
+      });
+
+      const addBtn = h('button', { class: 'pomo-add-btn', type: 'button', onclick: () => {
+        if (closePop) closePop();
+        openSettingsModal(null);
+      }}, '+ Add New Preset');
+
+      const head = h('div', { class: 'pomo-preset-head' }, 'Select Tag');
+      const list = h('div', { class: 'pomo-preset-list' }, ...items);
+      const content = h('div', { class: 'pomo-preset-pop' }, head, list, addBtn);
+
+      closePop = popover(anchor, content);
+    };
+
+    const openSettingsModal = (initPreset = null) => {
+      let selMode = (initPreset && initPreset.type) || TM.type || 'pomodoro';
+      let selColor = (initPreset && initPreset.color) || TM.activeColor || '#e03131';
+
+      const modeField = chipGroup('Timer mode', [
+        { v: 'pomodoro', label: 'Pomodoro' },
+        { v: 'stopwatch', label: 'Stopwatch' }
+      ], selMode, v => { selMode = v; });
+
+      const nameInp = h('input', {
+        class: 'inp',
+        type: 'text',
+        value: initPreset ? initPreset.name : (TM.activeTag || 'Focus'),
+        placeholder: 'e.g. Focus, pre ans reading, Study'
+      });
+      const nameField = h('div', { class: 'field' }, h('label', null, 'Tag name'), nameInp);
+
+      const colorField = chipGroup('Tag color', SEC_COLORS.map(c => ({
+        v: c,
+        label: '',
+        swatch: c
+      })), selColor, c => { selColor = c; });
+
+      const durVal = initPreset ? initPreset.dur : Math.round((TM.dur || 25 * 60000) / 60000);
+      const breakVal = initPreset ? initPreset.breakDur : Math.round((TM.breakDur || 5 * 60000) / 60000);
+      const loopsVal = initPreset ? initPreset.loops : (TM.loops || 4);
+
+      const durInp = h('input', { class: 'inp', type: 'number', min: '1', max: '180', value: String(durVal) });
+      const breakInp = h('input', { class: 'inp', type: 'number', min: '1', max: '60', value: String(breakVal) });
+      const loopsInp = h('input', { class: 'inp', type: 'number', min: '1', max: '12', value: String(loopsVal) });
+
+      const durField = h('div', { class: 'field' }, h('label', null, 'Focus duration (min)'), durInp);
+      const breakField = h('div', { class: 'field' }, h('label', null, 'Break duration (min)'), breakInp);
+      const loopsField = h('div', { class: 'field' }, h('label', null, 'Number of rounds / loops'), loopsInp);
+
+      const form = h('div', { class: 'pomo-settings-form' },
+        modeField,
+        nameField,
+        colorField,
+        h('div', { class: 'row two' }, durField, breakField),
+        loopsField
+      );
+
+      modal({
+        title: 'Timer Settings',
+        body: form,
+        actions: [
+          { label: 'Cancel' },
+          {
+            label: 'Save',
+            primary: true,
+            onClick: () => {
+              const name = nameInp.value.trim() || 'Focus';
+              const dur = Math.max(1, parseInt(durInp.value, 10) || 25);
+              const breakDur = Math.max(1, parseInt(breakInp.value, 10) || 5);
+              const loops = Math.max(1, parseInt(loopsInp.value, 10) || 4);
+
+              TM.type = selMode;
+              TM.activeTag = name;
+              TM.activeColor = selColor;
+              TM.dur = dur * 60000;
+              TM.breakDur = breakDur * 60000;
+              TM.loops = loops;
+              TM.mode = 'focus';
+              TM.round = 1;
+              TM.acc = 0;
+              TM.running = false;
+
+              if (!TM.presets) TM.presets = [];
+              const existing = TM.presets.find(p => p.name.toLowerCase() === name.toLowerCase());
+              if (existing) {
+                existing.name = name;
+                existing.dur = dur;
+                existing.breakDur = breakDur;
+                existing.color = selColor;
+                existing.loops = loops;
+                existing.type = selMode;
+              } else {
+                TM.presets.push({ id: uid(), name, dur, breakDur, color: selColor, loops, type: selMode });
+              }
+
+              tagDot.style.background = selColor;
+              tagText.textContent = name;
+              if (timerEl) timerEl.classList.remove('done');
+              tick();
+            }
+          }
+        ]
+      });
+    };
+
     const onPlayPause = () => {
       if (TM.running) {
         TM.acc = tmNow();
         TM.running = false;
       } else {
-        if (TM.dur && TM.acc >= TM.dur) TM.acc = 0;
+        if (TM.dur && TM.acc >= TM.dur && TM.type !== 'stopwatch') TM.acc = 0;
         TM.t0 = Date.now();
         TM.running = true;
       }
@@ -5020,13 +5193,16 @@ export async function mountEditor(root, docId, opts = {}) {
     };
 
     const onSkip = () => {
+      if (TM.type === 'stopwatch') return;
+      const maxRounds = TM.loops || 4;
       if (TM.mode === 'focus') {
-        TM.mode = (TM.round || 1) >= 4 ? 'long' : 'break';
-        TM.dur = (TM.mode === 'long' ? 15 : 5) * 60000;
+        TM.mode = (TM.round || 1) >= maxRounds ? 'long' : 'break';
+        TM.dur = TM.mode === 'long' ? (TM.breakDur || 5 * 60000) * 3 : (TM.breakDur || 5 * 60000);
       } else {
         TM.mode = 'focus';
-        TM.round = ((TM.round || 1) % 4) + 1;
-        TM.dur = 25 * 60000;
+        TM.round = ((TM.round || 1) % maxRounds) + 1;
+        const curPreset = (TM.presets || []).find(p => p.name === TM.activeTag);
+        TM.dur = (curPreset ? curPreset.dur : 25) * 60000;
       }
       TM.acc = 0;
       TM.t0 = Date.now();
@@ -5042,55 +5218,20 @@ export async function mountEditor(root, docId, opts = {}) {
       tick();
     };
 
-    const setCountdown = async () => {
-      const curMin = TM.dur ? Math.round(TM.dur / 60000) : 25;
-      const v = await promptText('Countdown in minutes (e.g. 25, 45, 50)', String(curMin), 'For example 25');
-      if (v == null) return;
-      const m = parseFloat(v);
-      if (!isNaN(m) && m > 0) {
-        TM.dur = Math.round(m * 60000);
-        TM.acc = 0;
-        TM.running = false;
-        if (timerEl) timerEl.classList.remove('done');
-        tick();
-      }
-    };
-
     const closeBtn = h('button', { class: 'flip-btn close', type: 'button', title: 'Close timer', html: I.close, onclick: () => toggleTimer(false) });
-    const setBtn = h('button', { class: 'flip-btn', type: 'button', title: 'Set minutes', html: I.settings, onclick: setCountdown });
+    const setBtn = h('button', { class: 'flip-btn', type: 'button', title: 'Timer Settings', html: I.settings, onclick: () => openSettingsModal() });
     const skipBtn = h('button', { class: 'flip-btn', type: 'button', title: 'Skip to next stage', html: I.skip, onclick: onSkip });
     const playBtn = h('button', { class: 'flip-btn', type: 'button', title: 'Start / Pause', html: TM.running ? I.pause : I.play, onclick: onPlayPause });
     const stopBtn = h('button', { class: 'flip-btn', type: 'button', title: 'Reset', html: I.stop, onclick: onReset });
 
     const actions = h('div', { class: 'flip-actions' }, closeBtn, setBtn, skipBtn, playBtn, stopBtn);
 
-    timerEl = h('div', { class: 'timer' + (TM.compact !== false ? '' : ' standard'), title: 'Drag to move · Tap to peek clock' }, cards, actions);
+    timerEl = h('div', { class: 'timer' + (TM.compact !== false ? '' : ' standard'), title: 'Drag to move · Tap to peek clock' }, leftCol, actions, peekClockEl);
     if (TM.pos) {
       timerEl.style.left = TM.pos.left + 'px';
       timerEl.style.top = TM.pos.top + 'px';
       timerEl.style.right = 'auto';
     }
-
-    const showPeekClock = () => {
-      peekClock = true;
-      clearTimeout(peekTimeout);
-      const now = new Date();
-      let hours = now.getHours();
-      const minutes = now.getMinutes();
-      const ampm = hours >= 12 ? 'PM' : 'AM';
-      hours = hours % 12 || 12;
-
-      leftDigits.textContent = String(hours).padStart(2, '0');
-      rightDigits.textContent = String(minutes).padStart(2, '0');
-      roundTag.style.display = 'none';
-      statusTag.textContent = 'TIME ' + ampm;
-      statusTag.className = 'flip-status-tag time-mode';
-
-      peekTimeout = setTimeout(() => {
-        peekClock = false;
-        tick();
-      }, 1500);
-    };
 
     // Unified Dragging & Tapping on the widget
     let isDown = false, hasMoved = false;
@@ -5141,7 +5282,7 @@ export async function mountEditor(root, docId, opts = {}) {
           timerEl.classList.toggle('standard', !TM.compact);
           lastTap = 0;
           clearTimeout(peekTimeout);
-          peekClock = false;
+          peekClockEl.style.display = 'none';
           tick();
         } else {
           lastTap = now;
@@ -5155,30 +5296,44 @@ export async function mountEditor(root, docId, opts = {}) {
 
     const tick = () => {
       if (!timerEl) return;
-      let ms = tmNow();
-      let rem = Math.max(0, (TM.dur || 25 * 60000) - ms);
+      const isStopwatch = TM.type === 'stopwatch';
 
-      if (TM.running && rem <= 0) {
-        TM.running = false;
-        TM.acc = TM.dur;
-        timerEl.classList.add('done');
-        beep();
+      if (isStopwatch) {
+        const ms = tmNow();
+        const s = Math.floor(ms / 1000);
+        const mm = Math.floor(s / 60);
+        const ss = s % 60;
+        leftDigits.textContent = String(mm).padStart(2, '0');
+        rightDigits.textContent = String(ss).padStart(2, '0');
+        roundTag.style.display = 'none';
+        statusTag.textContent = 'STOPWATCH';
+        statusTag.className = 'flip-status-tag';
+      } else {
+        let ms = tmNow();
+        let rem = Math.max(0, (TM.dur || 25 * 60000) - ms);
 
-        if (TM.mode === 'focus') {
-          toast('Focus round ' + (TM.round || 1) + ' completed! Time for a break.', 6000);
-          TM.mode = (TM.round || 1) >= 4 ? 'long' : 'break';
-          TM.dur = (TM.mode === 'long' ? 15 : 5) * 60000;
-        } else {
-          toast('Break finished! Ready to focus?', 6000);
-          TM.mode = 'focus';
-          TM.round = ((TM.round || 1) % 4) + 1;
-          TM.dur = 25 * 60000;
+        if (TM.running && rem <= 0) {
+          TM.running = false;
+          TM.acc = TM.dur;
+          timerEl.classList.add('done');
+          beep();
+
+          const maxRounds = TM.loops || 4;
+          if (TM.mode === 'focus') {
+            toast('Focus round ' + (TM.round || 1) + ' completed! Time for a break.', 6000);
+            TM.mode = (TM.round || 1) >= maxRounds ? 'long' : 'break';
+            TM.dur = TM.mode === 'long' ? (TM.breakDur || 5 * 60000) * 3 : (TM.breakDur || 5 * 60000);
+          } else {
+            toast('Break finished! Ready to focus?', 6000);
+            TM.mode = 'focus';
+            TM.round = ((TM.round || 1) % maxRounds) + 1;
+            const curPreset = (TM.presets || []).find(p => p.name === TM.activeTag);
+            TM.dur = (curPreset ? curPreset.dur : 25) * 60000;
+          }
+          TM.acc = 0;
+          rem = TM.dur;
         }
-        TM.acc = 0;
-        rem = TM.dur;
-      }
 
-      if (!peekClock) {
         const s = Math.round(rem / 1000);
         const mm = Math.floor(s / 60);
         const ss = s % 60;
