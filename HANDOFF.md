@@ -33,5 +33,5 @@
    - Verified that `headScrollWidth` equals `windowWidth` (390px) with 0px overflow, and `+ New` button is visible.
 
 ## Live now
-- Tested locally on http://localhost:8080.
-- Committed locally, ready to push upon owner confirmation.
+- Pushed to `origin/main` (live on https://yadmewal-rgb.github.io/inkleaf/).
+- Running locally at http://localhost:8080.
