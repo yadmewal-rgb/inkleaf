@@ -15,21 +15,23 @@
 10. "C:\Users\Yadram\Pictures\Screenshots i meant for these"
 11. "add them according to our interface, and when i click on it to see time then show it beside it not on itself"
 12. "rounds not working , it stops after 1 round and 2ns round now started automatically"
+13. "C:\Users\Yadram\Pictures\Screenshots can you see the problem ?"
 
-## Done (v68 Release)
-1. **Auto-Start Next Round & Break Cycles (`js/editor.js`, `js/editor-consts.js`)**:
-   - Fixed the round flow so the timer does not pause when a round finishes.
-   - When **Focus Round 1** finishes, it sounds a chime and **Break 1** begins counting down automatically.
-   - When **Break 1** finishes, it sounds a chime and **Focus Round 2** begins counting down automatically with the round badge updating to `02`.
-   - After the final round (e.g. Round 4 Long Break), the session finishes cleanly with a celebration toast.
-2. **Auto-Start Setting in Timer Settings Modal (`js/editor.js`)**:
-   - Added a setting in the Timer Settings modal: "Next round: Auto-start next round" vs "Pause after each round" (defaults to Auto-start).
-3. **PWA Version Bump (`sw.js`, `js/sync.js`)**:
-   - Bumped service worker cache to `inkleaf-v68`.
-   - Updated Settings to `Inkleaf v68 · Build 2026.11`.
-4. **Tested in Chrome**:
-   - Automated test verified Focus 1 -> Break 1 -> Focus 2 auto-transitions and captured screenshots.
+## Done (v69 Release)
+1. **Fixed Mobile Header Overflow & Disappearing "+ New" Button (`css/app.css`, `js/library.js`)**:
+   - On phone screens, the top navigation row was too wide for the screen, pushing the critical **`+ New`** button completely off the right edge.
+   - When scrolling sideways to reach `+ New`, the entire page slid horizontally, cutting off the leaf logo and the left column of notebook covers.
+   - Added `overflow-x: hidden` to `.lib` to permanently stop sideways sliding.
+   - Marked secondary top-bar icons (Calendar Journal and Recycle Bin) as `.ic.wide` so they hide on mobile headers while staying directly available on tablet and desktop.
+   - Added **Today's journal page** and **Recycle bin** into the mobile **`+ New`** menu so phone users can access them with one tap.
+   - Added `min-width: 0` to `.search-wrap` and adjusted mobile spacing so the search input and AI badge fit cleanly without crowding.
+   - **`+ New`** is now always 100% visible on mobile phones with zero sideways scrolling.
+2. **PWA Version Bump (`sw.js`, `js/sync.js`)**:
+   - Bumped service worker cache to `inkleaf-v69`.
+   - Updated Settings to `Inkleaf v69 · Build 2026.11`.
+3. **Tested in Chrome Mobile Emulation (390px phone)**:
+   - Verified that `headScrollWidth` equals `windowWidth` (390px) with 0px overflow, and `+ New` button is visible.
 
 ## Live now
-- Pushed to `origin/main` (live on https://yadmewal-rgb.github.io/inkleaf/).
-- Running locally at http://localhost:8080.
+- Tested locally on http://localhost:8080.
+- Committed locally, ready to push upon owner confirmation.

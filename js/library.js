@@ -462,7 +462,7 @@ export async function mountLibrary(root, folderId, opts = {}) {
     class: 'search', type: 'search', placeholder: 'Search notebooks and pages',
     oninput: () => { query = search.value.trim().toLowerCase(); render(); deepSoon(); }
   });
-  const binBtn = h('button', { class: 'ic', type: 'button', title: 'Recycle bin', html: I.trash, onclick: () => { location.hash = '#/bin'; } });
+  const binBtn = h('button', { class: 'ic wide', type: 'button', title: 'Recycle bin', html: I.trash, onclick: () => { location.hash = '#/bin'; } });
 
   const hwAiBadge = h('button', {
     class: 'hw-ai-badge',
@@ -490,7 +490,7 @@ export async function mountLibrary(root, folderId, opts = {}) {
       h('div', { class: 'brand', title: 'Inkleaf Home', onclick: () => { location.hash = '#/'; } }, h('img', { src: 'icons/icon.svg', alt: 'Inkleaf', width: 30, height: 30 }), h('span', null, 'Inkleaf')),
       bin ? h('div', { class: 'grow' }) : h('div', { class: 'search-wrap' }, h('span', { class: 'search-ic', html: I.search }), search, hwAiBadge),
       bin ? null : h('button', {
-        class: 'ic', type: 'button', title: 'Journal: open today\'s page', html: I.calendar,
+        class: 'ic wide', type: 'button', title: 'Journal: open today\'s page', html: I.calendar,
         onclick: async () => { const i = await journalPage(); location.hash = '#/d/journal?p=' + (i + 1); }
       }),
       syncBtn, bin ? null : binBtn,
@@ -500,13 +500,17 @@ export async function mountLibrary(root, folderId, opts = {}) {
   root.append(el);
 
   function newMenu(anchor) {
+    const narrow = innerWidth <= 760;
     popMenu(anchor, [
       { label: 'Notebook', icon: I.book, onClick: newNotebook },
       { label: 'Folder', icon: I.folder, onClick: newFolder },
+      narrow ? { label: 'Today\'s journal page', icon: I.calendar, onClick: async () => { const i = await journalPage(); location.hash = '#/d/journal?p=' + (i + 1); } } : null,
       { label: 'Auto-sort library', icon: I.folder, onClick: autoSortDialog },
       { label: 'Import PDF', icon: I.pdf, onClick: () => pdfInp.click() },
       { label: 'Import a GoodNotes file', icon: I.book, onClick: () => gnInp.click() },
-      { label: 'Open a notebook file', icon: I.share, onClick: () => fileInp.click() }
+      { label: 'Open a notebook file', icon: I.share, onClick: () => fileInp.click() },
+      narrow ? '-' : null,
+      narrow ? { label: 'Recycle bin', icon: I.trash, onClick: () => { location.hash = '#/bin'; } } : null
     ], { align: 'right' });
   }
 

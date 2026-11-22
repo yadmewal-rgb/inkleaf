@@ -179,6 +179,7 @@ p {
 .lib {
   height: 100%;
   overflow-y: auto;
+  overflow-x: hidden;
   -webkit-overflow-scrolling: touch;
   padding-bottom: calc(32px + env(safe-area-inset-bottom));
 }
@@ -221,6 +222,7 @@ p {
 .search-wrap {
   position: relative;
   flex: 1;
+  min-width: 0;
   max-width: 450px;
   margin-left: auto;
 }
@@ -3292,8 +3294,30 @@ body.split-dragging canvas {
     margin-right: 0;
   }
 
+  .lib-head {
+    gap: 6px;
+    padding-left: max(10px, env(safe-area-inset-left));
+    padding-right: max(10px, env(safe-area-inset-right));
+  }
+
+  .lib-head .ic {
+    width: 36px;
+    height: 36px;
+  }
+
   .new {
-    padding: 0 12px;
+    height: 36px;
+    padding: 0 10px;
+    font-size: 13.5px;
+  }
+
+  .search.has-ai-pill {
+    padding-right: 88px;
+  }
+
+  .hw-ai-badge {
+    padding: 2px 6px;
+    font-size: 10px;
   }
 
   .grid {
