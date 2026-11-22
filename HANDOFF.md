@@ -29,6 +29,5 @@
    - Verified Grid View, List View (Comfortable), List View (Compact), and Mobile List View (390px).
 
 ## Live now
-- Committed locally on `main`.
+- Pushed to `origin/main` (live on https://yadmewal-rgb.github.io/inkleaf/).
 - Running locally at http://localhost:8080.
-- Awaiting owner confirmation before pushing to GitHub Pages (`main`).
