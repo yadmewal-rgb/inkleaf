@@ -400,6 +400,7 @@ async function searchPages(q, docs, isStale) {
 export async function mountLibrary(root, folderId, opts = {}) {
   const bin = !!opts.bin;
   let query = '', filter = lsGet('inkleaf.filter', 'all'), sort = lsGet('inkleaf.sort', 'edited'), searchTok = 0;
+  let viewMode = lsGet('inkleaf.viewMode', 'grid'), viewDensity = lsGet('inkleaf.viewDensity', 'comfortable');
   let activeSharedFolder = null;
   let sharedItems = [];
   let myShares = new Set();
@@ -873,60 +874,76 @@ export async function mountLibrary(root, folderId, opts = {}) {
         h('div', { class: 'name' }, item.title || 'Shared notebook'),
         h('div', { class: 'sub' }, sub)
       ),
-      h('button', {
-        class: 'ic sm card-more', type: 'button', title: 'Shared notebook options', html: I.more,
-        onclick: e => {
-          e.stopPropagation();
-          popMenu(e.currentTarget, [
-            { label: 'Open live notebook', icon: I.book, onClick: openDoc },
-            {
-              label: 'Copy link', icon: I.link, onClick: () => {
-                const url = location.origin + location.pathname + '#/live/' + item.shareId;
-                if (navigator.clipboard) navigator.clipboard.writeText(url);
-                toast('Live share link copied to clipboard!');
-              }
-            },
-            {
-              label: 'Save a personal copy', icon: I.copy, onClick: async () => {
-                const b = busy('Downloading copy...');
-                try {
-                  const { doc: liveDoc } = await fetchLiveDoc(item.shareId);
-                  const fresh = await db.get('docs', liveDoc.id);
-                  if (fresh) {
-                    delete fresh.liveShare;
-                    fresh.title = (item.title || fresh.title) + ' (Copy)';
-                    fresh.id = Math.random().toString(36).slice(2, 18);
-                    fresh.modified = Date.now();
-                    fresh.created = Date.now();
-                    await db.put('docs', fresh);
+      h('div', { class: 'card-end' },
+        h('button', {
+          class: 'ic sm card-more', type: 'button', title: 'Shared notebook options', html: I.more,
+          onclick: e => {
+            e.stopPropagation();
+            popMenu(e.currentTarget, [
+              { label: 'Open live notebook', icon: I.book, onClick: openDoc },
+              {
+                label: 'Copy link', icon: I.link, onClick: () => {
+                  const url = location.origin + location.pathname + '#/live/' + item.shareId;
+                  if (navigator.clipboard) navigator.clipboard.writeText(url);
+                  toast('Live share link copied to clipboard!');
+                }
+              },
+              {
+                label: 'Save a personal copy', icon: I.copy, onClick: async () => {
+                  const b = busy('Downloading copy...');
+                  try {
+                    const { doc: liveDoc } = await fetchLiveDoc(item.shareId);
+                    const fresh = await db.get('docs', liveDoc.id);
+                    if (fresh) {
+                      delete fresh.liveShare;
+                      fresh.title = (item.title || fresh.title) + ' (Copy)';
+                      fresh.id = Math.random().toString(36).slice(2, 18);
+                      fresh.modified = Date.now();
+                      fresh.created = Date.now();
+                      await db.put('docs', fresh);
+                    }
+                    b.done();
+                    toast(`Saved copy of "${item.title}" to your Library!`);
+                  } catch (err) {
+                    b.done();
+                    toast('Could not save copy: ' + err.message);
                   }
-                  b.done();
-                  toast(`Saved copy of "${item.title}" to your Library!`);
-                } catch (err) {
-                  b.done();
-                  toast('Could not save copy: ' + err.message);
+                }
+              },
+              '-',
+              {
+                label: 'Remove from Shared', icon: I.close, danger: true, onClick: async () => {
+                  if (!await confirmBox('Remove shared notebook', `Remove "${item.title || 'this notebook'}" from your Shared tab?`, 'Remove', true)) return;
+                  sharedItems = sharedItems.filter(x => x.shareId !== item.shareId);
+                  await db.setMeta('shared_items', sharedItems);
+                  toast('Removed from your Shared tab');
+                  render();
                 }
               }
-            },
-            '-',
-            {
-              label: 'Remove from Shared', icon: I.close, danger: true, onClick: async () => {
-                if (!await confirmBox('Remove shared notebook', `Remove "${item.title || 'this notebook'}" from your Shared tab?`, 'Remove', true)) return;
-                sharedItems = sharedItems.filter(x => x.shareId !== item.shareId);
-                await db.setMeta('shared_items', sharedItems);
-                toast('Removed from your Shared tab');
-                render();
-              }
-            }
-          ], { align: 'right' });
-        }
-      })
+            ], { align: 'right' });
+          }
+        })
+      )
     );
   }
 
-  function docCard(d) {
+  function docCard(d, F = []) {
     const isShared = !!d.shared || myShares.has(d.id);
-    const sub = fmtDate(d.modified) + (d.pages && d.pages.length > 1 ? ` · ${d.pages.length} pages` : '');
+    const dateStr = fmtDate(d.modified);
+    const pageStr = d.pages && d.pages.length > 1 ? `${d.pages.length} pages` : (d.pages && d.pages.length === 1 ? '1 page' : '');
+    const folderObj = d.folderId && F.length ? F.find(f => f.id === d.folderId) : null;
+    const subParts = [];
+    if (folderObj && (query || filter !== 'all')) {
+      subParts.push(h('span', { class: 'folder-tag', title: 'Folder: ' + folderObj.name },
+        h('span', { class: 'tag-folder-ic', html: I.folder }), folderObj.name));
+      subParts.push(h('span', { class: 'sub-sep' }, '·'));
+    }
+    subParts.push(h('span', { class: 'sub-date' }, dateStr));
+    if (pageStr) {
+      subParts.push(h('span', { class: 'sub-sep' }, '·'));
+      subParts.push(h('span', { class: 'sub-pages' }, pageStr));
+    }
+
     return h('div', { class: 'card', onclick: () => { location.hash = '#/d/' + d.id; } },
       h('div', { class: 'cover', style: { '--cover': d.cover || COVERS[0] } },
         d.thumb ? h('img', { src: d.thumb, alt: '', draggable: false }) : h('div', { class: 'cover-blank' }),
@@ -937,9 +954,25 @@ export async function mountLibrary(root, folderId, opts = {}) {
           d.title,
           isShared ? h('span', { class: 'shared-name-icon', title: 'Shared notebook', html: I.users }) : null
         ),
-        h('div', { class: 'sub' }, sub),
+        h('div', { class: 'sub' }, ...subParts),
         d.tags && d.tags.length ? h('div', { class: 'tags' }, d.tags.map(t => h('span', { class: 'tag' }, '#' + t))) : null),
-      h('button', { class: 'ic sm card-more', type: 'button', title: 'Notebook options', html: I.more, onclick: e => { e.stopPropagation(); docMenu(e.currentTarget, d); } }));
+      h('div', { class: 'card-end' },
+        h('span', { class: 'card-date' }, dateStr),
+        h('button', {
+          class: 'ic sm card-fav' + (d.fav ? ' on' : ''), type: 'button',
+          title: d.fav ? 'Remove from favourites' : 'Add to favourites',
+          html: d.fav ? I.starOn : I.star,
+          onclick: async e => {
+            e.stopPropagation();
+            d.fav = !d.fav;
+            d.modified = Date.now();
+            await db.put('docs', d);
+            render();
+          }
+        }),
+        h('button', { class: 'ic sm card-more', type: 'button', title: 'Notebook options', html: I.more, onclick: e => { e.stopPropagation(); docMenu(e.currentTarget, d); } })
+      )
+    );
   }
 
   function sortDocs(ds) {
@@ -967,6 +1000,45 @@ export async function mountLibrary(root, folderId, opts = {}) {
     }, icon ? h('span', { class: 'btn-ic', html: icon }) : null, label);
     const sel = h('select', { class: 'sort', title: 'Sort notebooks', onchange: () => { sort = sel.value; lsSet('inkleaf.sort', sort); render(); } },
       SORTS.map(([v, l]) => h('option', { value: v, selected: v === sort }, l)));
+
+    const viewGroup = h('div', { class: 'segmented-view', role: 'group', 'aria-label': 'View mode' },
+      h('button', {
+        class: 'seg-btn' + (viewMode === 'grid' ? ' on' : ''),
+        type: 'button',
+        title: 'Grid view',
+        html: I.grid,
+        onclick: () => {
+          if (viewMode === 'grid') return;
+          viewMode = 'grid';
+          lsSet('inkleaf.viewMode', 'grid');
+          render();
+        }
+      }),
+      h('button', {
+        class: 'seg-btn' + (viewMode === 'list' ? ' on' : ''),
+        type: 'button',
+        title: 'List view',
+        html: I.list,
+        onclick: () => {
+          if (viewMode === 'list') return;
+          viewMode = 'list';
+          lsSet('inkleaf.viewMode', 'list');
+          render();
+        }
+      })
+    );
+
+    const densityBtn = viewMode === 'list' ? h('button', {
+      class: 'chip sm' + (viewDensity === 'compact' ? ' on' : ''),
+      type: 'button',
+      title: viewDensity === 'compact' ? 'Switch to comfortable view' : 'Switch to compact view',
+      onclick: () => {
+        viewDensity = viewDensity === 'compact' ? 'comfortable' : 'compact';
+        lsSet('inkleaf.viewDensity', viewDensity);
+        render();
+      }
+    }, viewDensity === 'compact' ? 'Compact' : 'Comfortable') : null;
+
     fill(tools, 
       h('div', { class: 'chips' },
         chip('all', 'All'),
@@ -976,10 +1048,14 @@ export async function mountLibrary(root, folderId, opts = {}) {
       ),
       h('div', { class: 'grow' }),
       h('button', { class: 'btn sm', type: 'button', title: 'Auto-sort library with AI', onclick: autoSortDialog }, '✨ Auto-sort'),
-      sel);
+      sel,
+      viewGroup,
+      densityBtn);
   }
 
   async function render() {
+    grid.classList.toggle('list-view', viewMode === 'list');
+    grid.classList.toggle('compact', viewDensity === 'compact');
     if (bin) { await renderBin(); return; }
     const allF = await db.all('folders');
     const hidden = hiddenFolders(allF);
@@ -1093,7 +1169,7 @@ export async function mountLibrary(root, folderId, opts = {}) {
     for (const f of fs) {
       const isFolderShared = mySharedFolders.has(f.id) || D.some(d => d.folderId === f.id && (d.shared || myShares.has(d.id)));
       const count = D.filter(d => d.folderId === f.id).length + F.filter(x => x.parentId === f.id).length;
-      cards.push(h('div', { class: 'card', onclick: () => { location.hash = '#/f/' + f.id; } },
+      cards.push(h('div', { class: 'card card-folder', onclick: () => { location.hash = '#/f/' + f.id; } },
         h('div', { class: 'cover folder' },
           h('span', { html: I.folder }),
           isFolderShared ? h('span', { class: 'shared-mark-badge', title: 'Shared folder', html: I.users }) : null
@@ -1104,9 +1180,13 @@ export async function mountLibrary(root, folderId, opts = {}) {
             isFolderShared ? h('span', { class: 'shared-name-icon', title: 'Shared folder', html: I.users }) : null
           ),
           h('div', { class: 'sub' }, count === 1 ? '1 item' : count + ' items')),
-        h('button', { class: 'ic sm card-more', type: 'button', title: 'Folder options', html: I.more, onclick: e => { e.stopPropagation(); folderMenu(e.currentTarget, f); } })));
+        h('div', { class: 'card-end' },
+          h('span', { class: 'card-date' }, count === 1 ? '1 item' : count + ' items'),
+          h('button', { class: 'ic sm card-more', type: 'button', title: 'Folder options', html: I.more, onclick: e => { e.stopPropagation(); folderMenu(e.currentTarget, f); } })
+        )
+      ));
     }
-    for (const d of ds) cards.push(docCard(d));
+    for (const d of ds) cards.push(docCard(d, F));
 
     if (!cards.length) {
       grid.replaceChildren(query ? h('p', { class: 'muted-line' }, 'No notebook names match.') : h('div', { class: 'empty' },

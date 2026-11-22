@@ -48,6 +48,7 @@ export const I = {
   laser: s('<circle cx="12" cy="12" r="2.4" fill="currentColor"/><path d="M12 3.5v3M12 17.5v3M3.5 12h3M17.5 12h3M6 6l2 2M16 16l2 2M6 18l2-2M16 8l2-2"/>'),
   ruler: s('<path d="M3 16L16 3l5 5L8 21z"/><path d="M7.5 11.500l2 2M10.5 8.500l2 2M13.5 5.500l2 2"/>'),
   zoomwin: s('<circle cx="11" cy="11" r="6.5"/><path d="M16 16l4.5 4.5M11 8.500v5M8.500 11h5"/>'),
+  grid: s('<rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/>'),
   list: s('<path d="M9 6h11M9 12h11M9 18h11"/><circle cx="4.5" cy="6" r="1" fill="currentColor"/><circle cx="4.5" cy="12" r="1" fill="currentColor"/><circle cx="4.5" cy="18" r="1" fill="currentColor"/>'),
   flow: s('<path d="M4 12h16M16 8l4 4-4 4M8 8l-4 4 4 4"/>'),
   fwd: s('<path d="M9 5l7 7-7 7"/>'),

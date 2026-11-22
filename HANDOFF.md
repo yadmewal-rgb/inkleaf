@@ -1,37 +1,34 @@
 # Handoff
 
-**Written:** 2026-11-21 by agy (Antigravity). **Next:** Claude Code or agy.
+**Written:** 2026-11-22 by agy (Antigravity). **Next:** Claude Code or agy.
 
 ## What the owner asked
-1. "add promodoro with clock , first tell me what features you can add in this"
-2. "floating can be good , it can be seen if i make notes in fullscreen and hide everything other , first show me how it will look like"
-3. "it can be like this with showing its round also and show time only when i click on it then auto hide in 1.5 seconds" (with reference image of retro flip clock with round counter)
-4. "make it smaller or can be scaleable ? , does these extra feature affect the stability of app ?"
-5. "increase resolution of screenshots and save this to memory"
-6. "go"
-7. "not able to drag promodoro"
-8. "not working , not able to set it , it just set at there and do nothing"
-9. "compare it with https://play.google.com/store/apps/details?id=com.wssc.simpleclock&hl=en_IN"
-10. "C:\Users\Yadram\Pictures\Screenshots i meant for these"
-11. "add them according to our interface, and when i click on it to see time then show it beside it not on itself"
-12. "rounds not working , it stops after 1 round and 2ns round now started automatically"
-13. "C:\Users\Yadram\Pictures\Screenshots can you see the problem ?"
+1. "provide option of list view and more"
+2. Owner sent screenshot showing VS Code prompt: "Do you want to install the recommended 'PowerShell' extension from ms-vscode for the PowerShell language?"
 
-## Done (v69 Release)
-1. **Fixed Mobile Header Overflow & Disappearing "+ New" Button (`css/app.css`, `js/library.js`)**:
-   - On phone screens, the top navigation row was too wide for the screen, pushing the critical **`+ New`** button completely off the right edge.
-   - When scrolling sideways to reach `+ New`, the entire page slid horizontally, cutting off the leaf logo and the left column of notebook covers.
-   - Added `overflow-x: hidden` to `.lib` to permanently stop sideways sliding.
-   - Marked secondary top-bar icons (Calendar Journal and Recycle Bin) as `.ic.wide` so they hide on mobile headers while staying directly available on tablet and desktop.
-   - Added **Today's journal page** and **Recycle bin** into the mobile **`+ New`** menu so phone users can access them with one tap.
-   - Added `min-width: 0` to `.search-wrap` and adjusted mobile spacing so the search input and AI badge fit cleanly without crowding.
-   - **`+ New`** is now always 100% visible on mobile phones with zero sideways scrolling.
-2. **PWA Version Bump (`sw.js`, `js/sync.js`)**:
-   - Bumped service worker cache to `inkleaf-v69`.
-   - Updated Settings to `Inkleaf v69 · Build 2026.11`.
-3. **Tested in Chrome Mobile Emulation (390px phone)**:
-   - Verified that `headScrollWidth` equals `windowWidth` (390px) with 0px overflow, and `+ New` button is visible.
+## Done (v70)
+1. **Answered PowerShell Extension Popup**:
+   - Informed owner that they can simply click **`✕`** (Close) on the prompt. It is not required for running Inkleaf or any testing tools.
+2. **Added Library List View Option (`js/library.js`, `js/icons.js`, `css/app.css`)**:
+   - Added a segmented view toggle `[ ⊞ Grid ] [ ☰ List ]` in the library toolbar next to the sort dropdown.
+   - Designed clean list rows with:
+     - Small notebook thumbnail preview with colored spine accent.
+     - Folder preview icon for folder items.
+     - Note title and folder crumb badge (`📁 FolderName`) when searching or viewing favorites.
+     - Formatted date and page count (e.g., `Today, 20:18 · 176 pages`).
+     - Directly clickable favorite star (⭐ / ☆) on each row for one-tap favoriting.
+     - Notebook and folder options menu (`···`).
+3. **Added "And More" View Options**:
+   - **Row Density Toggle**: Added `Comfortable` (58px height) vs `Compact` (44px height) view modes.
+   - **Persistent Settings**: Remembers `inkleaf.viewMode` and `inkleaf.viewDensity` in `localStorage`.
+   - **Responsive Mobile Layout**: On phones (≤540px), metadata collapses cleanly so title and actions stay spacious with 0px horizontal overflow.
+4. **PWA Version Bump (`sw.js`, `js/sync.js`)**:
+   - Bumped service worker cache to `inkleaf-v70`.
+   - Updated Settings to `Inkleaf v70 · Build 2026.11`.
+5. **Tested in Headless Chrome**:
+   - Verified Grid View, List View (Comfortable), List View (Compact), and Mobile List View (390px).
 
 ## Live now
-- Pushed to `origin/main` (live on https://yadmewal-rgb.github.io/inkleaf/).
+- Committed locally on `main`.
 - Running locally at http://localhost:8080.
+- Awaiting owner confirmation before pushing to GitHub Pages (`main`).
