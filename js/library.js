@@ -1229,7 +1229,7 @@ export async function mountLibrary(root, folderId, opts = {}) {
         type: 'button',
         onclick: () => { closeDrawer(); onClick(); }
       },
-        h('span', { class: 'side-btn-ic', html: icon }),
+        typeof icon === 'string' ? h('span', { class: 'side-btn-ic', html: icon }) : h('span', { class: 'side-btn-ic' }, icon),
         h('span', { class: 'side-label' }, label),
         badge !== undefined && badge !== null ? h('span', { class: 'side-badge' }, String(badge)) : null
       );
@@ -1275,7 +1275,12 @@ export async function mountLibrary(root, folderId, opts = {}) {
       render();
     });
 
-    const journalBtn = makeNavBtn(I.calendar, "Today's Journal", null, false, async () => {
+    const todayNum = new Date().getDate();
+    const journalIcon = h('span', { class: 'cal-badge-wrap' },
+      h('span', { class: 'cal-badge-ic', html: I.calendar }),
+      h('span', { class: 'cal-badge-num' }, String(todayNum))
+    );
+    const journalBtn = makeNavBtn(journalIcon, "Today's Journal", null, false, async () => {
       const i = await journalPage();
       location.hash = '#/d/journal?p=' + (i + 1);
     });

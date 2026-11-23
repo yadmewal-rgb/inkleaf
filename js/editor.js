@@ -167,7 +167,11 @@ export async function mountEditor(root, docId, opts = {}) {
       h('div', { class: 'vsep nofull' }),
       toolsEl, h('div', { class: 'vsep' }), optsEl, h('div', { class: 'grow' }),
       h('div', { class: 'trail nofull' },
-        doc.journal ? h('button', { class: 'ic', type: 'button', title: 'Journal calendar', onclick: () => calendarDialog(), html: I.calendar }) : null,
+        doc.journal ? h('div', { class: 'journal-nav-bar' },
+          h('button', { class: 'ic', type: 'button', title: 'Previous day', onclick: () => journalStepDay(-1), html: I.back }),
+          h('button', { class: 'ic', type: 'button', title: 'Journal calendar', onclick: () => calendarDialog(), html: I.calendar }),
+          h('button', { class: 'ic', type: 'button', title: 'Next day', onclick: () => journalStepDay(1), html: I.fwd })
+        ) : null,
         timerBtn, bmBtn,
         h('button', { class: 'ic wide', type: 'button', title: 'Full screen (F)', onclick: () => setFull(true), html: I.full }),
         h('button', { class: 'ic', type: 'button', title: 'More', onclick: e => moreMenu(e.currentTarget), html: I.more })),
@@ -6523,6 +6527,15 @@ export async function mountEditor(root, docId, opts = {}) {
     structureChanged(i);
   }
 
+  function journalStepDay(dir) {
+    const curP = currentPv()?.page;
+    const curKey = (curP && curP.day) ? curP.day : dayKey();
+    const [y, m, d] = curKey.split('-').map(Number);
+    const dt = new Date(y, m - 1, d);
+    dt.setDate(dt.getDate() + dir);
+    journalGo(dayKey(dt));
+  }
+
   function calendarDialog() {
     const today = dayKey(), cur = currentPv().page.day || today;
     let y = +cur.slice(0, 4), mo = +cur.slice(5, 7) - 1, m = null;
@@ -6531,6 +6544,30 @@ export async function mountEditor(root, docId, opts = {}) {
     const draw = () => {
       const made = new Map(); // day -> does it have anything written on it
       for (const p of pages) if (p.day) made.set(p.day, made.get(p.day) || p.items.length > 0);
+
+      // Writing streak calculation
+      let streak = 0;
+      const todayDate = new Date();
+      let checkDt = new Date(todayDate.getFullYear(), todayDate.getMonth(), todayDate.getDate());
+      let checkKey = dayKey(checkDt);
+      if (!made.get(checkKey)) {
+        checkDt.setDate(checkDt.getDate() - 1);
+        checkKey = dayKey(checkDt);
+      }
+      while (made.get(checkKey)) {
+        streak++;
+        checkDt.setDate(checkDt.getDate() - 1);
+        checkKey = dayKey(checkDt);
+      }
+      let totalJournaled = 0;
+      for (const v of made.values()) if (v) totalJournaled++;
+
+      const streakBanner = h('div', { class: 'cal-streak-banner' },
+        h('span', { class: 'cal-fire' }, '🔥'),
+        h('b', null, streak > 0 ? `${streak}-day writing streak!` : 'Start your streak today!'),
+        h('span', { class: 'cal-streak-sub' }, `${totalJournaled} day${totalJournaled === 1 ? '' : 's'} written`)
+      );
+
       const lead = (new Date(y, mo, 1).getDay() + 6) % 7, n = new Date(y, mo + 1, 0).getDate(); // weeks start on Monday
       const cells = [];
       for (let i = 0; i < lead; i++) cells.push(h('span'));
@@ -6541,12 +6578,42 @@ export async function mountEditor(root, docId, opts = {}) {
           onclick: () => { m.close(); journalGo(key); }
         }, String(d)));
       }
+
+      const tplSelect = h('select', {
+        class: 'inp sm',
+        onchange: async (e) => {
+          const newTpl = e.target.value;
+          doc.template = newTpl;
+          doc.modified = Date.now();
+          await db.put('docs', doc);
+          const curP = currentPv()?.page;
+          if (curP && curP.day) {
+            curP.template = newTpl;
+            dirtyPages.add(curP);
+            structureChanged();
+          }
+          toast('Journal template: ' + newTpl);
+        }
+      },
+        h('option', { value: 'planner', selected: doc.template === 'planner' }, 'Daily Planner'),
+        h('option', { value: 'ruled', selected: doc.template === 'ruled' || !doc.template }, 'Ruled Lines (9 mm)'),
+        h('option', { value: 'todo', selected: doc.template === 'todo' }, 'Checklist'),
+        h('option', { value: 'cornell', selected: doc.template === 'cornell' }, 'Cornell Notes'),
+        h('option', { value: 'dots', selected: doc.template === 'dots' }, 'Dotted')
+      );
+      const tplRow = h('div', { class: 'journal-template-row' },
+        h('span', { class: 'small muted' }, 'Default layout:'),
+        tplSelect
+      );
+
       fill(body,
+        streakBanner,
         h('div', { class: 'cal-head' },
           h('button', { class: 'ic sm', type: 'button', title: 'Earlier month', html: I.back, onclick: () => step(-1) }),
           h('b', null, new Date(y, mo, 1).toLocaleDateString([], { month: 'long', year: 'numeric' })),
           h('button', { class: 'ic sm', type: 'button', title: 'Later month', html: I.fwd, onclick: () => step(1) })),
         h('div', { class: 'cal-grid' }, ['M', 'T', 'W', 'T', 'F', 'S', 'S'].map(w => h('span', { class: 'cal-w' }, w)), cells),
+        tplRow,
         h('p', { class: 'modal-text small' }, 'Filled days have writing on them. Tap any day to open its page; a new page is made if there is none.'));
     };
     draw();

@@ -3,35 +3,35 @@
 **Written:** 2026-11-23 by agy (Antigravity). **Next:** Claude Code or agy.
 
 ## What the owner asked
-1. "how to edit these and remove 1 pen tip , keep it to 4" followed by "Make them editable on screen (GoodNotes style)"
-2. "jump back not updating in between devices"
-3. "AI scan not working properly" (with screenshot showing only 2 sections detected in a 200+ page document).
+1. "can you inprove journal also ? do you have any suggestions in mind ?" followed by "okay , implement them".
 
-## Done (v76)
-1. **GoodNotes-Style 4 Editable Pen Tips (`js/editor.js`, `js/ui.js`)**:
-   - Reduced pen tip presets from 5 to 4 (`0.3 mm`, `0.5 mm`, `0.7 mm`, `1.0 mm`), removing the thick 1.5 mm.
-   - Tapping an active tip (or double-tapping any tip) opens the GoodNotes-style slider popover directly on screen.
-   - Dragging the slider modifies that specific slot's millimeter value and updates its visual dot size, saving to `prefs.penSizes`.
-2. **Cross-Device Jump Back In Sync (`js/editor.js`, `js/library.js`, `js/sync.js`)**:
-   - Fixed the issue where opening or turning pages in a notebook didn't update `doc.modified`, causing `pushRecord` to skip uploading the doc metadata to Cloudflare.
-   - Now updates `doc.lastOpened` and `doc.modified` on notebook open, close, and page changes, and triggers `pushDoc(doc.id)`.
-   - In `library.js`, `openedAt(doc)` merges local and cloud open timestamps so the most recently opened notebook on any device immediately moves to the front of Jump Back In.
-   - `lastPageOf(doc)` prioritizes the cloud page position if the cloud open timestamp is newer than the local device's open timestamp.
-3. **AI Scan & Table of Contents Scanner Fix (`js/pdftools.js`, `server/worker.js`)**:
-   - Fixed the root cause where `generatePdfOutline` ignored the PDF's Table of Contents pages and only looked at the top 8 lines of each page with narrow regex, finding only 2 sections in documents like "Environment Saarthi".
-   - Added automatic Table of Contents page detection that parses lines ending in page numbers (e.g. `Topic ............. 151`).
-   - Added `POST /ai/outline` endpoint in `server/worker.js` proxying to Gemini Flash to format and clean extracted outline text.
-   - Added full local TOC regex fallback so all 50-100+ sections are extracted instantly even offline or without an API key.
-4. **PWA Version Bump (`sw.js`, `js/sync.js`)**:
-   - Bumped service worker cache to `inkleaf-v76`.
-   - Updated Settings to `Inkleaf v76 · Build 2026.11`.
+## Done (v77)
+1. **Printed Date Banner on Journal Pages (`js/render.js`)**:
+   - Every journal day page (`pg.day`) now displays a clean top date banner (e.g. `Monday, 23 November 2026`) with weather and mood tracker icons (`☀️  ⛅  🌧️  ✓`) and an accent divider line.
+   - Sits in the top margin of ruled or blank pages without colliding with lines.
+2. **Quick Day Switcher on Toolbar (`js/editor.js`, `css/app.css`)**:
+   - Replaced single calendar button with a 3-button compact navigation group: `← Previous day`, `Calendar`, and `Next day →`.
+   - Allows instant day-to-day flipping (`journalStepDay(-1)` / `journalStepDay(1)`), auto-creating a new day page when navigating forward or backward.
+3. **Daily Planner Template (`js/render.js`, `js/ui.js`)**:
+   - Added a new built-in template `planner` (Study & Goal Planner):
+     - Left column: hourly schedule from `08:00` to `22:00`.
+     - Right column (top): `TOP PRIORITIES` with checklist checkboxes.
+     - Right column (bottom): `NOTES & REFLECTION` with ruled lines.
+   - Available in notebook creation, page pattern picker, and journal template switcher.
+4. **Writing Streak & Habit Tracker (`js/editor.js`, `css/app.css`)**:
+   - In `calendarDialog()`, calculates consecutive writing days and displays a streak banner: `🔥 X-day writing streak! · Y days written`.
+   - Added a daily template dropdown inside the calendar modal to switch between Daily Planner, Ruled lines, Checklist, Cornell, or Dotted layout.
+5. **Dynamic Calendar Badge in Library Sidebar (`js/library.js`, `css/app.css`)**:
+   - "Today's Journal" navigation button now shows a mini calendar badge with today's real date number (e.g. `23`).
+6. **PWA Version Bump (`sw.js`, `js/sync.js`)**:
+   - Bumped service worker cache to `inkleaf-v77`.
+   - Updated Settings to `Inkleaf v77 · Build 2026.11`.
 
-## Done in v75 (Earlier today)
-1. Fixed sync server bug dropping `folderName` and `folderId` in `inbox_shares`.
-2. Shared folder cards and options menu (`Open folder`, `Remove from Shared`).
+## Done in v76 (Earlier today)
+1. GoodNotes-style 4 editable pen tips on screen.
+2. Cross-device Jump Back In sync (`doc.lastOpened` & `doc.modified`).
+3. Multi-page Table of Contents scanner for AI outlines.
 
 ## Live Status
-- Inkleaf v76 pushed to `main` (commit `6b8db97`).
-- GitHub Pages live release: https://yadmewal-rgb.github.io/inkleaf/
-- Cloudflare Worker build triggered for sync server: https://inkleaf-sync.yadmewal.workers.dev
-- Clean working tree.
+- Inkleaf v76 is currently live on GitHub Pages: https://yadmewal-rgb.github.io/inkleaf/
+- v77 tested and committed locally; awaiting owner's approval to push to `main`.

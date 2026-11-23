@@ -2975,6 +2975,86 @@ button.pageind:hover {
   box-shadow: 0 0 0 2px var(--accent);
 }
 
+.cal-streak-banner {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  background: var(--surface-2);
+  border: 1px solid var(--line);
+  padding: 8px 12px;
+  border-radius: 10px;
+  margin-bottom: 12px;
+  font-size: 13px;
+}
+
+.cal-fire {
+  font-size: 16px;
+  animation: pulse 1.5s infinite alternate;
+}
+
+.cal-streak-sub {
+  margin-left: auto;
+  font-size: 11px;
+  color: var(--muted);
+}
+
+.journal-template-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px solid var(--line);
+}
+
+.journal-nav-bar {
+  display: inline-flex;
+  align-items: center;
+  background: var(--surface-2);
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  padding: 1px 2px;
+  gap: 1px;
+}
+
+.journal-nav-bar .ic {
+  border-radius: 6px;
+  width: 28px;
+  height: 28px;
+}
+
+.cal-badge-wrap {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+}
+
+.cal-badge-ic {
+  display: inline-flex;
+}
+
+.cal-badge-ic svg {
+  width: 20px;
+  height: 20px;
+}
+
+.cal-badge-num {
+  position: absolute;
+  top: 6px;
+  left: 0;
+  right: 0;
+  text-align: center;
+  font-size: 8px;
+  font-weight: 800;
+  line-height: 1;
+  color: var(--accent);
+  pointer-events: none;
+}
+
 /* automatic backups in Settings */
 .bk-list {
   margin: 8px 0 10px;

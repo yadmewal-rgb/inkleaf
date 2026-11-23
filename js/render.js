@@ -70,6 +70,21 @@ export function templateGeometry(pg) {
       const x = 40, top = y - 19;
       lines.push([x, top, x + b, top], [x + b, top, x + b, top + b], [x + b, top + b, x, top + b], [x, top + b, x, top]);
     }
+  } else if (t === 'planner') {
+    const midX = Math.round(w * 0.44);
+    const topY = 74;
+    accent.push([midX, topY, midX, h - 24], [24, topY, w - 24, topY]);
+    const hourH = (h - 24 - topY) / 15;
+    for (let i = 1; i <= 15; i++) lines.push([24, topY + i * hourH, midX, topY + i * hourH]);
+    const rightSplit = Math.round(topY + (h - 24 - topY) * 0.46);
+    accent.push([midX, rightSplit, w - 24, rightSplit]);
+    const b = 10;
+    for (let y = topY + 28; y < rightSplit - 8; y += 26) {
+      lines.push([midX, y, w - 24, y]);
+      const bx = midX + 16, bTop = y - 17;
+      lines.push([bx, bTop, bx + b, bTop], [bx + b, bTop, bx + b, bTop + b], [bx + b, bTop + b, bx, bTop + b], [bx, bTop + b, bx, bTop]);
+    }
+    for (let y = rightSplit + 28; y < h - 24; y += 26) lines.push([midX, y, w - 24, y]);
   }
   return { lines, dots, accent };
 }
@@ -106,6 +121,48 @@ export function drawPaper(ctx, pg, bold = 1) {
     const r = bold > 1 ? 1.4 : 0.9;
     for (const [x, y] of g.dots) { ctx.moveTo(x + r, y); ctx.arc(x, y, r, 0, 6.2832); }
     ctx.fill();
+  }
+  if (pg.day && pg.w >= 300) {
+    ctx.save();
+    const dObj = new Date(pg.day + 'T12:00:00');
+    const dayStr = dObj.toLocaleDateString([], { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' });
+    ctx.fillStyle = pap.dark ? '#abb2bf' : '#495057';
+    ctx.font = '600 13px ' + FONT;
+    ctx.fillText(dayStr, 36, 42);
+
+    ctx.font = '11px ' + FONT;
+    ctx.fillStyle = pap.dark ? '#6c757d' : '#868e96';
+    ctx.textAlign = 'right';
+    ctx.fillText('☀️  ⛅  🌧️  ✓', pg.w - 36, 42);
+
+    ctx.strokeStyle = pap.accent;
+    ctx.lineWidth = 0.75 * bold;
+    ctx.beginPath();
+    ctx.moveTo(32, 52);
+    ctx.lineTo(pg.w - 32, 52);
+    ctx.stroke();
+    ctx.restore();
+  }
+  if (pg.template === 'planner' && pg.w >= 300) {
+    ctx.save();
+    const midX = Math.round(pg.w * 0.44), topY = 74;
+    ctx.fillStyle = pap.dark ? '#8b949e' : '#656d76';
+    ctx.font = '700 8.5px ' + FONT;
+    ctx.fillText('SCHEDULE', 28, topY - 6);
+    ctx.fillText('TOP PRIORITIES', midX + 16, topY - 6);
+    const rightSplit = Math.round(topY + (pg.h - 24 - topY) * 0.46);
+    ctx.fillText('NOTES & REFLECTION', midX + 16, rightSplit - 6);
+
+    const hourH = (pg.h - 24 - topY) / 15;
+    ctx.font = '8px ' + FONT;
+    ctx.fillStyle = pap.dark ? '#7d8590' : '#8c959f';
+    ctx.textAlign = 'left';
+    for (let i = 0; i < 15; i++) {
+      const hr = (8 + i) % 24;
+      const hrStr = (hr < 10 ? '0' : '') + hr + ':00';
+      ctx.fillText(hrStr, 28, topY + i * hourH + 13);
+    }
+    ctx.restore();
   }
 }
 
