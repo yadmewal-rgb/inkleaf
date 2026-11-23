@@ -36,6 +36,6 @@
    - Cards display `Page X of Y` subtitle.
 2. **Sidebar Studio Navigation, Jump Back In, Folder Colors, Drag & Drop, Pinning, Multi-Select**.
 
-## Local Status
-- Clean local build, tested at http://localhost:8080.
-- Changes committed locally (v72 and v73). Ready to push to `origin/main` upon owner confirmation.
+## Live Status
+- Inkleaf v73 pushed to `main` (live release on GitHub Pages: https://yadmewal-rgb.github.io/inkleaf/).
+- Clean working tree.
