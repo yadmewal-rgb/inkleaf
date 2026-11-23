@@ -19,6 +19,7 @@
 - Sends feedback by handwriting in a notebook called **"Temp"** inside Inkleaf ("check temp file in notes"):
   open the live site in the laptop's Chrome (it has the synced library) and read that notebook.
 - Pushing tested fixes to `main` is allowed.
+- **English learning:** At the very start of every response, show the grammatically corrected version of what the owner wrote (e.g. `> **English Practice:** ...`) so they can improve their English naturally.
 
 ## What it is
 Plain HTML + ES modules, no build step. Vendored pdf.js 3.11.174 and pdf-lib 1.17.1 in `vendor/`.
