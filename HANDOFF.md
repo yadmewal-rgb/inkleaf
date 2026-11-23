@@ -22,8 +22,9 @@
    - Added toggle to Pen menu and More menu.
    - When enabled, single/multi-finger touches can NEVER leave accidental ink marks or stray dots; fingers are strictly reserved for scrolling and pinch-zooming.
    - Only the Apple Pencil (`pointerType === 'pen'`) draws ink.
-5. **PWA Version Bump (`sw.js`, `js/sync.js`)**:
+5. **PWA Version Bump & Settings Fix (`sw.js`, `js/sync.js`)**:
    - Bumped service worker cache to `inkleaf-v73`.
+   - Fixed hardcoded `'Settings (v69)'` modal title bug: now dynamically wired to `APP_VER` (`v73`), guaranteeing the header, details card, and footer always stay perfectly in sync.
    - Updated Settings to `Inkleaf v73 · Build 2026.11`.
 6. **Automated Verification**:
    - Verified pen menu options, barrel roll stroke rendering, hover cursor preview, tilt shading, and palm lock via Chrome CDP.
