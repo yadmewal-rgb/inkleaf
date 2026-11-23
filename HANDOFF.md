@@ -25,5 +25,7 @@
 3. Mini Notebook Cover Fallback (`.jump-cover-fallback`).
 
 ## Live Status
-- Inkleaf v75 tested and verified locally.
-- Ready for release / push to `origin/main`.
+- Inkleaf v75 pushed to `main` (commit `05f4949`).
+- GitHub Pages live release: https://yadmewal-rgb.github.io/inkleaf/
+- Cloudflare Worker build triggered for sync server: https://inkleaf-sync.yadmewal.workers.dev
+- Clean working tree.
