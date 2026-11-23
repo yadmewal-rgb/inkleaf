@@ -31,5 +31,7 @@
 2. Shared folder cards and options menu (`Open folder`, `Remove from Shared`).
 
 ## Live Status
-- Tested locally in Chrome with screenshots.
-- Ready for push / release.
+- Inkleaf v76 pushed to `main` (commit `6b8db97`).
+- GitHub Pages live release: https://yadmewal-rgb.github.io/inkleaf/
+- Cloudflare Worker build triggered for sync server: https://inkleaf-sync.yadmewal.workers.dev
+- Clean working tree.
