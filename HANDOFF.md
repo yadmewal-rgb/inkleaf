@@ -7,33 +7,17 @@
 2. "which options will be suitable for me... you can suggest in addition to these".
 3. Implemented user-approved templates: **Daily Focus & Study** (`focus`) and **Brain Dump Matrix** (`braindump`).
 
-## Done (v78)
-1. **Daily Focus & Study Template (`js/render.js`, `js/ui.js`, `js/editor.js`)**:
-   - Built-in template `focus` tailored for competitive study & ADHD workflows:
-     - **DO FIRST (TOP PRIORITIES):** Top priority tasks with checkboxes.
-     - **DEEP WORK · POMODORO SESSIONS:** 6 focus blocks with 4 round interval checkboxes (`○ ○ ○ ○`) each, connecting directly with Inkleaf's flip Pomodoro widget.
-     - **BRAIN DUMP (PARKING LOT):** Dotted grid for parking distractions, ideas, and quick questions without derailing study.
-     - **REVIEW & TOMORROW:** Checklist for end-of-day recap and carryover.
-2. **Brain Dump Matrix Template (`js/render.js`, `js/ui.js`, `js/editor.js`)**:
-   - Built-in template `braindump` implementing the 4-quadrant Eisenhower action matrix:
-     - Quadrant 1: `🔥 DO FIRST (Urgent & Important)`
-     - Quadrant 2: `🎯 SCHEDULE & PLAN (Important, Not Urgent)`
-     - Quadrant 3: `⚡ DELEGATE & QUICK (Urgent, Less Important)`
-     - Quadrant 4: `🗑️ DROP / DISTRACTIONS (Eliminate)`
-3. **Template Selectors Updated**:
-   - Added both templates to `TEMPLATE_OPTS` for notebook page creation and page pattern chooser.
-   - Added both templates to the Journal calendar dialog dropdown (`Daily Focus & Study`, `Brain Dump Matrix`).
-4. **PWA Version Bump (`sw.js`, `js/sync.js`)**:
-   - Bumped service worker cache to `inkleaf-v78`.
-   - Updated Settings to `Inkleaf v78 · Build 2026.11`.
+## Done (v79)
+1. **Prevent Cloudflare Durable Objects Quota Burn (`js/library.js`, `js/sync.js`)**:
+   - Fixed a rapid-fire re-render loop when `filter === 'shared'` that made recursive calls to `fetchSharedWithMe()`.
+   - Removed network calls from inside `render()`.
+   - Added a 30-second client-side throttle to `fetchSharedWithMe()` and `fetchMyShares()` so repeated renders never flood Cloudflare.
+   - Bumped version to `v79`.
 
-## Done in v77 (Earlier today)
-1. Printed date banner on Journal pages with weather/mood icons.
-2. Quick Day Switcher on toolbar (`←` / `calendar` / `→`).
-3. Daily Planner template (`planner`).
-4. Writing streak and habit tracker (`🔥`).
-5. Dynamic calendar badge with today's date in sidebar.
+## Done (v78 Earlier today)
+1. Added **Daily Focus & Study** (`focus`) and **Brain Dump Matrix** (`braindump`) page templates.
 
 ## Live Status
-- Inkleaf v78 is live on GitHub Pages: https://yadmewal-rgb.github.io/inkleaf/ (commit `6756bc3`).
-- Cloudflare Worker build triggered for sync server.
+- Inkleaf v78 is currently live on GitHub Pages.
+- v79 committed locally to eliminate the sync loop.
+- Cloudflare Durable Objects free tier daily quota resets at 00:00 UTC (05:30 AM IST). All notes remain 100% safe locally in IndexedDB.

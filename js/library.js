@@ -503,9 +503,9 @@ export async function mountLibrary(root, folderId, opts = {}) {
   } catch {}
   fetchSharedWithMe().then(sh => {
     if (Array.isArray(sh)) {
-      const changed = sh.length !== sharedItems.length;
+      const changed = JSON.stringify(sh) !== JSON.stringify(sharedItems);
       sharedItems = sh;
-      if (changed || filter === 'shared') render();
+      if (changed) render();
     }
   }).catch(() => {});
   fetchMyShares().then(sh => {
@@ -1644,7 +1644,6 @@ export async function mountLibrary(root, folderId, opts = {}) {
     renderSelectionBar();
 
     if (filter === 'shared') {
-      try { sharedItems = await fetchSharedWithMe(); } catch {}
       const items = (sharedItems || []).filter(item => {
         if (!query) return true;
         const q = query.toLowerCase();

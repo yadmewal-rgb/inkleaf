@@ -15,7 +15,7 @@ import { modal, toast, confirmBox, busy } from './ui.js';
 import { I } from './icons.js';
 import { hwOn, setHwOn, status as hwStatus, setCloudOcr, getHwUsage, setHwLimit, getHwModel, setHwModel, getHwModelConfig, getActiveHwModel, MODEL_CASCADE, formatModelName } from './hwsearch.js';
 
-export const APP_VER = 'v78';
+export const APP_VER = 'v79';
 const SERVER = 'https://inkleaf-sync.yadmewal.workers.dev';
 // drive.appdata: Inkleaf's hidden app folder (files it syncs); drive.file: only files Inkleaf itself creates, used
 // for the visible "Inkleaf" folder holding copies of the PDFs under their real names.
@@ -996,9 +996,16 @@ export async function setLiveSharePerm(docId, canWrite, allowedEmails, extra = {
   return r.ok;
 }
 
+let lastSharedFetch = 0, lastMySharesFetch = 0;
+let cachedSharedItems = null, cachedMyShares = null;
+
 export async function fetchSharedWithMe(force = false) {
   if (!session) {
     try { return (await db.getMeta('shared_items')) || []; } catch { return []; }
+  }
+  const now = Date.now();
+  if (!force && now - lastSharedFetch < 30000 && cachedSharedItems) {
+    return cachedSharedItems;
   }
   if (!navigator.onLine && !force) {
     try { return (await db.getMeta('shared_items')) || []; } catch { return []; }
@@ -1008,6 +1015,8 @@ export async function fetchSharedWithMe(force = false) {
     if (r.ok) {
       const data = await r.json();
       const shares = Array.isArray(data.shares) ? data.shares : [];
+      lastSharedFetch = now;
+      cachedSharedItems = shares;
       await db.setMeta('shared_items', shares);
       return shares;
     }
@@ -1021,6 +1030,10 @@ export async function fetchMyShares(force = false) {
   if (!session) {
     try { return new Set((await db.getMeta('my_shares')) || []); } catch { return new Set(); }
   }
+  const now = Date.now();
+  if (!force && now - lastMySharesFetch < 30000 && cachedMyShares) {
+    return cachedMyShares;
+  }
   if (!navigator.onLine && !force) {
     try { return new Set((await db.getMeta('my_shares')) || []); } catch { return new Set(); }
   }
@@ -1029,8 +1042,10 @@ export async function fetchMyShares(force = false) {
     if (r.ok) {
       const data = await r.json();
       const list = Array.isArray(data.shares) ? data.shares.map(s => s.docId) : [];
+      lastMySharesFetch = now;
+      cachedMyShares = new Set(list);
       await db.setMeta('my_shares', list);
-      return new Set(list);
+      return cachedMyShares;
     }
   } catch (e) {}
   try { return new Set((await db.getMeta('my_shares')) || []); } catch { return new Set(); }
