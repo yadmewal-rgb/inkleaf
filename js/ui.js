@@ -127,6 +127,8 @@ export function popMenu(anchor, items, opts) {
 export const TEMPLATE_OPTS = [
   { v: 'blank', label: 'Blank' }, { v: 'wide', label: 'Lines 12 mm' }, { v: 'ruled', label: 'Lines 9 mm' }, { v: 'narrow', label: 'Lines 7 mm' },
   { v: 'fine', label: 'Lines 5 mm' }, { v: 'xfine', label: 'Lines 4 mm' },
+  { v: 'focus', label: 'Daily Focus & Study' },
+  { v: 'braindump', label: 'Brain Dump Matrix' },
   { v: 'planner', label: 'Daily Planner' },
   { v: 'margin', label: 'Margin 9 mm' }, { v: 'narrowmargin', label: 'Margin 7 mm' }, { v: 'cornell', label: 'Cornell' }, { v: 'todo', label: 'Checklist' },
   { v: 'grid', label: 'Grid' }, { v: 'gridsmall', label: 'Small grid' }, { v: 'dots', label: 'Dotted' },

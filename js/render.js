@@ -85,6 +85,60 @@ export function templateGeometry(pg) {
       lines.push([bx, bTop, bx + b, bTop], [bx + b, bTop, bx + b, bTop + b], [bx + b, bTop + b, bx, bTop + b], [bx, bTop + b, bx, bTop]);
     }
     for (let y = rightSplit + 28; y < h - 24; y += 26) lines.push([midX, y, w - 24, y]);
+  } else if (t === 'focus') {
+    const midX = Math.round(w * 0.50), topY = 74;
+    accent.push([midX, topY, midX, h - 24], [24, topY, w - 24, topY]);
+
+    const midY1 = Math.round(topY + 180);
+    accent.push([24, midY1, midX, midY1]);
+    const b = 10;
+    for (let y = topY + 34; y < midY1 - 8; y += 28) {
+      lines.push([24, y, midX, y]);
+      const bx = 30, bTop = y - 18;
+      lines.push([bx, bTop, bx + b, bTop], [bx + b, bTop, bx + b, bTop + b], [bx + b, bTop + b, bx, bTop + b], [bx, bTop + b, bx, bTop]);
+    }
+
+    const sessH = (h - 24 - midY1 - 32) / 6;
+    for (let i = 1; i <= 6; i++) lines.push([24, midY1 + 32 + i * sessH, midX, midY1 + 32 + i * sessH]);
+
+    const midY2 = Math.round(topY + (h - 24 - topY) * 0.58);
+    accent.push([midX, midY2, w - 24, midY2]);
+    const dotStep = 18;
+    for (let y = topY + 32; y < midY2 - 10; y += dotStep) {
+      for (let x = midX + 24; x < w - 24; x += dotStep) dots.push([x, y]);
+    }
+
+    for (let y = midY2 + 34; y < h - 24; y += 28) {
+      lines.push([midX, y, w - 24, y]);
+      const bx = midX + 16, bTop = y - 18;
+      lines.push([bx, bTop, bx + b, bTop], [bx + b, bTop, bx + b, bTop + b], [bx + b, bTop + b, bx, bTop + b], [bx, bTop + b, bx, bTop]);
+    }
+  } else if (t === 'braindump') {
+    const midX = Math.round(w * 0.50), topY = 74;
+    const midY = Math.round(topY + (h - 24 - topY) * 0.50);
+    accent.push([midX, topY, midX, h - 24], [24, topY, w - 24, topY], [24, midY, w - 24, midY]);
+
+    const b = 10;
+    for (let y = topY + 34; y < midY - 8; y += 26) {
+      lines.push([24, y, midX, y]);
+      const bx = 30, bTop = y - 17;
+      lines.push([bx, bTop, bx + b, bTop], [bx + b, bTop, bx + b, bTop + b], [bx + b, bTop + b, bx, bTop + b], [bx, bTop + b, bx, bTop]);
+    }
+    for (let y = topY + 34; y < midY - 8; y += 26) {
+      lines.push([midX, y, w - 24, y]);
+      const bx = midX + 16, bTop = y - 17;
+      lines.push([bx, bTop, bx + b, bTop], [bx + b, bTop, bx + b, bTop + b], [bx + b, bTop + b, bx, bTop + b], [bx, bTop + b, bx, bTop]);
+    }
+    for (let y = midY + 34; y < h - 24; y += 26) {
+      lines.push([24, y, midX, y]);
+      const bx = 30, bTop = y - 17;
+      lines.push([bx, bTop, bx + b, bTop], [bx + b, bTop, bx + b, bTop + b], [bx + b, bTop + b, bx, bTop + b], [bx, bTop + b, bx, bTop]);
+    }
+    for (let y = midY + 34; y < h - 24; y += 26) {
+      lines.push([midX, y, w - 24, y]);
+      const bx = midX + 16, bTop = y - 17;
+      lines.push([bx, bTop, bx + b, bTop], [bx + b, bTop, bx + b, bTop + b], [bx + b, bTop + b, bx, bTop + b], [bx, bTop + b, bx, bTop]);
+    }
   }
   return { lines, dots, accent };
 }
@@ -162,6 +216,52 @@ export function drawPaper(ctx, pg, bold = 1) {
       const hrStr = (hr < 10 ? '0' : '') + hr + ':00';
       ctx.fillText(hrStr, 28, topY + i * hourH + 13);
     }
+    ctx.restore();
+  }
+  if (pg.template === 'focus' && pg.w >= 300) {
+    ctx.save();
+    const midX = Math.round(pg.w * 0.50), topY = 74;
+    const midY1 = Math.round(topY + 180);
+    const midY2 = Math.round(topY + (pg.h - 24 - topY) * 0.58);
+
+    ctx.fillStyle = pap.dark ? '#8b949e' : '#656d76';
+    ctx.font = '700 8.5px ' + FONT;
+    ctx.fillText('DO FIRST (TOP PRIORITIES)', 28, topY - 6);
+    ctx.fillText('DEEP WORK · POMODORO SESSIONS', 28, midY1 + 18);
+    ctx.fillText('BRAIN DUMP (PARKING LOT)', midX + 16, topY - 6);
+    ctx.fillText('REVIEW & TOMORROW', midX + 16, midY2 + 18);
+
+    const sessH = (pg.h - 24 - midY1 - 32) / 6;
+    for (let i = 0; i < 6; i++) {
+      const y = midY1 + 32 + i * sessH;
+      ctx.font = '8px ' + FONT;
+      ctx.fillStyle = pap.dark ? '#7d8590' : '#8c959f';
+      ctx.fillText(`Round ${i + 1}`, 28, y + 14);
+
+      ctx.strokeStyle = pap.line;
+      ctx.lineWidth = 0.8 * bold;
+      for (let r = 0; r < 4; r++) {
+        const cx = 80 + r * 16, cy = y + 11;
+        ctx.beginPath();
+        ctx.arc(cx, cy, 4, 0, 6.2832);
+        ctx.stroke();
+      }
+    }
+    ctx.restore();
+  }
+  if (pg.template === 'braindump' && pg.w >= 300) {
+    ctx.save();
+    const midX = Math.round(pg.w * 0.50), topY = 74;
+    const midY = Math.round(topY + (pg.h - 24 - topY) * 0.50);
+
+    ctx.fillStyle = pap.dark ? '#8b949e' : '#656d76';
+    ctx.font = '700 8.5px ' + FONT;
+
+    ctx.fillText('🔥 DO FIRST (Urgent & Important)', 28, topY + 16);
+    ctx.fillText('🎯 SCHEDULE & PLAN (Important, Not Urgent)', midX + 16, topY + 16);
+    ctx.fillText('⚡ DELEGATE & QUICK (Urgent, Less Important)', 28, midY + 16);
+    ctx.fillText('🗑️ DROP / DISTRACTIONS (Eliminate)', midX + 16, midY + 16);
+
     ctx.restore();
   }
 }

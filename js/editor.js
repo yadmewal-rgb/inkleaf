@@ -6595,6 +6595,8 @@ export async function mountEditor(root, docId, opts = {}) {
           toast('Journal template: ' + newTpl);
         }
       },
+        h('option', { value: 'focus', selected: doc.template === 'focus' }, 'Daily Focus & Study'),
+        h('option', { value: 'braindump', selected: doc.template === 'braindump' }, 'Brain Dump Matrix'),
         h('option', { value: 'planner', selected: doc.template === 'planner' }, 'Daily Planner'),
         h('option', { value: 'ruled', selected: doc.template === 'ruled' || !doc.template }, 'Ruled Lines (9 mm)'),
         h('option', { value: 'todo', selected: doc.template === 'todo' }, 'Checklist'),
