@@ -15,6 +15,7 @@ import { modal, toast, confirmBox, busy } from './ui.js';
 import { I } from './icons.js';
 import { hwOn, setHwOn, status as hwStatus, setCloudOcr, getHwUsage, setHwLimit, getHwModel, setHwModel, getHwModelConfig, getActiveHwModel, MODEL_CASCADE, formatModelName } from './hwsearch.js';
 
+export const APP_VER = 'v73';
 const SERVER = 'https://inkleaf-sync.yadmewal.workers.dev';
 // drive.appdata: Inkleaf's hidden app folder (files it syncs); drive.file: only files Inkleaf itself creates, used
 // for the visible "Inkleaf" folder holding copies of the PDFs under their real names.
@@ -2103,7 +2104,7 @@ export async function openSettings() {
   const offModelChanged = bus.on('hw-model-changed', () => drawHw());
 
   const m = modal({
-    title: 'Settings (v69)',
+    title: 'Settings (' + APP_VER + ')',
     wide: true,
     onClose: () => { offUsage(); offHwStatus(); offModelChanged(); },
     body: h('div', null,
@@ -2112,7 +2113,7 @@ export async function openSettings() {
         style: 'align-items: center; justify-content: space-between; padding: 10px 14px; background: var(--surface-2); border-radius: 10px; margin-bottom: 16px;'
       },
         h('div', null,
-          h('div', { style: 'font-weight: 600; font-size: 14.5px;' }, 'Inkleaf v73'),
+          h('div', { style: 'font-weight: 600; font-size: 14.5px;' }, 'Inkleaf ' + APP_VER),
           h('div', { class: 'bk-sub', style: 'margin-top: 2px;' }, 'Handwriting notes · Real-time sync · PWA')
         ),
         h('button', {
@@ -2170,7 +2171,7 @@ export async function openSettings() {
       h('div', { class: 'row' },
         h('button', { class: 'btn', type: 'button', onclick: async e => { const b = e.currentTarget; b.disabled = true; await autoBackup(true); b.disabled = false; fillBk(); } }, 'Back up now')),
       h('div', { style: 'margin-top: 24px; padding-top: 14px; border-top: 1px solid var(--line); text-align: center; color: var(--muted); font-size: 12.5px;' },
-        'Inkleaf v73 · Build 2026.11'
+        'Inkleaf ' + APP_VER + ' · Build 2026.11'
       )
     )
   });
