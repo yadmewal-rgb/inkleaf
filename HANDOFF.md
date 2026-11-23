@@ -35,5 +35,5 @@
 5. Dynamic calendar badge with today's date in sidebar.
 
 ## Live Status
-- Inkleaf v77 is currently live on GitHub Pages.
-- v78 tested and committed locally; awaiting owner's approval to push to `main`.
+- Inkleaf v78 is live on GitHub Pages: https://yadmewal-rgb.github.io/inkleaf/ (commit `6756bc3`).
+- Cloudflare Worker build triggered for sync server.
