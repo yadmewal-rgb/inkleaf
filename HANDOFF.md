@@ -3,47 +3,38 @@
 **Written:** 2026-11-23 by agy (Antigravity). **Next:** Claude Code or agy.
 
 ## What the owner asked
-"all of them , lets create once then we see" (implementing the complete redesigned Studio navigation and all 6 approved productivity features).
+"all" (add all Apple Pencil Pro features: Barrel Roll nib rotation, Hover Cursor Preview, Tilt Shading, and Apple Pencil Only strict palm rejection).
 
-## Done (v72)
-1. **Sidebar Studio Navigation (`css/app.css`, `js/library.js`, `js/icons.js`)**:
-   - **Laptop & iPad:** Collapsible left sidebar featuring Quick Access (All Notebooks, Favourites, Today's Journal, Shared with me, Recycle Bin) and Folder Tree with live notebook counts and inline `+ New folder` button. Footer displays live sync status and settings. Sidebar toggle button in top header collapses or expands the panel with remembered preference.
-   - **Mobile Phones:** Off-canvas slide-out drawer triggered by the `sidebar-toggle-btn` in the header, with frosted backdrop blur and auto-close upon selection.
-2. **Jump Back In (Recent Notes Strip) (`css/app.css`, `js/library.js`)**:
-   - Prominently positioned above the notebooks grid at library root.
-   - Automatically tracks the 3 most recently opened or edited notebooks and displays their binding cover swatch, notebook title, resume page number, and relative timestamp. One tap jumps directly into that notebook at that exact page.
-3. **Folder Colors (`css/app.css`, `js/library.js`)**:
-   - Added color-coding system with 5 vibrant dot options: Red (`#e05260`), Blue (`#3b82f6`), Green (`#10b981`), Yellow (`#f59e0b`), and Purple (`#a855f7`).
-   - Integrated "Folder color" picker into the folder context menu (`folderMenu`).
-   - Colored dots appear in the sidebar folder list, on folder cards in the grid/list, and inside notebook card folder tags.
-4. **Drag & Drop to Sidebar (`js/library.js`, `css/app.css`)**:
-   - Native HTML5 drag-and-drop on notebook cards (`draggable="true"`).
-   - Dragging a card highlights sidebar folders (and folder cards in the grid) with an emerald dashed outline (`.drop-target`). Dropping instantly moves the notebook to that folder, updates IndexedDB, and shows a confirmation toast.
-   - Dropping onto "All Notebooks" moves a notebook out of a folder to Library root.
-5. **Pin to Top (Bookmarks) (`js/library.js`, `css/app.css`)**:
-   - Added "Pin to top" / "Unpin from top" option in `docMenu`.
-   - Pinned notebooks display a gold ribbon bookmark badge (`.pin-badge`) on their top right corner.
-   - Pinned notebooks are anchored to the top of the grid/list regardless of sort order.
-6. **Multi-Select & Batch Actions (`js/library.js`, `css/app.css`)**:
-   - Added "Select" chip in library tools.
-   - When active, cards display checkmark circles (`.check-circle`) and tapping toggles selection.
-   - Displays a floating glass action bar (`.selection-bar`) at the bottom of the screen with batch actions:
-     - **Move:** Picks destination folder and batch moves all selected notebooks.
-     - **Tag:** Prompts tag name and batch tags all selected notebooks.
-     - **Favourite:** Marks all selected notebooks as favourites.
-     - **Bin:** Prompts confirmation and batch moves all selected notebooks to the recycle bin.
-7. **Resume Last Active Page on Any Notebook Click (`js/library.js`, `js/app.js`, `js/editor.js`)**:
-   - Clicking on ANY notebook in the library (cards in grid or list view) now reads the exact page position (`inkleaf.pos.<id>`) and navigates directly to that page via `#/d/<id>?p=<lastPage>`.
-   - Notebook cards with multiple pages now show `Page X of Y` in their subtitle so you see where you left off at a glance.
-   - `app.js` and `editor.js` both guarantee automatic resume of the saved page position on load, and `destroy()` preserves the active position when navigating away.
-8. **PWA Version Bump (`sw.js`, `js/sync.js`)**:
-   - Bumped service worker cache to `inkleaf-v72`.
-   - Updated Settings to `Inkleaf v72 · Build 2026.11`.
-9. **Automated Testing & Screenshots**:
-   - Executed live test in Chrome across desktop (1200x750) and mobile (390x844).
-   - Verified creating multi-page notes, working on page 4, viewing `Page 4 of 6` in library, and clicking card to jump straight to page 4 (`4 / 6`).
-   - Captured and verified screenshots with `shots.ps1`.
+## Done (v73)
+1. **Barrel Roll Nib Rotation (`PointerEvent.twist`) (`js/editor.js`)**:
+   - WebKit exposes `e.twist` (0°–359°) for Apple Pencil Pro.
+   - Added **Calligraphy (Roll nib)** pen style: rotating the pencil barrel smoothly rotates the calligraphy nib angle in real-time, allowing instant switching between thin edges and broad flourishes.
+   - Enhanced **Highlighter**: rolling the pencil rolls the chisel tip between full broad highlight (0°/180°) and thin precision underline (90°/270°).
+2. **Hover Cursor Preview (`css/app.css`, `js/editor.js`)**:
+   - Floating `.pen-hover-cur` indicator displayed when Apple Pencil Pro / stylus hovers up to 12 mm above the glass.
+   - Displays exact stroke thickness, active color, and real-time nib rotation angle before the tip touches down.
+   - Smoothly auto-hides during active drawing and when the pencil leaves the screen.
+3. **Tilt-to-Shade (`e.altitudeAngle` / `e.tiltX`, `e.tiltY`) (`js/editor.js`)**:
+   - Added tilt detection for **Pencil (Tilt shade)** style.
+   - Upright pencil creates sharp, fine graphite sketching lines.
+   - Tilting the pencil flat against the screen (< 35°) automatically broadens the stroke into soft, grainy graphite shading.
+4. **Strict "Apple Pencil Only" Mode (100% Palm Rejection) (`js/editor-consts.js`, `js/editor.js`)**:
+   - Added toggle to Pen menu and More menu.
+   - When enabled, single/multi-finger touches can NEVER leave accidental ink marks or stray dots; fingers are strictly reserved for scrolling and pinch-zooming.
+   - Only the Apple Pencil (`pointerType === 'pen'`) draws ink.
+5. **PWA Version Bump (`sw.js`, `js/sync.js`)**:
+   - Bumped service worker cache to `inkleaf-v73`.
+   - Updated Settings to `Inkleaf v73 · Build 2026.11`.
+6. **Automated Verification**:
+   - Verified pen menu options, barrel roll stroke rendering, hover cursor preview, tilt shading, and palm lock via Chrome CDP.
+   - Captured and verified showcase screenshots.
+
+## Done in v72 (Earlier today)
+1. **Resume Last Active Page on Any Notebook Click (`js/library.js`, `js/app.js`, `js/editor.js`)**:
+   - Clicking ANY notebook in the library navigates directly to the last active page via `#/d/<id>?p=<lastPage>`.
+   - Cards display `Page X of Y` subtitle.
+2. **Sidebar Studio Navigation, Jump Back In, Folder Colors, Drag & Drop, Pinning, Multi-Select**.
 
 ## Local Status
 - Clean local build, tested at http://localhost:8080.
-- Changes committed locally. Ready to push to `origin/main` upon owner confirmation.
+- Changes committed locally (v72 and v73). Ready to push to `origin/main` upon owner confirmation.

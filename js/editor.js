@@ -53,6 +53,7 @@ export async function mountEditor(root, docId, opts = {}) {
   const overlay = h('div', { class: 'overlay' });
   const live = h('canvas', { class: 'live' });
   const eraserCur = h('div', { class: 'eraser-cur', hidden: true });
+  const penHoverCur = h('div', { class: 'pen-hover-cur', hidden: true });
   const selBox = h('div', { class: 'selbox', hidden: true },
     h('div', { class: 'rot-stalk' }),
     h('div', { class: 'rot-handle', title: 'Rotate' }),
@@ -147,7 +148,7 @@ export async function mountEditor(root, docId, opts = {}) {
     trayList);
   const zgrip = h('div', { class: 'zgrip', title: 'Move', html: I.grip }), zsize = h('div', { class: 'handle', title: 'Resize' });
   const zframe = h('div', { class: 'zframe', hidden: true }, zgrip, zsize);
-  overlay.append(eraserCur, selBox, selBar, zframe, laserCv, pullHint, findBar);
+  overlay.append(eraserCur, penHoverCur, selBox, selBar, zframe, laserCv, pullHint, findBar);
   // Top row: home and the open notebooks as tabs. Second row: sidebar, search and read-only on the left, the
   // tools in the middle, and timer / bookmark / full screen / add page / share / more on the right.
   const tabsEl = h('div', { class: 'tabs' });
@@ -233,7 +234,17 @@ export async function mountEditor(root, docId, opts = {}) {
   // on touch devices where fingers would draw (no stylus seen, e.g. phones); an iPad with Apple Pencil opens for writing.
   const openRead = () => prefs.openRead === true || (prefs.openRead == null && COARSE && !prefs.penSeen && prefs.fingerDraw !== false);
   try { readOnly = openRead() || localStorage.getItem('inkleaf.ro.' + doc.id) === '1'; } catch { readOnly = openRead(); }
-  const fingerDraws = () => !readOnly && (prefs.fingerDraw === true || (prefs.fingerDraw == null && !penSeen));
+  const pencilOnly = () => Boolean(prefs.applePencilOnly);
+  const fingerDraws = () => !readOnly && !pencilOnly() && (prefs.fingerDraw === true || (prefs.fingerDraw == null && !penSeen));
+  const getTwist = e => (typeof e?.twist === 'number' && !isNaN(e.twist) ? e.twist : null);
+  const getAltitude = e => {
+    if (typeof e?.altitudeAngle === 'number') return e.altitudeAngle;
+    if (typeof e?.tiltX === 'number' && typeof e?.tiltY === 'number' && (e.tiltX !== 0 || e.tiltY !== 0)) {
+      const deg = Math.hypot(e.tiltX, e.tiltY);
+      return Math.max(0.1, (90 - deg) * Math.PI / 180);
+    }
+    return 1.4;
+  };
   const inkFor = (pv, color) => (color === INK && R.paperOf(pv.page).dark ? INK_ON_DARK : color);
 
   // ------------------------------------------------------------------ layout & rendering
@@ -1428,6 +1439,24 @@ export async function mountEditor(root, docId, opts = {}) {
     const p = { id: e.pointerId, type: e.pointerType, x: e.clientX, y: e.clientY, x0: e.clientX, y0: e.clientY, ignored: false };
     ptrs.set(e.pointerId, p);
     stopInertia();
+    penHoverCur.hidden = true;
+
+    if (pencilOnly() && e.pointerType === 'touch') {
+      p.ignored = false;
+      const ts = [...ptrs.values()].filter(q => q.type === 'touch' && !q.ignored);
+      if (ts.length >= 2) {
+        if (action) cancelAction();
+        pan = null;
+        if (!pinch) {
+          startPinch(ts[0], ts[1]);
+          if (ts.length === 2) multiTap = { t0: performance.now(), n: 2, moved: false, scale, tx, ty };
+        }
+        if (multiTap) multiTap.n = Math.max(multiTap.n, ts.length);
+      } else {
+        startPan(p);
+      }
+      return;
+    }
 
     if (readOnly && e.pointerType !== 'touch') { // reading, not writing: the pen and the mouse just move the page
       if (e.pointerType === 'pen') lastPenT = performance.now();
@@ -1530,8 +1559,17 @@ export async function mountEditor(root, docId, opts = {}) {
   }
 
   function hover(e) {
-    if (prefs.tool === 'eraser' && e.pointerType !== 'touch') showEraserCur(e.clientX, e.clientY);
-    else eraserCur.hidden = true;
+    if (prefs.tool === 'eraser' && e.pointerType !== 'touch') {
+      showEraserCur(e.clientX, e.clientY);
+      penHoverCur.hidden = true;
+    } else {
+      eraserCur.hidden = true;
+      if (prefs.penHoverPreview !== false && (prefs.tool === 'pen' || prefs.tool === 'hl') && e.pointerType !== 'touch') {
+        showPenHoverCur(e);
+      } else {
+        penHoverCur.hidden = true;
+      }
+    }
     if (prefs.tool === 'lasso' && sel) {
       const [x, y] = toPage(sel.pv, e.clientX, e.clientY);
       const hit = selHit(sel.pv, x, y);
@@ -1539,6 +1577,50 @@ export async function mountEditor(root, docId, opts = {}) {
     } else if (prefs.tool !== 'eraser') {
       vp.style.cursor = '';
     }
+  }
+
+  function showPenHoverCur(e) {
+    if (action || textEd || boxEd || prefs.penHoverPreview === false) { penHoverCur.hidden = true; return; }
+    const curTool = prefs.tool;
+    if (curTool !== 'pen' && curTool !== 'hl') { penHoverCur.hidden = true; return; }
+    const baseSize = curTool === 'hl' ? prefs.hl.size : prefs.pen.size;
+    let d = Math.max(3.5, baseSize * scale);
+    const color = curTool === 'hl' ? prefs.hl.color : prefs.pen.color;
+    const style = prefs.pen.style || 'fountain';
+    const twist = getTwist(e) ?? 45;
+    const alt = getAltitude(e);
+
+    penHoverCur.style.left = (e.clientX - vpRect.left) + 'px';
+    penHoverCur.style.top = (e.clientY - vpRect.top) + 'px';
+    penHoverCur.style.backgroundColor = color;
+
+    if (curTool === 'pen' && style === 'calligraphy') {
+      penHoverCur.classList.add('nib');
+      penHoverCur.style.width = Math.max(4, d * 1.5) + 'px';
+      penHoverCur.style.height = Math.max(2, d * 0.35) + 'px';
+      penHoverCur.style.transform = `translate(-50%, -50%) rotate(${twist}deg)`;
+      penHoverCur.style.opacity = '0.75';
+    } else if (curTool === 'pen' && style === 'pencil' && alt < 0.65) {
+      const shade = clamp(1 + (0.65 - alt) * 3, 1, 3);
+      penHoverCur.classList.add('nib');
+      penHoverCur.style.width = (d * shade) + 'px';
+      penHoverCur.style.height = (d * shade * 0.6) + 'px';
+      penHoverCur.style.transform = `translate(-50%, -50%) rotate(${twist}deg)`;
+      penHoverCur.style.opacity = '0.5';
+    } else if (curTool === 'hl') {
+      penHoverCur.classList.add('nib');
+      penHoverCur.style.width = Math.max(6, d * 1.2) + 'px';
+      penHoverCur.style.height = Math.max(3, d * 0.5) + 'px';
+      penHoverCur.style.transform = `translate(-50%, -50%) rotate(${twist}deg)`;
+      penHoverCur.style.opacity = '0.45';
+    } else {
+      penHoverCur.classList.remove('nib');
+      penHoverCur.style.width = d + 'px';
+      penHoverCur.style.height = d + 'px';
+      penHoverCur.style.transform = 'translate(-50%, -50%)';
+      penHoverCur.style.opacity = '0.75';
+    }
+    penHoverCur.hidden = false;
   }
 
   function showEraserCur(cx, cy) {
@@ -1830,11 +1912,32 @@ export async function mountEditor(root, docId, opts = {}) {
   const pressureOf = e => (e.pointerType === 'pen' && e.pressure > 0 ? e.pressure : 0.5);
 
   // Pen styles only change how pressure is recorded, so every device draws the result the same way:
-  // ballpoint = even line, fountain = follows pressure, brush = exaggerates it.
-  function inkPressure(a, e) {
+  // ballpoint = even line, fountain = follows pressure, brush = exaggerates it, calligraphy = rotates with barrel roll, pencil = tilt shades.
+  function inkPressure(a, e, dx = 0, dy = 0) {
     const p = pressureOf(e);
     if (a.style === 'ball') return 0.5;
     if (a.style === 'brush') return clamp(0.05 + p * 1.6, 0.05, 1.4);
+    if (a.style === 'calligraphy') {
+      const twistDeg = getTwist(e) ?? a.twist ?? 45;
+      a.twist = twistDeg;
+      const nibAngle = (twistDeg * Math.PI) / 180;
+      let ribbon = 0.6;
+      if (Math.hypot(dx, dy) > 0.4) {
+        const dir = Math.atan2(dy, dx);
+        const diff = dir - nibAngle;
+        ribbon = Math.sqrt(Math.pow(Math.cos(diff) * 0.22, 2) + Math.pow(Math.sin(diff), 2));
+      }
+      return clamp(ribbon * (0.35 + 0.85 * p), 0.08, 1.35);
+    }
+    if (a.style === 'pencil') {
+      const alt = getAltitude(e);
+      a.alt = alt;
+      if (alt < 0.65) {
+        const shade = clamp(1 + (0.65 - alt) * 3.2, 1, 3.2);
+        return clamp(p * shade * 0.9, 0.2, 1.6);
+      }
+      return clamp(0.2 + p * 0.7, 0.2, 1.0);
+    }
     return p;
   }
 
@@ -2035,7 +2138,9 @@ export async function mountEditor(root, docId, opts = {}) {
     a.color = inkFor(a.pv, t.color);
     a.size = t.size;
     a.style = a.tool === 'pen' ? (t.style || 'fountain') : null;
-    a.sp = inkPressure(a, e);
+    a.twist = getTwist(e) ?? 45;
+    a.alt = getAltitude(e);
+    a.sp = inkPressure(a, e, 0, 0);
     // Started beside the ruler: the whole stroke runs along its edge.
     a.rule = !a.map && ruler ? ruleFor(a.pv, e.clientX, e.clientY, a.size) : null;
     if (a.rule) [x, y] = onRule(a.rule, x, y);
@@ -2073,13 +2178,20 @@ export async function mountEditor(root, docId, opts = {}) {
     holdCheck(a, e);
     const px = P[n - 3], py = P[n - 2];
     if (Math.hypot(x - px, y - py) < 0.7 / a.sc) return;
+    const dx = x - px, dy = y - py;
     // light smoothing: steadier lines without visible lag
     const k = a.ptype === 'pen' ? 0.78 : 0.6;
-    x = px + (x - px) * k;
-    y = py + (y - py) * k;
-    a.sp += (inkPressure(a, e) - a.sp) * 0.35; // pressure is eased in, so the line swells and thins gradually
+    x = px + dx * k;
+    y = py + dy * k;
+    a.sp += (inkPressure(a, e, dx, dy) - a.sp) * 0.35; // pressure is eased in, so the line swells and thins gradually
     P.push(x, y, a.sp);
     if (a.tool === 'hl') {
+      const hlTwist = getTwist(e);
+      if (hlTwist !== null) {
+        const rad = (hlTwist * Math.PI) / 180;
+        const rollFactor = Math.abs(Math.sin(rad)) * 0.65 + 0.35;
+        a.size = prefs.hl.size * rollFactor;
+      }
       liveItem(a, { t: 's', tool: 'hl', c: a.color, w: a.size, p: P });
       return;
     }
@@ -2139,7 +2251,7 @@ export async function mountEditor(root, docId, opts = {}) {
     const it = a.snap ? { ...a.snap, id: uid(), z: nextZ(), m: Date.now() } : {
       id: uid(), t: 's', tool: a.tool, c: a.color, w: a.size,
       p: a.pts.map(v => Math.round(v * 100) / 100), z: nextZ(), m: Date.now(),
-      ...(a.style === 'pencil' ? { st: 'pencil' } : {})
+      ...(a.style === 'pencil' ? { st: 'pencil' } : a.style === 'calligraphy' ? { st: 'calligraphy' } : {})
     };
     // Highlighter set to follow PDF text: the freehand stroke is swapped for neat marks on the lines it crossed.
     const mode = prefs.hl.mode;
@@ -6612,13 +6724,49 @@ export async function mountEditor(root, docId, opts = {}) {
       h('button', { class: 'ic tool', type: 'button', title: 'Insert: picture, scan, sticky note, table, saved element', html: I.insert, onclick: e => insertMenu(e.currentTarget) }));
   }
 
+  const STYLE_NAMES = {
+    fountain: 'Fountain pen',
+    ball: 'Ballpoint',
+    brush: 'Brush pen',
+    calligraphy: 'Calligraphy (Roll nib)',
+    pencil: 'Pencil (Tilt shade)'
+  };
+
   function penTypeMenu(anchor) {
     const cur = prefs.pen.style || 'fountain';
-    const hint = { ball: 'even line', fountain: 'follows pressure', brush: 'strong thick and thin', pencil: 'grainy' };
-    popMenu(anchor, Object.keys(STYLE_NAMES).map(v => ({
-      label: `${v === cur ? '✓ ' : '    '}${STYLE_NAMES[v]} (${hint[v]})`, icon: I.pen,
-      onClick: () => { prefs.pen.style = v; savePrefs(); renderOpts(); }
-    })));
+    const hint = {
+      fountain: 'follows pressure',
+      ball: 'even line',
+      brush: 'strong thick & thin',
+      calligraphy: 'barrel roll rotates nib angle',
+      pencil: 'tilt flat to shade'
+    };
+    popMenu(anchor, [
+      ...Object.keys(STYLE_NAMES).map(v => ({
+        label: `${v === cur ? '✓ ' : '    '}${STYLE_NAMES[v]} (${hint[v]})`, icon: I.pen,
+        onClick: () => { prefs.pen.style = v; savePrefs(); renderOpts(); }
+      })),
+      '-',
+      {
+        label: `Apple Pencil Only: ${prefs.applePencilOnly ? 'ON' : 'OFF'}`,
+        icon: I.pen,
+        onClick: () => {
+          prefs.applePencilOnly = !prefs.applePencilOnly;
+          savePrefs();
+          toast(prefs.applePencilOnly ? 'Apple Pencil Only is ON (fingers scroll/zoom, only pencil draws)' : 'Apple Pencil Only is OFF');
+        }
+      },
+      {
+        label: `Hover Cursor Preview: ${prefs.penHoverPreview !== false ? 'ON' : 'OFF'}`,
+        icon: I.eye,
+        onClick: () => {
+          prefs.penHoverPreview = prefs.penHoverPreview === false;
+          savePrefs();
+          if (prefs.penHoverPreview === false) penHoverCur.hidden = true;
+          toast(prefs.penHoverPreview !== false ? 'Hover Cursor Preview is ON' : 'Hover Cursor Preview is OFF');
+        }
+      }
+    ]);
   }
 
   function setTool(t) {
@@ -6627,6 +6775,7 @@ export async function mountEditor(root, docId, opts = {}) {
     prefs.tool = t;
     savePrefs();
     eraserCur.hidden = true;
+    penHoverCur.hidden = true;
     vp.dataset.tool = t;
     renderTools();
     renderOpts();
@@ -6688,7 +6837,6 @@ export async function mountEditor(root, docId, opts = {}) {
     h('button', { class: v === cur ? 'on' : '', type: 'button', onclick: () => onPick(v) }, label)));
 
   // Favourite pens: saved colour + tip size + style, one tap to switch. Hold (or right-click) one to remove it.
-  const STYLE_NAMES = { ball: 'Ballpoint', fountain: 'Fountain', brush: 'Brush', pencil: 'Pencil' };
   function favPens() {
     const cur = prefs.pen, favs = prefs.favs || (prefs.favs = []);
     const same = f => f.color === cur.color && Math.abs(f.size - cur.size) < 0.02 && (f.style || 'fountain') === (cur.style || 'fountain');
@@ -6887,6 +7035,25 @@ export async function mountEditor(root, docId, opts = {}) {
       },
       { label: 'Gestures', icon: I.finger, onClick: gestureHelp },
       { label: dbg ? 'Close input test' : 'Input test', icon: I.pen, onClick: toggleDebug },
+      {
+        label: 'Apple Pencil Only (100% Palm Rejection): ' + (prefs.applePencilOnly ? 'ON' : 'OFF'),
+        icon: I.pen,
+        onClick: () => {
+          prefs.applePencilOnly = !prefs.applePencilOnly;
+          savePrefs();
+          toast(prefs.applePencilOnly ? 'Apple Pencil Only: fingers scroll & zoom, only pencil writes' : 'Apple Pencil Only is off');
+        }
+      },
+      {
+        label: 'Pencil Hover Preview: ' + (prefs.penHoverPreview !== false ? 'ON' : 'OFF'),
+        icon: I.eye,
+        onClick: () => {
+          prefs.penHoverPreview = prefs.penHoverPreview === false;
+          savePrefs();
+          if (prefs.penHoverPreview === false) penHoverCur.hidden = true;
+          toast(prefs.penHoverPreview !== false ? 'Pencil Hover Preview is ON' : 'Pencil Hover Preview is off');
+        }
+      },
       {
         label, icon: I.finger, onClick: () => {
           prefs.fingerDraw = fd == null ? !fingerDraws() : fd === true ? false : null;
@@ -7186,7 +7353,7 @@ export async function mountEditor(root, docId, opts = {}) {
   vp.addEventListener('pointermove', onMove);
   vp.addEventListener('pointerup', onUp);
   vp.addEventListener('pointercancel', onUp);
-  vp.addEventListener('pointerleave', () => { if (!action) eraserCur.hidden = true; });
+  vp.addEventListener('pointerleave', () => { if (!action) { eraserCur.hidden = true; penHoverCur.hidden = true; } });
   vp.addEventListener('wheel', onWheel, { passive: false });
   vp.addEventListener('contextmenu', e => {
     e.preventDefault();

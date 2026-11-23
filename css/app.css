@@ -3592,6 +3592,21 @@ body.split-dragging canvas {
   border-radius: 50%;
 }
 
+.pen-hover-cur {
+  position: absolute;
+  pointer-events: none;
+  border-radius: 50%;
+  transform: translate(-50%, -50%);
+  box-sizing: border-box;
+  box-shadow: 0 0 0 1px rgba(255, 255, 255, .9), 0 1px 5px rgba(0, 0, 0, .4);
+  transition: width .04s ease-out, height .04s ease-out;
+  z-index: 99;
+}
+
+.pen-hover-cur.nib {
+  border-radius: 2px;
+}
+
 .selbox {
   border: 1.5px dashed var(--accent);
   border-radius: 4px;

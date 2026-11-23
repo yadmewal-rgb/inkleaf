@@ -72,6 +72,8 @@ export const DEFAULTS = {
   shape: { kind: 'rect', color: '#1971c2', size: mmToPt(0.8), fill: null },
   text: { color: INK, size: 16, b: false, i: false, u: false, ff: 'sans', al: 'l' },
   fingerDraw: null, // null = automatic: fingers draw until a stylus has been seen
+  applePencilOnly: false, // strict palm rejection: only stylus leaves ink, fingers scroll/zoom
+  penHoverPreview: true, // hover cursor shows tip size, color, barrel roll & tilt before touching
   openRead: null,
   penSeen: false,
   scrollbar: 'left', // 'left' = left edge (never touches right hand), 'right' = right edge, 'hidden' = hidden

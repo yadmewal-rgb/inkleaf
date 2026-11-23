@@ -2112,7 +2112,7 @@ export async function openSettings() {
         style: 'align-items: center; justify-content: space-between; padding: 10px 14px; background: var(--surface-2); border-radius: 10px; margin-bottom: 16px;'
       },
         h('div', null,
-          h('div', { style: 'font-weight: 600; font-size: 14.5px;' }, 'Inkleaf v72'),
+          h('div', { style: 'font-weight: 600; font-size: 14.5px;' }, 'Inkleaf v73'),
           h('div', { class: 'bk-sub', style: 'margin-top: 2px;' }, 'Handwriting notes · Real-time sync · PWA')
         ),
         h('button', {
@@ -2170,7 +2170,7 @@ export async function openSettings() {
       h('div', { class: 'row' },
         h('button', { class: 'btn', type: 'button', onclick: async e => { const b = e.currentTarget; b.disabled = true; await autoBackup(true); b.disabled = false; fillBk(); } }, 'Back up now')),
       h('div', { style: 'margin-top: 24px; padding-top: 14px; border-top: 1px solid var(--line); text-align: center; color: var(--muted); font-size: 12.5px;' },
-        'Inkleaf v72 · Build 2026.11'
+        'Inkleaf v73 · Build 2026.11'
       )
     )
   });
