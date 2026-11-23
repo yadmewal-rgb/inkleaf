@@ -18,6 +18,5 @@
 1. Added **Daily Focus & Study** (`focus`) and **Brain Dump Matrix** (`braindump`) page templates.
 
 ## Live Status
-- Inkleaf v78 is currently live on GitHub Pages.
-- v79 committed locally to eliminate the sync loop.
+- Inkleaf v79 is live on GitHub Pages: https://yadmewal-rgb.github.io/inkleaf/ (commit `5db7362`).
 - Cloudflare Durable Objects free tier daily quota resets at 00:00 UTC (05:30 AM IST). All notes remain 100% safe locally in IndexedDB.
