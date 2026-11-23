@@ -25,5 +25,5 @@
 2. **Settings Header Version Fix**: Dynamically wired to `APP_VER`.
 
 ## Live Status
-- Inkleaf v73 live on GitHub Pages.
-- v74 committed locally and ready to push to `main`.
+- Inkleaf v74 pushed to `main` (live release on GitHub Pages: https://yadmewal-rgb.github.io/inkleaf/).
+- Clean working tree.
