@@ -2,6 +2,7 @@
 // Every position returned here is in page units with the origin at the top left, like the rest of the app.
 import { pdfDoc } from './pdfrender.js';
 import { db } from './db.js';
+import { call } from './sync.js';
 
 const linkCache = new Map(), textCache = new Map();
 const mctx = document.createElement('canvas').getContext('2d');
@@ -148,14 +149,140 @@ export function textMatches(t, q) {
   return out;
 }
 
-// Scan a PDF's pages for chapter titles and section headings to generate a table of contents.
+// Scan a PDF's pages for chapter titles, section headings, or Table of Contents pages.
 export async function generatePdfOutline(assetId) {
   const doc = await pdfDoc(assetId);
   const total = doc.numPages;
-  const candidates = [];
 
-  const chapPattern = /^(?:chapter|unit|part|module|lecture|lesson)\s+([0-9ivxlcdm]+)[:.\s\-]*(.*)$/i;
-  const secPattern = /^([0-9]{1,2}\.[0-9]{1,2}(?:\.[0-9]{1,2})?)\s+([A-Za-z].*)$/;
+  // Step 1: Scan early pages (first 35 pages) to detect Table of Contents / Index pages
+  const scanLimit = Math.min(35, total);
+  const tocPages = [];
+  const tocLineRegex = /^(.*?)(?:[\.\-_·…\s]{2,}|\t+)\s*(\d{1,4})\s*$/;
+  let allTocRawText = '';
+  const localTocCandidates = [];
+
+  for (let idx = 0; idx < scanLimit; idx++) {
+    try {
+      const page = await doc.getPage(idx + 1);
+      const vp = page.getViewport({ scale: 1 });
+      const tc = await page.getTextContent();
+      if (!tc || !tc.items || !tc.items.length) continue;
+
+      const lines = [];
+      let curLine = null;
+      for (const it of tc.items) {
+        if (typeof it.str !== 'string' || !it.str.trim()) continue;
+        const tm = it.transform;
+        const hgt = it.height || Math.hypot(tm[2], tm[3]) || 10;
+        const [x, y] = vp.convertToViewportPoint(tm[4], tm[5]);
+        if (!curLine || Math.abs(curLine.y - y) > 5) {
+          curLine = { y, x, hgt, text: it.str.trim(), maxHgt: hgt };
+          lines.push(curLine);
+        } else {
+          curLine.text += ' ' + it.str.trim();
+          if (hgt > curLine.maxHgt) curLine.maxHgt = hgt;
+        }
+      }
+
+      // Check if page looks like a Table of Contents
+      let matchedInPage = 0;
+      const pageCandidates = [];
+      let pageTextAcc = '';
+      for (const l of lines) {
+        const text = l.text.trim();
+        pageTextAcc += text + '\n';
+        const m = text.match(tocLineRegex);
+        if (m) {
+          let title = m[1].replace(/[\.\-_·…\s]+$/, '').trim();
+          title = title.replace(/^[\s·•*]+/, '').trim();
+          const targetPg = parseInt(m[2], 10);
+          if (title.length >= 2 && !/^\d+$/.test(title) && targetPg > 0 && targetPg <= total + 50) {
+            matchedInPage++;
+            const depth = /^\s{2,}|\t+|^\d+\.\d+/.test(text) ? 1 : 0;
+            pageCandidates.push({ title, depth, i: Math.max(0, Math.min(total - 1, targetPg - 1)) });
+          }
+        }
+      }
+
+      const isTocTitle = lines.slice(0, 4).some(l => /^(?:table of contents|contents|index|topics|syllabus)\b/i.test(l.text.trim()));
+      if (matchedInPage >= 3 || (isTocTitle && matchedInPage >= 1)) {
+        tocPages.push(idx);
+        allTocRawText += pageTextAcc + '\n';
+        localTocCandidates.push(...pageCandidates);
+      }
+    } catch {}
+  }
+
+  // If we found TOC entries from Table of Contents pages
+  if (localTocCandidates.length > 0) {
+    // Try Gemini AI (direct key or via sync server /ai/outline) to clean & structure
+    const directKey = localStorage.getItem('inkleaf.geminiKey');
+    const model = localStorage.getItem('inkleaf.geminiModel') || 'gemini-3.5-flash-lite';
+
+    if (navigator.onLine) {
+      if (directKey) {
+        try {
+          const prompt = `Here is text from the Table of Contents of a ${total}-page PDF:\n\n${allTocRawText.slice(0, 30000)}\n\nExtract and return a clean Table of Contents JSON array of objects: [{"title": string, "page": number (1-based target page), "depth": 0 or 1}]. Return ONLY valid JSON without code blocks or commentary.`;
+          const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${directKey}`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              contents: [{ parts: [{ text: prompt }] }],
+              generationConfig: { temperature: 0, responseMimeType: 'application/json' }
+            })
+          });
+          if (res.ok) {
+            const j = await res.json();
+            const raw = (j?.candidates?.[0]?.content?.parts?.[0]?.text || '').trim();
+            const parsed = JSON.parse(raw);
+            if (Array.isArray(parsed) && parsed.length >= 2) {
+              return parsed.map(p => ({
+                title: String(p.title || '').trim(),
+                depth: Number(p.depth) || 0,
+                i: Math.max(0, Math.min(total - 1, (Number(p.page) || 1) - 1))
+              }));
+            }
+          }
+        } catch {}
+      }
+
+      // Try server proxy
+      try {
+        const sRes = await call('/ai/outline', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ text: allTocRawText, numPages: total })
+        });
+        if (sRes.ok) {
+          const sData = await sRes.json();
+          if (Array.isArray(sData.outline) && sData.outline.length >= 2) {
+            return sData.outline.map(p => ({
+              title: String(p.title || '').trim(),
+              depth: Number(p.depth) || 0,
+              i: Math.max(0, Math.min(total - 1, (Number(p.page) || 1) - 1))
+            }));
+          }
+        }
+      } catch {}
+    }
+
+    // High-quality local TOC fallback (instant, works offline)
+    const unique = [];
+    const seen = new Set();
+    for (const c of localTocCandidates) {
+      const key = c.title.toLowerCase() + ':' + c.i;
+      if (!seen.has(key)) {
+        seen.add(key);
+        unique.push(c);
+      }
+    }
+    if (unique.length > 0) return unique;
+  }
+
+  // Step 2: Fallback if no Table of Contents page exists: scan pages for headings
+  const candidates = [];
+  const chapPattern = /^(?:chapter|unit|part|module|lecture|lesson|section)\s+([0-9ivxlcdm]+)[:.\s\-]*(.*)$/i;
+  const secPattern = /^([0-9]{1,2}(?:\.[0-9]{1,2}){1,2})\s+([A-Za-z].*)$/;
 
   for (let idx = 0; idx < total; idx++) {
     try {
@@ -184,7 +311,7 @@ export async function generatePdfOutline(assetId) {
       let found = false;
       for (const line of topLines) {
         const t = line.text.trim();
-        if (t.length < 3 || t.length > 80) continue;
+        if (t.length < 3 || t.length > 90) continue;
         if (chapPattern.test(t)) {
           candidates.push({ title: t.replace(/\s+/g, ' '), depth: 0, i: idx });
           found = true;
@@ -200,7 +327,7 @@ export async function generatePdfOutline(assetId) {
       if (!found && lines.length > 0) {
         const avgH = lines.reduce((acc, l) => acc + l.maxHgt, 0) / lines.length;
         const top = topLines[0];
-        if (top && top.maxHgt >= avgH * 1.35 && top.text.length >= 4 && top.text.length <= 60 && !/^\d+$/.test(top.text)) {
+        if (top && top.maxHgt >= avgH * 1.3 && top.text.length >= 4 && top.text.length <= 70 && !/^\d+$/.test(top.text)) {
           candidates.push({ title: top.text.replace(/\s+/g, ' '), depth: 0, i: idx });
         }
       }
@@ -215,30 +342,6 @@ export async function generatePdfOutline(assetId) {
       seen.add(key);
       unique.push(c);
     }
-  }
-
-  const directKey = localStorage.getItem('inkleaf.geminiKey');
-  const model = localStorage.getItem('inkleaf.geminiModel') || 'gemini-3.5-flash-lite';
-  if (directKey && navigator.onLine && unique.length > 0) {
-    try {
-      const prompt = `Here is a list of candidate headings extracted from a PDF document:\n${JSON.stringify(unique.map(u => ({ title: u.title, page: u.i + 1 })))}\nClean up, deduplicate, and format these into a clean Table of Contents JSON array of objects: [{"title": string, "depth": 0 or 1, "i": number (0-based page index)}]. Return ONLY the valid JSON array without commentary or code fences.`;
-      const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${directKey}`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          contents: [{ parts: [{ text: prompt }] }],
-          generationConfig: { temperature: 0, responseMimeType: 'application/json' }
-        })
-      });
-      if (res.ok) {
-        const j = await res.json();
-        const raw = (j?.candidates?.[0]?.content?.parts?.[0]?.text || '').trim();
-        const parsed = JSON.parse(raw);
-        if (Array.isArray(parsed) && parsed.length > 0) {
-          return parsed.map(p => ({ title: String(p.title || '').trim(), depth: Number(p.depth) || 0, i: Number(p.i) }));
-        }
-      }
-    } catch {}
   }
 
   return unique;

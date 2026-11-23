@@ -10,7 +10,7 @@ import { pageLinks, resolveDest, pdfOutline, generatePdfOutline, pageText, textM
 import { I } from './icons.js';
 import { popMenu, popover, confirmBox, promptText, toast, modal, chipGroup, templatePicker, PAPER_OPTS, busy } from './ui.js';
 import { exportFlow, pdfAsPictures } from './export.js';
-import { syncNow, syncStatus, mergePage, mergeDoc, shareNotebook, sendLiveDelta, sendGuestLiveDelta } from './sync.js';
+import { syncNow, syncStatus, mergePage, mergeDoc, shareNotebook, sendLiveDelta, sendGuestLiveDelta, pushDoc } from './sync.js';
 import { matchPage, matchSync, hwOn, pageIndex, queuePages, getActiveHwModel, formatModelName } from './hwsearch.js';
 import { findSpellingErrorsOnPage, addToUserDict, ignoreWord } from './spellcheck.js';
 import {
@@ -1082,10 +1082,12 @@ export async function mountEditor(root, docId, opts = {}) {
       posSaved = i;
       try {
         localStorage.setItem('inkleaf.pos.' + doc.id, String(i));
-        if (doc.lastPage !== i + 1) {
-          doc.lastPage = i + 1;
-          db.put('docs', { ...doc, lastPage: i + 1 }).catch(() => {});
-        }
+        const now = Date.now();
+        doc.lastPage = i + 1;
+        doc.lastOpened = now;
+        doc.modified = now;
+        db.put('docs', { ...doc }).catch(() => {});
+        pushDoc(doc.id).catch(() => {});
       } catch { /* private mode */ }
     }
   }
@@ -6804,19 +6806,49 @@ export async function mountEditor(root, docId, opts = {}) {
   const fmtMm = pt => { const mm = pt * MM; return (mm < 1 ? String(Math.round(mm * 100) / 100) : mm.toFixed(1)) + ' mm'; };
 
   // Preset dots (given in mm) followed by a button showing the exact size, which opens a slider.
-  function sizes(key, mms, dots, maxMm) {
+  function sizes(key, defaultMms, defaultDots, maxMm) {
+    const prefKey = key + 'Sizes';
+    if (!Array.isArray(prefs[prefKey]) || prefs[prefKey].length !== defaultMms.length) {
+      prefs[prefKey] = [...defaultMms];
+    }
+    const mms = prefs[prefKey];
     const cur = prefs[key].size;
+    const minMm = mms[0] >= 2 ? 1 : 0.1;
     const btns = mms.map((mm, i) => {
       const s = mmToPt(mm);
+      const isSelected = Math.abs(cur - s) < 0.02;
+      const dotSize = Math.max(3, Math.min(16, Math.round(mm * 10)));
       return h('button', {
-        class: 'sz' + (Math.abs(cur - s) < 0.02 ? ' on' : ''), type: 'button', title: mm + ' mm',
-        onclick: () => { prefs[key].size = s; savePrefs(); renderOpts(); }
-      }, h('span', { class: 'dot', style: { width: dots[i] + 'px', height: dots[i] + 'px' } }));
+        class: 'sz' + (isSelected ? ' on' : ''),
+        type: 'button',
+        title: `${mm} mm (tap again to edit size)`,
+        onclick: e => {
+          if (isSelected) {
+            sizePopover(e.currentTarget, key, minMm, maxMm, i);
+          } else {
+            prefs[key].size = s;
+            savePrefs();
+            renderOpts();
+          }
+        },
+        ondblclick: e => {
+          sizePopover(e.currentTarget, key, minMm, maxMm, i);
+        }
+      }, h('span', { class: 'dot', style: { width: dotSize + 'px', height: dotSize + 'px' } }));
     });
-    return [...btns, h('button', { class: 'mm', type: 'button', title: 'Tip size', onclick: e => sizePopover(e.currentTarget, key, mms[0] >= 2 ? 1 : 0.1, maxMm) }, fmtMm(cur))];
+    return [...btns, h('button', {
+      class: 'mm',
+      type: 'button',
+      title: 'Current tip size (tap to adjust)',
+      onclick: e => {
+        const matchedSlot = mms.findIndex(mm => Math.abs(cur - mmToPt(mm)) < 0.02);
+        sizePopover(e.currentTarget, key, minMm, maxMm, matchedSlot >= 0 ? matchedSlot : undefined);
+      }
+    }, fmtMm(cur))];
   }
 
-  function sizePopover(anchor, key, minMm, maxMm) {
+  function sizePopover(anchor, key, minMm, maxMm, slotIdx) {
+    const prefKey = key + 'Sizes';
     const val = h('b', null, fmtMm(prefs[key].size));
     const line = h('span');
     const show = () => {
@@ -6829,14 +6861,27 @@ export async function mountEditor(root, docId, opts = {}) {
     const rng = h('input', {
       type: 'range', class: 'mm-range', min: minMm, max: maxMm, step: maxMm > 4 ? 0.25 : 0.05,
       value: Math.round(prefs[key].size * MM * 100) / 100,
-      oninput: () => { prefs[key].size = mmToPt(Number(rng.value)); show(); },
+      oninput: () => {
+        const mmVal = Math.round(Number(rng.value) * 100) / 100;
+        prefs[key].size = mmToPt(mmVal);
+        if (slotIdx !== undefined && Array.isArray(prefs[prefKey])) {
+          prefs[prefKey][slotIdx] = mmVal;
+        }
+        show();
+      },
       onchange: () => { savePrefs(); renderOpts(); }
     });
     show();
     popover(anchor, h('div', { class: 'mm-pop' },
-      h('div', { class: 'mm-head' }, h('span', null, 'Tip size'), val),
+      h('div', { class: 'mm-head' },
+        h('span', null, slotIdx !== undefined ? `Tip preset #${slotIdx + 1}` : 'Tip size'),
+        val
+      ),
       rng,
-      h('div', { class: 'mm-prev' }, line)));
+      h('div', { class: 'mm-prev' }, line)
+    ), {
+      onClose: () => { savePrefs(); renderOpts(); }
+    });
   }
 
   const seg = (items, cur, onPick) => h('div', { class: 'seg' }, items.map(([v, label]) =>
@@ -6886,7 +6931,7 @@ export async function mountEditor(root, docId, opts = {}) {
       kids = [
         ...favPens(), h('div', { class: 'vsep' }),
         ...swatches('pen', PEN_COLORS), h('div', { class: 'vsep' }),
-        ...sizes('pen', [0.3, 0.5, 0.7, 1, 1.5], [3, 5, 7, 10, 14], 3)
+        ...sizes('pen', [0.3, 0.5, 0.7, 1.0], [3, 5, 7, 10], 3)
       ];
     }
     else if (t === 'hl') {
@@ -7305,7 +7350,14 @@ export async function mountEditor(root, docId, opts = {}) {
         doc.thumb = c.toDataURL('image/jpeg', 0.72);
         docDirty = true;
       }
+      const curIdx = pvs.indexOf(currentPv());
+      const now = Date.now();
+      doc.lastOpened = now;
+      if (curIdx >= 0) doc.lastPage = curIdx + 1;
+      doc.modified = now;
+      docDirty = true;
       await flush();
+      pushDoc(doc.id).catch(() => {});
     } catch (e) { saveFailed(e); }
     bus.emit('editor-close', doc.id);
     el.remove();
@@ -7355,6 +7407,11 @@ export async function mountEditor(root, docId, opts = {}) {
     }
   }
   showSync(syncStatus());
+  const nowOpen = Date.now();
+  doc.lastOpened = nowOpen;
+  doc.modified = nowOpen;
+  db.put('docs', { ...doc }).catch(() => {});
+  pushDoc(doc.id).catch(() => {});
   bus.emit('editor-open', doc.id);
   bmBtn.classList.add('wide'); // on a phone the bookmark star lives in the pages panel only
   drawTabs();

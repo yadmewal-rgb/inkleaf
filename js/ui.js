@@ -102,6 +102,7 @@ export function popover(anchor, content, { align = 'left' } = {}) {
   function close() {
     pop.remove();
     document.removeEventListener('pointerdown', onDoc, true);
+    if (typeof opts?.onClose === 'function') opts.onClose();
   }
   setTimeout(() => document.addEventListener('pointerdown', onDoc, true), 0);
   return close;

@@ -651,6 +651,65 @@ export class User extends DurableObject {
       return json({ ok: true, text });
     }
 
+    // POST /ai/outline : AI-generated Table of Contents / Outline from PDF headings & text
+    if (p[0] === 'ai' && p[1] === 'outline' && req.method === 'POST') {
+      const apiKey = this.kvGet('geminiKey') || this.env.GEMINI_KEY;
+      if (!apiKey) return json({ error: 'no-gemini-key' }, 501);
+      const body = await req.json().catch(() => ({}));
+      const text = body.text || '';
+      const numPages = Number(body.numPages) || 100;
+      if (!text.trim()) return json({ ok: true, outline: [] });
+
+      const prompt = `You are a document indexing assistant. Here is raw text from the Table of Contents or section headers of a ${numPages}-page PDF:\n\n${text.slice(0, 35000)}\n\nExtract and return a clean, comprehensive Table of Contents JSON array of objects. Each object must have:
+- "title": Clean section title (string, remove trailing dots, numbers, or page markers)
+- "page": Target 1-based page number (integer, max ${numPages})
+- "depth": 0 for main chapters/parts, 1 for subsections, 2 for sub-subsections
+
+Return ONLY the valid JSON array without commentary or code fences.`;
+
+      const allowedModels = new Set([
+        'gemini-3.8-flash', 'gemini-3.8-flash-lite', 'gemini-3.7-flash', 'gemini-3.7-flash-lite',
+        'gemini-3.6-flash', 'gemini-3.6-flash-lite', 'gemini-3.5-flash', 'gemini-3.5-flash-lite',
+        'gemini-3.1-flash-lite', 'gemini-2.5-flash'
+      ]);
+      const reqModel = this.kvGet('geminiModel') || 'gemini-3.8-flash';
+      const model = allowedModels.has(reqModel) ? reqModel : 'gemini-3.8-flash';
+      const geminiUrl = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`;
+
+      try {
+        let res = await fetch(geminiUrl, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            contents: [{ parts: [{ text: prompt }] }],
+            generationConfig: { temperature: 0.1, responseMimeType: 'application/json' }
+          })
+        });
+        if (!res.ok) {
+          const fallbackUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${apiKey}`;
+          res = await fetch(fallbackUrl, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              contents: [{ parts: [{ text: prompt }] }],
+              generationConfig: { temperature: 0.1, responseMimeType: 'application/json' }
+            })
+          });
+        }
+        if (res.ok) {
+          const j = await res.json();
+          const raw = (j?.candidates?.[0]?.content?.parts?.[0]?.text || '').trim();
+          const parsed = JSON.parse(raw);
+          if (Array.isArray(parsed) && parsed.length > 0) {
+            return json({ ok: true, outline: parsed });
+          }
+        }
+      } catch (err) {
+        console.warn('AI outline error:', err);
+      }
+      return json({ ok: true, outline: [] });
+    }
+
     // GET /meta/k/id : one record's entry, if the service holds it.
     if (p[0] === 'meta' && KINDS.has(p[1]) && p[2] && req.method === 'GET') {
       const r = this.sql.exec('SELECT k, id, s, size, parts, info, gz FROM recs WHERE k = ? AND id = ?', p[1], p[2]).toArray()[0];

@@ -15,7 +15,7 @@ import { modal, toast, confirmBox, busy } from './ui.js';
 import { I } from './icons.js';
 import { hwOn, setHwOn, status as hwStatus, setCloudOcr, getHwUsage, setHwLimit, getHwModel, setHwModel, getHwModelConfig, getActiveHwModel, MODEL_CASCADE, formatModelName } from './hwsearch.js';
 
-export const APP_VER = 'v75';
+export const APP_VER = 'v76';
 const SERVER = 'https://inkleaf-sync.yadmewal.workers.dev';
 // drive.appdata: Inkleaf's hidden app folder (files it syncs); drive.file: only files Inkleaf itself creates, used
 // for the visible "Inkleaf" folder holding copies of the PDFs under their real names.
@@ -207,7 +207,7 @@ async function signOut() {
   if (s) http(server + '/signout', { method: 'POST', headers: { Authorization: 'Bearer ' + s.token } }).catch(() => {});
 }
 
-async function call(path, opts = {}) {
+export async function call(path, opts = {}) {
   if (!session) { const e = new Error('Sign-in needed'); e.signin = true; throw e; }
   const r = await http(server + path, { ...opts, headers: { Authorization: 'Bearer ' + session.token, ...(opts.headers || {}) } });
   if (r.status === 401) {
@@ -337,10 +337,13 @@ export function mergeDoc(L, R, gone) {
   const have = new Set(nu.pages || []);
   const extra = (old.pages || []).filter(id => !have.has(id) && !(gone && gone.has(id)));
   const cards = mergeCards(nu, old);
-  if (!extra.length && !cards) return nu;
-  const out = { ...nu, modified: Date.now() };
+  const out = { ...nu };
   if (extra.length) out.pages = [...(nu.pages || []), ...extra];
   if (cards) Object.assign(out, cards);
+  out.lastOpened = Math.max(nu.lastOpened || 0, old.lastOpened || 0);
+  out.lastPage = (nu.lastOpened || 0) >= (old.lastOpened || 0) ? (nu.lastPage || old.lastPage || 1) : (old.lastPage || nu.lastPage || 1);
+  if (!out.thumb && old.thumb) out.thumb = old.thumb;
+  out.modified = Math.max(nu.modified || 0, old.modified || 0);
   return out;
 }
 
@@ -647,7 +650,7 @@ async function fullPass() {
 
 // Upload what changed in one notebook (the one being written in). only = ids of the pages saved since the last
 // push; reading just those back, not the whole notebook, keeps writing smooth in long notebooks.
-async function pushDoc(docId, only) {
+export async function pushDoc(docId, only) {
   const pages = only
     ? (await Promise.all([...only].map(id => db.get('pages', id)))).filter(p => p && p.docId === docId)
     : await db.byDoc(docId);

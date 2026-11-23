@@ -19,12 +19,23 @@ const SORTS = [['edited', 'Last edited'], ['opened', 'Last opened'], ['name', 'N
 
 const lsGet = (k, d) => { try { return localStorage.getItem(k) || d; } catch { return d; } };
 const lsSet = (k, v) => { try { localStorage.setItem(k, v); } catch { /* private mode */ } };
-export const openedAt = id => Number(lsGet('inkleaf.opened.' + id, 0));
+export const openedAt = docOrId => {
+  const id = typeof docOrId === 'object' ? docOrId?.id : docOrId;
+  const local = Number(lsGet('inkleaf.opened.' + id, 0));
+  const doc = typeof docOrId === 'object' ? docOrId : null;
+  const cloud = doc && doc.lastOpened ? Number(doc.lastOpened) : 0;
+  return Math.max(local, cloud, (doc && doc.modified) ? Number(doc.modified) : 0);
+};
 export const markOpened = id => lsSet('inkleaf.opened.' + id, String(Date.now()));
 export const lastPageOf = (docOrId, D = []) => {
   try {
     const id = typeof docOrId === 'object' ? docOrId?.id : docOrId;
     const doc = typeof docOrId === 'object' ? docOrId : (D && D.length ? D.find(d => d.id === id) : null);
+    const localOpened = Number(lsGet('inkleaf.opened.' + id, 0));
+    const cloudOpened = doc && doc.lastOpened ? Number(doc.lastOpened) : (doc && doc.modified ? Number(doc.modified) : 0);
+    if (doc && typeof doc.lastPage === 'number' && doc.lastPage > 0) {
+      if (cloudOpened >= localOpened) return doc.lastPage;
+    }
     const pos = parseInt(localStorage.getItem('inkleaf.pos.' + id) || '-1', 10);
     if (!isNaN(pos) && pos >= 0) return pos + 1;
     if (doc && typeof doc.lastPage === 'number' && doc.lastPage > 0) return doc.lastPage;
@@ -1373,8 +1384,8 @@ export async function mountLibrary(root, folderId, opts = {}) {
     const recent = [...D]
       .filter(d => !d.sys)
       .sort((a, b) => {
-        const ao = openedAt(a.id) || a.modified || 0;
-        const bo = openedAt(b.id) || b.modified || 0;
+        const ao = openedAt(a) || a.modified || 0;
+        const bo = openedAt(b) || b.modified || 0;
         return bo - ao;
       })
       .slice(0, 3);
