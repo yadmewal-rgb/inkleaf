@@ -25,6 +25,5 @@
    - Verified folder creation inside PDF import dialog and auto-selection of the new folder.
 
 ## Live now
-- Committed locally on `main`.
+- Pushed to `origin/main` (live on https://yadmewal-rgb.github.io/inkleaf/).
 - Running locally at http://localhost:8080.
-- Awaiting owner confirmation before pushing to GitHub Pages (`main`).
