@@ -125,11 +125,45 @@ export async function promptImportPdf(file, currentFolderId = null) {
     });
 
     const folderSelect = h('select', {
-      style: 'width: 100%; box-sizing: border-box; margin-top: 6px; padding: 8px 10px; border-radius: 6px; border: 1px solid var(--line); background: var(--surface-1); color: var(--text); font-size: 14px;',
-      onchange: e => { selectedFolder = e.target.value; }
+      style: 'flex: 1; min-width: 0; box-sizing: border-box; padding: 8px 10px; border-radius: 6px; border: 1px solid var(--line); background: var(--surface-1); color: var(--text); font-size: 14px;',
+      onchange: async e => {
+        if (e.target.value === '__new__') {
+          folderSelect.value = selectedFolder;
+          await addNewFolderPrompt();
+          return;
+        }
+        selectedFolder = e.target.value;
+      }
     }, [
       h('option', { value: '' }, '📁 Library root (no folder)'),
-      ...liveFolders.map(f => h('option', { value: f.id, selected: f.id === currentFolderId }, '📁 ' + f.name))
+      ...liveFolders.map(f => h('option', { value: f.id, selected: f.id === currentFolderId }, '📁 ' + f.name)),
+      h('option', { value: '__new__' }, '➕ Create new folder...')
+    ]);
+
+    const addNewFolderPrompt = async () => {
+      const name = await promptText('New folder', '', 'Folder name');
+      if (!name || !name.trim()) return;
+      const f = await createFolder(name.trim());
+      const opt = h('option', { value: f.id, selected: true }, '📁 ' + f.name);
+      const newOpt = folderSelect.querySelector('option[value="__new__"]');
+      if (newOpt) folderSelect.insertBefore(opt, newOpt);
+      else folderSelect.appendChild(opt);
+      folderSelect.value = f.id;
+      selectedFolder = f.id;
+      toast(`Created folder "${f.name}"`);
+    };
+
+    const newFolderBtn = h('button', {
+      class: 'btn sm',
+      type: 'button',
+      title: 'Create new folder',
+      style: 'white-space: nowrap; height: 38px; display: inline-flex; align-items: center; gap: 5px; flex-shrink: 0;',
+      onclick: addNewFolderPrompt
+    }, h('span', { class: 'btn-ic', html: I.folder }), '+ New folder');
+
+    const folderRow = h('div', { style: 'display: flex; gap: 8px; margin-top: 6px; align-items: center;' }, [
+      folderSelect,
+      newFolderBtn
     ]);
 
     const docSelect = h('select', {
@@ -141,7 +175,7 @@ export async function promptImportPdf(file, currentFolderId = null) {
       h('label', { class: 'bk-sub', style: 'font-weight: 600;' }, 'Notebook name:'),
       titleInput,
       h('label', { class: 'bk-sub', style: 'font-weight: 600; margin-top: 10px; display: block;' }, 'Destination folder:'),
-      folderSelect
+      folderRow
     ]);
 
     const appendSec = h('div', { style: 'margin-top: 14px;', hidden: true }, [
@@ -512,7 +546,7 @@ export async function mountLibrary(root, folderId, opts = {}) {
       { label: 'Open a notebook file', icon: I.share, onClick: () => fileInp.click() },
       narrow ? '-' : null,
       narrow ? { label: 'Recycle bin', icon: I.trash, onClick: () => { location.hash = '#/bin'; } } : null
-    ], { align: 'right' });
+    ].filter(Boolean), { align: 'right' });
   }
 
   function newNotebook() {
@@ -737,6 +771,17 @@ export async function mountLibrary(root, folderId, opts = {}) {
         class: 'mi', type: 'button', style: { paddingLeft: 12 + depth * 18 + 'px' },
         onclick: () => { out = id; m.close(); }
       }, h('span', { class: 'mi-ic', html: I.folder }), name));
+      rows.push(h('button', {
+        class: 'mi', type: 'button',
+        style: 'color: var(--accent); font-weight: 600; border-bottom: 1px solid var(--line); margin-bottom: 6px;',
+        onclick: async () => {
+          const name = await promptText('New folder', '', 'Folder name');
+          if (!name || !name.trim()) return;
+          const f = await createFolder(name.trim());
+          out = f.id;
+          m.close();
+        }
+      }, h('span', { class: 'mi-ic', html: I.plus }), '+ New folder'));
       add(null, 'Library', 0);
       const walk = (parent, depth) => {
         for (const f of folders.filter(x => (x.parentId || null) === parent && !banned.has(x.id)).sort((a, b) => a.name.localeCompare(b.name))) {

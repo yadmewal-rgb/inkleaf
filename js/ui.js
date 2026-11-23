@@ -110,7 +110,7 @@ export function popover(anchor, content, { align = 'left' } = {}) {
 // items: [{label, icon, danger, onClick} | '-']
 export function popMenu(anchor, items, opts) {
   let close = () => {};
-  const list = h('div', { class: 'menu' }, items.map(it => it === '-'
+  const list = h('div', { class: 'menu' }, (items || []).filter(Boolean).map(it => it === '-'
     ? h('div', { class: 'sep' })
     : h('button', {
         class: 'mi' + (it.danger ? ' danger' : ''),
