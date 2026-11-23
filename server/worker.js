@@ -138,6 +138,8 @@ export class User extends DurableObject {
       CREATE UNIQUE INDEX IF NOT EXISTS inbox_shares_uniq ON inbox_shares (shareId, targetEmail);
     `);
     try { this.sql.exec('ALTER TABLE shares ADD COLUMN allowedEmails TEXT'); } catch {}
+    try { this.sql.exec('ALTER TABLE shares ADD COLUMN folderId TEXT'); } catch {}
+    try { this.sql.exec('ALTER TABLE shares ADD COLUMN folderName TEXT'); } catch {}
     try { this.sql.exec('ALTER TABLE inbox_shares ADD COLUMN folderId TEXT'); } catch {}
     try { this.sql.exec('ALTER TABLE inbox_shares ADD COLUMN folderName TEXT'); } catch {}
   }
@@ -239,8 +241,8 @@ export class User extends DurableObject {
         const b = await req.json().catch(() => ({}));
         if (b.shareId && b.targetEmail) {
           this.sql.exec(
-            'INSERT OR REPLACE INTO inbox_shares (shareId, kind, docId, title, cover, ownerEmail, targetEmail, canWrite, created) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
-            b.shareId, b.kind || 'd', b.docId || '', b.title || '', b.cover || '', String(b.ownerEmail || '').toLowerCase(), String(b.targetEmail || '').toLowerCase(), b.canWrite ? 1 : 0, b.created || Date.now()
+            'INSERT OR REPLACE INTO inbox_shares (shareId, kind, docId, title, cover, ownerEmail, targetEmail, canWrite, created, folderId, folderName) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+            b.shareId, b.kind || 'd', b.docId || '', b.title || '', b.cover || '', String(b.ownerEmail || '').toLowerCase(), String(b.targetEmail || '').toLowerCase(), b.canWrite ? 1 : 0, b.created || Date.now(), b.folderId || '', b.folderName || ''
           );
         }
         return json({ ok: true });
@@ -387,13 +389,15 @@ export class User extends DurableObject {
     if (p[0] === 'share' && p[1] && req.method === 'POST') {
       const docId = p[1];
       const { canWrite = false, allowedEmails = '', title = '', cover = '', kind = 'd', folderId = '', folderName = '' } = await req.json().catch(() => ({}));
-      let sh = this.sql.exec('SELECT secret, canWrite, allowedEmails FROM shares WHERE docId = ?', docId).toArray()[0];
+      let sh = this.sql.exec('SELECT secret, canWrite, allowedEmails, folderId, folderName FROM shares WHERE docId = ?', docId).toArray()[0];
       const secret = sh ? sh.secret : randomKey().slice(0, 16);
       const emails = String(allowedEmails || '').trim().toLowerCase();
+      const effFolderId = folderId || (sh ? sh.folderId : '') || '';
+      const effFolderName = folderName || (sh ? sh.folderName : '') || '';
       if (!sh) {
-        this.sql.exec('INSERT INTO shares (secret, docId, canWrite, created, allowedEmails) VALUES (?, ?, ?, ?, ?)', secret, docId, canWrite ? 1 : 0, Date.now(), emails);
-      } else if (allowedEmails !== undefined) {
-        this.sql.exec('UPDATE shares SET allowedEmails = ? WHERE secret = ?', emails, secret);
+        this.sql.exec('INSERT INTO shares (secret, docId, canWrite, created, allowedEmails, folderId, folderName) VALUES (?, ?, ?, ?, ?, ?, ?)', secret, docId, canWrite ? 1 : 0, Date.now(), emails, effFolderId, effFolderName);
+      } else {
+        this.sql.exec('UPDATE shares SET allowedEmails = ?, folderId = ?, folderName = ? WHERE secret = ?', emails, effFolderId, effFolderName, secret);
       }
       const shareId = `${mySub}_${secret}`;
       const myEmail = String(this.kvGet('email') || '').toLowerCase();
@@ -420,8 +424,8 @@ export class User extends DurableObject {
                   targetEmail,
                   canWrite: canWrite ? 1 : 0,
                   created: Date.now(),
-                  folderId: folderId || '',
-                  folderName: folderName || ''
+                  folderId: effFolderId,
+                  folderName: effFolderName
                 })
               }));
             }
@@ -430,7 +434,7 @@ export class User extends DurableObject {
           console.warn('Failed to register share in inbox:', e);
         }
       }
-      return json({ shareId, canWrite: sh ? !!sh.canWrite : !!canWrite, allowedEmails: sh ? (sh.allowedEmails || '') : emails, secret });
+      return json({ shareId, canWrite: sh ? !!sh.canWrite : !!canWrite, allowedEmails: sh ? (sh.allowedEmails || '') : emails, secret, folderId: effFolderId, folderName: effFolderName });
     }
 
     // GET /shared-with-me : list items shared with this user
@@ -449,26 +453,29 @@ export class User extends DurableObject {
 
     // GET /shares : list all active shares created by this user
     if (p[0] === 'shares' && req.method === 'GET') {
-      const rows = this.sql.exec('SELECT docId, secret, canWrite, allowedEmails FROM shares').toArray();
+      const rows = this.sql.exec('SELECT docId, secret, canWrite, allowedEmails, folderId, folderName FROM shares').toArray();
       return json({ shares: rows });
     }
 
     // GET /share/:docId : check status of live share
     if (p[0] === 'share' && p[1] && req.method === 'GET') {
       const docId = p[1];
-      const sh = this.sql.exec('SELECT secret, canWrite, allowedEmails FROM shares WHERE docId = ?', docId).toArray()[0];
+      const sh = this.sql.exec('SELECT secret, canWrite, allowedEmails, folderId, folderName FROM shares WHERE docId = ?', docId).toArray()[0];
       if (!sh) return json({ shared: false });
-      return json({ shared: true, shareId: `${mySub}_${sh.secret}`, canWrite: !!sh.canWrite, allowedEmails: sh.allowedEmails || '', secret: sh.secret });
+      return json({ shared: true, shareId: `${mySub}_${sh.secret}`, canWrite: !!sh.canWrite, allowedEmails: sh.allowedEmails || '', secret: sh.secret, folderId: sh.folderId || '', folderName: sh.folderName || '' });
     }
 
     // PUT /share/:docId/permission : toggle allow friend to write & allowed emails
     if (p[0] === 'share' && p[1] && p[2] === 'permission' && req.method === 'PUT') {
       const docId = p[1];
       const { canWrite = false, allowedEmails, title = '', cover = '', kind = 'd', folderId = '', folderName = '' } = await req.json().catch(() => ({}));
+      let sh = this.sql.exec('SELECT secret, allowedEmails, folderId, folderName FROM shares WHERE docId = ?', docId).toArray()[0];
+      const effFolderId = folderId || (sh ? sh.folderId : '') || '';
+      const effFolderName = folderName || (sh ? sh.folderName : '') || '';
       if (allowedEmails !== undefined) {
-        this.sql.exec('UPDATE shares SET canWrite = ?, allowedEmails = ? WHERE docId = ?', canWrite ? 1 : 0, String(allowedEmails || '').trim().toLowerCase(), docId);
+        this.sql.exec('UPDATE shares SET canWrite = ?, allowedEmails = ?, folderId = ?, folderName = ? WHERE docId = ?', canWrite ? 1 : 0, String(allowedEmails || '').trim().toLowerCase(), effFolderId, effFolderName, docId);
       } else {
-        this.sql.exec('UPDATE shares SET canWrite = ? WHERE docId = ?', canWrite ? 1 : 0, docId);
+        this.sql.exec('UPDATE shares SET canWrite = ?, folderId = ?, folderName = ? WHERE docId = ?', canWrite ? 1 : 0, effFolderId, effFolderName, docId);
       }
       for (const ws of this.ctx.getWebSockets()) {
         const a = ws.deserializeAttachment() || {};
@@ -488,8 +495,8 @@ export class User extends DurableObject {
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ ownerEmail: myEmail, docId })
         }));
-        const sh = this.sql.exec('SELECT secret FROM shares WHERE docId = ?', docId).toArray()[0];
-        const emails = allowedEmails !== undefined ? String(allowedEmails || '').trim().toLowerCase() : '';
+        sh = this.sql.exec('SELECT secret, allowedEmails, folderId, folderName FROM shares WHERE docId = ?', docId).toArray()[0];
+        const emails = allowedEmails !== undefined ? String(allowedEmails || '').trim().toLowerCase() : (sh ? sh.allowedEmails : '');
         if (sh && mySub && emails) {
           const shareId = `${mySub}_${sh.secret}`;
           for (const targetEmail of emails.split(',').map(s => s.trim().toLowerCase()).filter(Boolean)) {
@@ -506,8 +513,8 @@ export class User extends DurableObject {
                 targetEmail,
                 canWrite: canWrite ? 1 : 0,
                 created: Date.now(),
-                folderId: folderId || '',
-                folderName: folderName || ''
+                folderId: effFolderId,
+                folderName: effFolderName
               })
             }));
           }
@@ -516,7 +523,7 @@ export class User extends DurableObject {
         console.warn('Failed to update share registry:', e);
       }
 
-      return json({ ok: true, canWrite: !!canWrite, allowedEmails });
+      return json({ ok: true, canWrite: !!canWrite, allowedEmails, folderId: effFolderId, folderName: effFolderName });
     }
 
     // DELETE /share/:docId : revoke live share link

@@ -1653,7 +1653,14 @@ export async function mountLibrary(root, folderId, opts = {}) {
       const cards = [];
       if (activeSharedFolder) {
         const folderDocs = items.filter(it => (it.folderName || '') === activeSharedFolder);
-        for (const it of folderDocs) cards.push(sharedDocCard(it));
+        if (!folderDocs.length) {
+          cards.push(h('div', { class: 'empty', style: 'grid-column: 1 / -1; padding: 40px 20px;' },
+            h('p', null, `No notebooks found in "${activeSharedFolder}".`),
+            h('button', { class: 'btn sm primary', type: 'button', onclick: () => { activeSharedFolder = null; render(); } }, 'Back to Shared')
+          ));
+        } else {
+          for (const it of folderDocs) cards.push(sharedDocCard(it));
+        }
       } else {
         const folderGroups = new Map();
         const standalone = [];
@@ -1681,6 +1688,28 @@ export async function mountLibrary(root, folderId, opts = {}) {
             h('div', { class: 'meta' },
               h('div', { class: 'name' }, fName),
               h('div', { class: 'sub' }, `Shared by ${owner} · ${cnt} ${cnt === 1 ? 'notebook' : 'notebooks'}`)
+            ),
+            h('div', { class: 'card-end' },
+              h('button', {
+                class: 'ic sm card-more', type: 'button', title: 'Folder options', html: I.more,
+                onclick: e => {
+                  e.stopPropagation();
+                  popMenu(e.currentTarget, [
+                    { label: 'Open folder', icon: I.folder, onClick: () => { activeSharedFolder = fName; render(); } },
+                    '-',
+                    {
+                      label: 'Remove from Shared', icon: I.close, danger: true, onClick: async () => {
+                        if (!await confirmBox('Remove shared folder', `Remove "${fName}" and its ${cnt} notebooks from your Shared tab?`, 'Remove', true)) return;
+                        const toRemove = new Set(fDocs.map(x => x.shareId));
+                        sharedItems = sharedItems.filter(x => !toRemove.has(x.shareId));
+                        await db.setMeta('shared_items', sharedItems);
+                        toast(`Removed folder "${fName}" from your Shared tab`);
+                        render();
+                      }
+                    }
+                  ], { align: 'right' });
+                }
+              })
             )
           ));
         }
