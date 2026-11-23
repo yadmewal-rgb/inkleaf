@@ -1080,7 +1080,13 @@ export async function mountEditor(root, docId, opts = {}) {
     if (bmBtn._on !== bm) { bmBtn._on = bm; bmBtn.innerHTML = bm ? I.starOn : I.star; bmBtn.classList.toggle('star-on', bm); bmBtn.title = bm ? 'Remove bookmark' : 'Bookmark this page'; }
     if (i !== posSaved) {
       posSaved = i;
-      try { localStorage.setItem('inkleaf.pos.' + doc.id, String(i)); } catch { /* private mode */ }
+      try {
+        localStorage.setItem('inkleaf.pos.' + doc.id, String(i));
+        if (doc.lastPage !== i + 1) {
+          doc.lastPage = i + 1;
+          db.put('docs', { ...doc, lastPage: i + 1 }).catch(() => {});
+        }
+      } catch { /* private mode */ }
     }
   }
 
@@ -7263,7 +7269,13 @@ export async function mountEditor(root, docId, opts = {}) {
     try {
       const curPv = currentPv();
       const curIdx = curPv ? pvs.indexOf(curPv) : -1;
-      if (curIdx >= 0) localStorage.setItem('inkleaf.pos.' + doc.id, String(curIdx));
+      if (curIdx >= 0) {
+        localStorage.setItem('inkleaf.pos.' + doc.id, String(curIdx));
+        if (doc.lastPage !== curIdx + 1) {
+          doc.lastPage = curIdx + 1;
+          await db.put('docs', { ...doc, lastPage: curIdx + 1 });
+        }
+      }
     } catch { /* ignore */ }
     commitText();
     clearSel();
@@ -7386,7 +7398,11 @@ export async function mountEditor(root, docId, opts = {}) {
   updateUndoUi();
   measure();
   let startAt = 0;
-  try { startAt = parseInt(localStorage.getItem('inkleaf.pos.' + doc.id) || '0', 10) || 0; } catch { /* ignore */ }
+  try {
+    const loc = parseInt(localStorage.getItem('inkleaf.pos.' + doc.id) || '-1', 10);
+    if (!isNaN(loc) && loc >= 0) startAt = loc;
+    else if (doc.lastPage && doc.lastPage > 0) startAt = doc.lastPage - 1;
+  } catch { /* ignore */ }
   if (opts.page) startAt = opts.page - 1;
   startAt = clamp(startAt, 0, pages.length - 1);
   scale = fitScale(pages[startAt], COARSE ? 2.5 : 1.6);

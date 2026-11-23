@@ -21,13 +21,17 @@ const lsGet = (k, d) => { try { return localStorage.getItem(k) || d; } catch { r
 const lsSet = (k, v) => { try { localStorage.setItem(k, v); } catch { /* private mode */ } };
 export const openedAt = id => Number(lsGet('inkleaf.opened.' + id, 0));
 export const markOpened = id => lsSet('inkleaf.opened.' + id, String(Date.now()));
-export const lastPageOf = id => {
+export const lastPageOf = (docOrId, D = []) => {
   try {
-    const pos = parseInt(localStorage.getItem('inkleaf.pos.' + id) || '0', 10);
-    return Math.max(1, (isNaN(pos) ? 0 : pos) + 1);
+    const id = typeof docOrId === 'object' ? docOrId?.id : docOrId;
+    const doc = typeof docOrId === 'object' ? docOrId : (D && D.length ? D.find(d => d.id === id) : null);
+    const pos = parseInt(localStorage.getItem('inkleaf.pos.' + id) || '-1', 10);
+    if (!isNaN(pos) && pos >= 0) return pos + 1;
+    if (doc && typeof doc.lastPage === 'number' && doc.lastPage > 0) return doc.lastPage;
   } catch {
-    return 1;
+    /* private mode */
   }
+  return 1;
 };
 
 export const FOLDER_COLORS = {
@@ -1382,8 +1386,15 @@ export async function mountLibrary(root, folderId, opts = {}) {
 
     const cards = [];
     for (const d of recent) {
-      const pNum = lastPageOf(d.id);
-      const thumb = d.thumb ? h('img', { src: d.thumb, alt: '' }) : null;
+      const totalPages = d.pages ? d.pages.length : 1;
+      const pNum = Math.min(totalPages, lastPageOf(d));
+      const thumb = d.thumb
+        ? h('img', { src: d.thumb, alt: '' })
+        : h('div', { class: 'jump-cover-fallback' },
+            h('span', { class: 'jump-fallback-ic', html: I.book }),
+            h('span', { class: 'jump-fallback-rule' })
+          );
+      const subText = totalPages > 1 ? `Page ${pNum} of ${totalPages}` : '1 page';
       const card = h('div', {
         class: 'jump-card',
         onclick: () => { location.hash = `#/d/${d.id}?p=${pNum}`; }
@@ -1391,7 +1402,7 @@ export async function mountLibrary(root, folderId, opts = {}) {
         h('div', { class: 'jump-thumb', style: { '--cover': d.cover || COVERS[0] } }, thumb),
         h('div', { class: 'jump-info' },
           h('div', { class: 'jump-name' }, d.title || 'Untitled notebook'),
-          h('div', { class: 'jump-sub' }, `Resume Page ${pNum}`),
+          h('div', { class: 'jump-sub' }, subText),
           h('div', { class: 'jump-time' }, fmtDate(d.modified))
         )
       );
@@ -1410,10 +1421,11 @@ export async function mountLibrary(root, folderId, opts = {}) {
   function docCard(d, F = []) {
     const isShared = !!d.shared || myShares.has(d.id);
     const dateStr = fmtDate(d.modified);
-    const lastP = lastPageOf(d.id);
-    const pageStr = d.pages && d.pages.length > 1
-      ? (lastP > 1 ? `Page ${lastP} of ${d.pages.length}` : `${d.pages.length} pages`)
-      : (d.pages && d.pages.length === 1 ? '1 page' : '');
+    const totalPages = d.pages ? d.pages.length : 1;
+    const lastP = Math.min(totalPages, lastPageOf(d));
+    const pageStr = totalPages > 1
+      ? (lastP > 1 ? `Page ${lastP} of ${totalPages}` : `${totalPages} pages`)
+      : '1 page';
     const folderObj = d.folderId && F.length ? F.find(f => f.id === d.folderId) : null;
     const isPinned = getPinnedDocs().has(d.id);
     const isSelected = selectedDocIds.has(d.id);
@@ -1441,7 +1453,7 @@ export async function mountLibrary(root, folderId, opts = {}) {
           render();
           return;
         }
-        const pNum = lastPageOf(d.id);
+        const pNum = Math.min(totalPages, lastPageOf(d));
         location.hash = `#/d/${d.id}?p=${pNum}`;
       }
     },

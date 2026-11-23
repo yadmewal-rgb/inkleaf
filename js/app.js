@@ -57,7 +57,14 @@ async function route() {
     } else {
       const pParam = parseInt(q.get('p'), 10);
       let pSaved = 0;
-      try { pSaved = (parseInt(localStorage.getItem('inkleaf.pos.' + ids[0]) || '0', 10) || 0) + 1; } catch {}
+      try {
+        const loc = parseInt(localStorage.getItem('inkleaf.pos.' + ids[0]) || '-1', 10);
+        if (!isNaN(loc) && loc >= 0) pSaved = loc + 1;
+        else {
+          const d = await db.get('docs', ids[0]);
+          if (d && typeof d.lastPage === 'number' && d.lastPage > 0) pSaved = d.lastPage;
+        }
+      } catch {}
       const targetPage = pParam || pSaved || 1;
       current = await mountEditor(root, ids[0], { page: targetPage, q: q.get('q') || '' });
     }

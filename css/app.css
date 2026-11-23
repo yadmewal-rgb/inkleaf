@@ -897,6 +897,33 @@ p {
   object-fit: cover;
   object-position: top;
 }
+.jump-cover-fallback {
+  width: 100%;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 3px;
+  background: linear-gradient(135deg, rgba(255, 255, 255, .05), rgba(0, 0, 0, .14));
+}
+.jump-fallback-ic {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--muted);
+  opacity: .75;
+}
+.jump-fallback-ic svg {
+  width: 18px;
+  height: 18px;
+}
+.jump-fallback-rule {
+  width: 20px;
+  height: 2px;
+  background: var(--line);
+  border-radius: 1px;
+}
 .jump-info {
   padding: 8px 12px;
   display: flex;
