@@ -21,6 +21,14 @@ const lsGet = (k, d) => { try { return localStorage.getItem(k) || d; } catch { r
 const lsSet = (k, v) => { try { localStorage.setItem(k, v); } catch { /* private mode */ } };
 export const openedAt = id => Number(lsGet('inkleaf.opened.' + id, 0));
 export const markOpened = id => lsSet('inkleaf.opened.' + id, String(Date.now()));
+export const lastPageOf = id => {
+  try {
+    const pos = parseInt(localStorage.getItem('inkleaf.pos.' + id) || '0', 10);
+    return Math.max(1, (isNaN(pos) ? 0 : pos) + 1);
+  } catch {
+    return 1;
+  }
+};
 
 export const FOLDER_COLORS = {
   red: { label: 'Red', class: 'dot-red', color: '#e05260' },
@@ -1374,7 +1382,7 @@ export async function mountLibrary(root, folderId, opts = {}) {
 
     const cards = [];
     for (const d of recent) {
-      const pNum = Number(lsGet('inkleaf.page.' + d.id, 1)) || 1;
+      const pNum = lastPageOf(d.id);
       const thumb = d.thumb ? h('img', { src: d.thumb, alt: '' }) : null;
       const card = h('div', {
         class: 'jump-card',
@@ -1402,7 +1410,10 @@ export async function mountLibrary(root, folderId, opts = {}) {
   function docCard(d, F = []) {
     const isShared = !!d.shared || myShares.has(d.id);
     const dateStr = fmtDate(d.modified);
-    const pageStr = d.pages && d.pages.length > 1 ? `${d.pages.length} pages` : (d.pages && d.pages.length === 1 ? '1 page' : '');
+    const lastP = lastPageOf(d.id);
+    const pageStr = d.pages && d.pages.length > 1
+      ? (lastP > 1 ? `Page ${lastP} of ${d.pages.length}` : `${d.pages.length} pages`)
+      : (d.pages && d.pages.length === 1 ? '1 page' : '');
     const folderObj = d.folderId && F.length ? F.find(f => f.id === d.folderId) : null;
     const isPinned = getPinnedDocs().has(d.id);
     const isSelected = selectedDocIds.has(d.id);
@@ -1430,7 +1441,8 @@ export async function mountLibrary(root, folderId, opts = {}) {
           render();
           return;
         }
-        location.hash = '#/d/' + d.id;
+        const pNum = lastPageOf(d.id);
+        location.hash = `#/d/${d.id}?p=${pNum}`;
       }
     },
       h('div', { class: 'cover', style: { '--cover': d.cover || COVERS[0] } },

@@ -55,7 +55,11 @@ async function route() {
       for (let i = 0; i < 2; i++) eds.push(await mountEditor(panes[i], ids[i], { pane: i, other: ids[1 - i] }));
       current = { destroy: async () => { for (const e of eds) await e.destroy(); } };
     } else {
-      current = await mountEditor(root, ids[0], { page: parseInt(q.get('p'), 10) || 0, q: q.get('q') || '' });
+      const pParam = parseInt(q.get('p'), 10);
+      let pSaved = 0;
+      try { pSaved = (parseInt(localStorage.getItem('inkleaf.pos.' + ids[0]) || '0', 10) || 0) + 1; } catch {}
+      const targetPage = pParam || pSaved || 1;
+      current = await mountEditor(root, ids[0], { page: targetPage, q: q.get('q') || '' });
     }
   } else if (hash === '/bin') {
     current = await mountLibrary(root, null, { bin: true });

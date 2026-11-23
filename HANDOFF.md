@@ -32,12 +32,17 @@
      - **Tag:** Prompts tag name and batch tags all selected notebooks.
      - **Favourite:** Marks all selected notebooks as favourites.
      - **Bin:** Prompts confirmation and batch moves all selected notebooks to the recycle bin.
-7. **PWA Version Bump (`sw.js`, `js/sync.js`)**:
+7. **Resume Last Active Page on Any Notebook Click (`js/library.js`, `js/app.js`, `js/editor.js`)**:
+   - Clicking on ANY notebook in the library (cards in grid or list view) now reads the exact page position (`inkleaf.pos.<id>`) and navigates directly to that page via `#/d/<id>?p=<lastPage>`.
+   - Notebook cards with multiple pages now show `Page X of Y` in their subtitle so you see where you left off at a glance.
+   - `app.js` and `editor.js` both guarantee automatic resume of the saved page position on load, and `destroy()` preserves the active position when navigating away.
+8. **PWA Version Bump (`sw.js`, `js/sync.js`)**:
    - Bumped service worker cache to `inkleaf-v72`.
    - Updated Settings to `Inkleaf v72 · Build 2026.11`.
-8. **Automated Testing & Screenshots**:
+9. **Automated Testing & Screenshots**:
    - Executed live test in Chrome across desktop (1200x750) and mobile (390x844).
-   - Captured and verified 5 high-resolution screenshots with `shots.ps1`.
+   - Verified creating multi-page notes, working on page 4, viewing `Page 4 of 6` in library, and clicking card to jump straight to page 4 (`4 / 6`).
+   - Captured and verified screenshots with `shots.ps1`.
 
 ## Local Status
 - Clean local build, tested at http://localhost:8080.

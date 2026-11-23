@@ -7093,6 +7093,11 @@ export async function mountEditor(root, docId, opts = {}) {
   }
 
   async function destroy() {
+    try {
+      const curPv = currentPv();
+      const curIdx = curPv ? pvs.indexOf(curPv) : -1;
+      if (curIdx >= 0) localStorage.setItem('inkleaf.pos.' + doc.id, String(curIdx));
+    } catch { /* ignore */ }
     commitText();
     clearSel();
     destroyed = true;
@@ -7221,6 +7226,9 @@ export async function mountEditor(root, docId, opts = {}) {
   tx = (vpRect.width - worldW * scale) / 2;
   scrollToPage(startAt);
   ro.observe(vp);
+  requestAnimationFrame(() => {
+    if (!destroyed && startAt > 0) scrollToPage(startAt);
+  });
   if (opts.q) { findInp.value = opts.q; openFind(); } // opened from a library search: show the matches
   drawTray();
   setTimeout(updateSpellMarks, 200);
