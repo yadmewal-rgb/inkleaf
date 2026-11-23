@@ -22,6 +22,40 @@ const lsSet = (k, v) => { try { localStorage.setItem(k, v); } catch { /* private
 export const openedAt = id => Number(lsGet('inkleaf.opened.' + id, 0));
 export const markOpened = id => lsSet('inkleaf.opened.' + id, String(Date.now()));
 
+export const FOLDER_COLORS = {
+  red: { label: 'Red', class: 'dot-red', color: '#e05260' },
+  blue: { label: 'Blue', class: 'dot-blue', color: '#3b82f6' },
+  green: { label: 'Green', class: 'dot-green', color: '#10b981' },
+  yellow: { label: 'Yellow', class: 'dot-yellow', color: '#f59e0b' },
+  purple: { label: 'Purple', class: 'dot-purple', color: '#a855f7' }
+};
+export const COLOR_KEYS = ['red', 'blue', 'green', 'yellow', 'purple'];
+
+export function getFolderColors() {
+  try { return JSON.parse(lsGet('inkleaf.folderColors', '{}')) || {}; } catch { return {}; }
+}
+export function setFolderColor(folderId, colorKey) {
+  const map = getFolderColors();
+  if (colorKey) map[folderId] = colorKey;
+  else delete map[folderId];
+  lsSet('inkleaf.folderColors', JSON.stringify(map));
+}
+export function folderColorOf(folderId, index = 0) {
+  const map = getFolderColors();
+  if (folderId && map[folderId] && FOLDER_COLORS[map[folderId]]) return map[folderId];
+  return COLOR_KEYS[Math.abs(index) % COLOR_KEYS.length];
+}
+
+export function getPinnedDocs() {
+  try { return new Set(JSON.parse(lsGet('inkleaf.pinnedDocs', '[]'))); } catch { return new Set(); }
+}
+export function togglePinDoc(docId) {
+  const pinned = getPinnedDocs();
+  if (pinned.has(docId)) pinned.delete(docId);
+  else pinned.add(docId);
+  lsSet('inkleaf.pinnedDocs', JSON.stringify([...pinned]));
+}
+
 export async function importPdf(file, folderId, customTitle = null) {
   const b = busy('Importing PDF...');
   try {
@@ -520,8 +554,46 @@ export async function mountLibrary(root, folderId, opts = {}) {
   bus.on('hw-model-changed', updateAiBadge);
   bus.on('hw-status', updateAiBadge);
 
-  const el = h('div', { class: 'lib' },
+  let sidebarCollapsed = lsGet('inkleaf.sidebarCollapsed', '0') === '1';
+  let mobileDrawerOpen = false;
+  let selectMode = false;
+  const selectedDocIds = new Set();
+
+  const sidebar = h('aside', { class: 'lib-sidebar' + (sidebarCollapsed ? ' collapsed' : '') });
+  const drawerBackdrop = h('div', { class: 'drawer-backdrop', onclick: () => closeDrawer() });
+  const jumpSection = h('div', { class: 'jump-strip-section' });
+  const selectionBar = h('div', { class: 'selection-bar', hidden: true });
+
+  function closeDrawer() {
+    mobileDrawerOpen = false;
+    sidebar.classList.remove('mobile-open');
+    drawerBackdrop.classList.remove('active');
+  }
+  function updateDrawerState() {
+    sidebar.classList.toggle('mobile-open', mobileDrawerOpen);
+    drawerBackdrop.classList.toggle('active', mobileDrawerOpen);
+  }
+
+  const sidebarToggleBtn = h('button', {
+    class: 'ic sidebar-toggle-btn',
+    type: 'button',
+    title: 'Toggle sidebar',
+    html: I.sidebar,
+    onclick: () => {
+      if (innerWidth <= 760) {
+        mobileDrawerOpen = !mobileDrawerOpen;
+        updateDrawerState();
+      } else {
+        sidebarCollapsed = !sidebarCollapsed;
+        lsSet('inkleaf.sidebarCollapsed', sidebarCollapsed ? '1' : '0');
+        sidebar.classList.toggle('collapsed', sidebarCollapsed);
+      }
+    }
+  });
+
+  const mainArea = h('main', { class: 'lib-main' },
     h('header', { class: 'lib-head' },
+      sidebarToggleBtn,
       h('div', { class: 'brand', title: 'Inkleaf Home', onclick: () => { location.hash = '#/'; } }, h('img', { src: 'icons/icon.svg', alt: 'Inkleaf', width: 30, height: 30 }), h('span', null, 'Inkleaf')),
       bin ? h('div', { class: 'grow' }) : h('div', { class: 'search-wrap' }, h('span', { class: 'search-ic', html: I.search }), search, hwAiBadge),
       bin ? null : h('button', {
@@ -531,7 +603,12 @@ export async function mountLibrary(root, folderId, opts = {}) {
       syncBtn, bin ? null : binBtn,
       h('button', { class: 'ic', type: 'button', title: 'Settings', html: I.settings, onclick: () => openSettings() }),
       bin ? null : h('button', { class: 'btn primary new', type: 'button', onclick: e => newMenu(e.currentTarget) }, h('span', { class: 'btn-ic', html: I.plus }), 'New')),
-    crumbs, tools, grid, results, pdfInp, fileInp, gnInp);
+    crumbs, jumpSection, tools, grid, results, selectionBar, pdfInp, fileInp, gnInp);
+
+  const el = h('div', { class: 'lib studio-layout' },
+    sidebar,
+    drawerBackdrop,
+    mainArea);
   root.append(el);
 
   function newMenu(anchor) {
@@ -837,7 +914,18 @@ export async function mountLibrary(root, folderId, opts = {}) {
 
   function docMenu(anchor, d) {
     const isShared = !!d.shared || myShares.has(d.id);
+    const pinned = getPinnedDocs();
+    const isPinned = pinned.has(d.id);
     popMenu(anchor, [
+      {
+        label: isPinned ? 'Unpin from top' : 'Pin to top',
+        icon: I.bookmark,
+        onClick: () => {
+          togglePinDoc(d.id);
+          render();
+          toast(isPinned ? `Unpinned "${d.title}"` : `Pinned "${d.title}" to top`);
+        }
+      },
       {
         label: d.fav ? 'Remove from favourites' : 'Add to favourites', icon: d.fav ? I.starOn : I.star, onClick: async () => {
           await db.put('docs', { ...d, fav: !d.fav, modified: Date.now() });
@@ -876,7 +964,30 @@ export async function mountLibrary(root, folderId, opts = {}) {
 
   function folderMenu(anchor, f) {
     const isFolderShared = mySharedFolders.has(f.id);
+    const curColor = folderColorOf(f.id);
     popMenu(anchor, [
+      {
+        label: 'Folder color', icon: I.palette, onClick: () => {
+          let m = null;
+          m = modal({
+            title: 'Folder color: ' + f.name,
+            body: h('div', { style: 'display: flex; gap: 14px; justify-content: center; padding: 18px 8px;' },
+              COLOR_KEYS.map(c => h('button', {
+                class: 'folder-dot dot-' + c,
+                style: 'width: 32px; height: 32px; cursor: pointer; border-radius: 50%; border: ' + (curColor === c ? '3px solid var(--ink)' : '2px solid transparent') + ';',
+                title: FOLDER_COLORS[c].label,
+                onclick: () => {
+                  setFolderColor(f.id, c);
+                  m.close();
+                  render();
+                  toast(`Color updated for "${f.name}"`);
+                }
+              }))
+            ),
+            actions: [{ label: 'Close' }]
+          });
+        }
+      },
       {
         label: 'Rename', icon: I.edit, onClick: async () => {
           const name = await promptText('Rename folder', f.name);
@@ -972,15 +1083,336 @@ export async function mountLibrary(root, folderId, opts = {}) {
     );
   }
 
+  async function batchMove() {
+    const dest = await pickFolder(null);
+    if (dest === undefined) return;
+    let count = 0;
+    for (const id of selectedDocIds) {
+      const doc = await db.get('docs', id);
+      if (doc) {
+        doc.folderId = dest;
+        doc.modified = Date.now();
+        await db.put('docs', doc);
+        count++;
+      }
+    }
+    selectedDocIds.clear();
+    selectMode = false;
+    toast(`Moved ${count} notebook${count > 1 ? 's' : ''}`);
+    render();
+  }
+
+  async function batchTag() {
+    const tag = await promptText('Add tag to selected', '', 'Tag name, e.g. physics');
+    if (!tag) return;
+    const cleanTag = tag.trim().replace(/^#+/, '').replace(/\s+/g, '-').toLowerCase();
+    if (!cleanTag) return;
+    let count = 0;
+    for (const id of selectedDocIds) {
+      const doc = await db.get('docs', id);
+      if (doc) {
+        const tags = new Set(doc.tags || []);
+        tags.add(cleanTag);
+        doc.tags = [...tags];
+        doc.modified = Date.now();
+        await db.put('docs', doc);
+        count++;
+      }
+    }
+    selectedDocIds.clear();
+    selectMode = false;
+    toast(`Tagged ${count} notebook${count > 1 ? 's' : ''} with #${cleanTag}`);
+    render();
+  }
+
+  async function batchFav() {
+    let count = 0;
+    for (const id of selectedDocIds) {
+      const doc = await db.get('docs', id);
+      if (doc) {
+        doc.fav = true;
+        doc.modified = Date.now();
+        await db.put('docs', doc);
+        count++;
+      }
+    }
+    selectedDocIds.clear();
+    selectMode = false;
+    toast(`Added ${count} notebook${count > 1 ? 's' : ''} to favourites`);
+    render();
+  }
+
+  async function batchTrash() {
+    const count = selectedDocIds.size;
+    if (!count) return;
+    if (!await confirmBox('Move to bin', `Move ${count} selected notebook${count > 1 ? 's' : ''} to the recycle bin?`, 'Move to bin', true)) return;
+    for (const id of selectedDocIds) {
+      const doc = await db.get('docs', id);
+      if (doc) await trashDoc(doc);
+    }
+    selectedDocIds.clear();
+    selectMode = false;
+    toast(`Moved ${count} notebook${count > 1 ? 's' : ''} to bin`);
+    render();
+  }
+
+  function renderSelectionBar() {
+    if (!selectMode || selectedDocIds.size === 0) {
+      selectionBar.hidden = true;
+      fill(selectionBar);
+      return;
+    }
+    selectionBar.hidden = false;
+    fill(selectionBar,
+      h('span', { class: 'select-count' }, `${selectedDocIds.size} selected`),
+      h('button', { class: 'btn sm', type: 'button', onclick: batchMove }, h('span', { class: 'btn-ic', html: I.move }), 'Move'),
+      h('button', { class: 'btn sm', type: 'button', onclick: batchTag }, h('span', { class: 'btn-ic', html: I.tag }), 'Tag'),
+      h('button', { class: 'btn sm', type: 'button', onclick: batchFav }, h('span', { class: 'btn-ic', html: I.star }), 'Favourite'),
+      h('button', { class: 'btn sm danger', type: 'button', onclick: batchTrash }, h('span', { class: 'btn-ic', html: I.trash }), 'Bin'),
+      h('button', { class: 'ic sm', type: 'button', title: 'Clear selection', html: I.close, onclick: () => { selectedDocIds.clear(); render(); } })
+    );
+  }
+
+  function renderSidebar(D, F) {
+    const totalDocs = D.length;
+    const favDocs = D.filter(d => d.fav).length;
+    const sharedCount = sharedItems.length;
+
+    const sideHead = h('div', { class: 'side-head' },
+      h('div', { class: 'side-brand', onclick: () => { closeDrawer(); location.hash = '#/'; } },
+        h('img', { src: 'icons/icon.svg', alt: 'Inkleaf', width: 26, height: 26, style: 'border-radius: 6px;' }),
+        h('span', null, 'Inkleaf')
+      ),
+      h('button', {
+        class: 'ic sm',
+        type: 'button',
+        title: 'Collapse sidebar',
+        html: I.close,
+        onclick: () => {
+          if (innerWidth <= 760) {
+            closeDrawer();
+          } else {
+            sidebarCollapsed = true;
+            lsSet('inkleaf.sidebarCollapsed', '1');
+            sidebar.classList.add('collapsed');
+          }
+        }
+      })
+    );
+
+    const makeNavBtn = (icon, label, badge, active, onClick, dropTargetHandler) => {
+      const btn = h('button', {
+        class: 'side-btn' + (active ? ' active' : ''),
+        type: 'button',
+        onclick: () => { closeDrawer(); onClick(); }
+      },
+        h('span', { class: 'side-btn-ic', html: icon }),
+        h('span', { class: 'side-label' }, label),
+        badge !== undefined && badge !== null ? h('span', { class: 'side-badge' }, String(badge)) : null
+      );
+      if (dropTargetHandler) {
+        btn.addEventListener('dragover', e => {
+          if (e.dataTransfer.types.includes('text/inkleaf-doc')) {
+            e.preventDefault();
+            e.dataTransfer.dropEffect = 'move';
+            btn.classList.add('drop-target');
+          }
+        });
+        btn.addEventListener('dragleave', () => btn.classList.remove('drop-target'));
+        btn.addEventListener('drop', e => {
+          e.preventDefault();
+          btn.classList.remove('drop-target');
+          const docId = e.dataTransfer.getData('text/inkleaf-doc');
+          if (docId) dropTargetHandler(docId);
+        });
+      }
+      return btn;
+    };
+
+    const allBtn = makeNavBtn(I.book, 'All Notebooks', totalDocs, !bin && !folderId && filter === 'all', () => {
+      filter = 'all';
+      lsSet('inkleaf.filter', 'all');
+      location.hash = '#/';
+      render();
+    }, async (docId) => {
+      const doc = await db.get('docs', docId);
+      if (doc && doc.folderId !== null) {
+        doc.folderId = null;
+        doc.modified = Date.now();
+        await db.put('docs', doc);
+        toast(`Moved "${doc.title}" to Library root`);
+        render();
+      }
+    });
+
+    const favBtn = makeNavBtn(I.star, 'Favourites', favDocs, !bin && filter === 'fav', () => {
+      filter = 'fav';
+      lsSet('inkleaf.filter', 'fav');
+      location.hash = '#/';
+      render();
+    });
+
+    const journalBtn = makeNavBtn(I.calendar, "Today's Journal", null, false, async () => {
+      const i = await journalPage();
+      location.hash = '#/d/journal?p=' + (i + 1);
+    });
+
+    const sharedBtn = sharedCount > 0 ? makeNavBtn(I.users, 'Shared with me', sharedCount, !bin && filter === 'shared', () => {
+      filter = 'shared';
+      lsSet('inkleaf.filter', 'shared');
+      location.hash = '#/';
+      render();
+    }) : null;
+
+    const binNavBtn = makeNavBtn(I.trash, 'Recycle Bin', null, bin, () => {
+      location.hash = '#/bin';
+    });
+
+    const folderBtns = F.map((f, i) => {
+      const c = folderColorOf(f.id, i);
+      const count = D.filter(d => d.folderId === f.id).length;
+      const isCur = !bin && folderId === f.id;
+      const dot = h('span', { class: 'folder-dot dot-' + c });
+
+      const btn = h('button', {
+        class: 'side-btn' + (isCur ? ' active' : ''),
+        type: 'button',
+        onclick: () => { closeDrawer(); location.hash = '#/f/' + f.id; }
+      },
+        dot,
+        h('span', { class: 'side-label' }, f.name),
+        h('span', { class: 'side-badge' }, String(count))
+      );
+
+      btn.addEventListener('dragover', e => {
+        if (e.dataTransfer.types.includes('text/inkleaf-doc')) {
+          e.preventDefault();
+          e.dataTransfer.dropEffect = 'move';
+          btn.classList.add('drop-target');
+        }
+      });
+      btn.addEventListener('dragleave', () => btn.classList.remove('drop-target'));
+      btn.addEventListener('drop', async e => {
+        e.preventDefault();
+        btn.classList.remove('drop-target');
+        const docId = e.dataTransfer.getData('text/inkleaf-doc');
+        if (docId) {
+          const doc = await db.get('docs', docId);
+          if (doc && doc.folderId !== f.id) {
+            doc.folderId = f.id;
+            doc.modified = Date.now();
+            await db.put('docs', doc);
+            toast(`Moved "${doc.title}" to ${f.name}`);
+            render();
+          }
+        }
+      });
+
+      return btn;
+    });
+
+    const folderSecTitle = h('div', { class: 'side-sec-title' },
+      h('span', null, 'Folders'),
+      h('button', {
+        type: 'button',
+        title: 'Create new folder',
+        onclick: (e) => { e.stopPropagation(); newFolder(); }
+      }, '+ New')
+    );
+
+    const sideScroll = h('div', { class: 'side-scroll' },
+      allBtn,
+      favBtn,
+      journalBtn,
+      sharedBtn,
+      binNavBtn,
+      folderSecTitle,
+      folderBtns
+    );
+
+    const curSync = syncStatus();
+    const sideFoot = h('div', { class: 'side-foot' },
+      h('div', {
+        class: 'side-sync-status' + (curSync.state === 'syncing' ? ' spin' : curSync.state === 'error' ? ' warn' : ''),
+        title: curSync.text,
+        onclick: () => syncNow(true)
+      },
+        h('span', { class: 'side-sync-dot' }),
+        h('span', null, curSync.state === 'syncing' ? 'Syncing...' : 'Synced')
+      ),
+      h('button', {
+        class: 'ic sm',
+        type: 'button',
+        title: 'Settings',
+        html: I.settings,
+        onclick: () => openSettings()
+      })
+    );
+
+    fill(sidebar, sideHead, sideScroll, sideFoot);
+  }
+
+  async function renderJumpStrip(D) {
+    if (bin || folderId || filter !== 'all' || query || D.length === 0) {
+      fill(jumpSection);
+      return;
+    }
+
+    const recent = [...D]
+      .filter(d => !d.sys)
+      .sort((a, b) => {
+        const ao = openedAt(a.id) || a.modified || 0;
+        const bo = openedAt(b.id) || b.modified || 0;
+        return bo - ao;
+      })
+      .slice(0, 3);
+
+    if (!recent.length) {
+      fill(jumpSection);
+      return;
+    }
+
+    const cards = [];
+    for (const d of recent) {
+      const pNum = Number(lsGet('inkleaf.page.' + d.id, 1)) || 1;
+      const thumb = d.thumb ? h('img', { src: d.thumb, alt: '' }) : null;
+      const card = h('div', {
+        class: 'jump-card',
+        onclick: () => { location.hash = `#/d/${d.id}?p=${pNum}`; }
+      },
+        h('div', { class: 'jump-thumb', style: { '--cover': d.cover || COVERS[0] } }, thumb),
+        h('div', { class: 'jump-info' },
+          h('div', { class: 'jump-name' }, d.title || 'Untitled notebook'),
+          h('div', { class: 'jump-sub' }, `Resume Page ${pNum}`),
+          h('div', { class: 'jump-time' }, fmtDate(d.modified))
+        )
+      );
+      cards.push(card);
+    }
+
+    fill(jumpSection,
+      h('div', { class: 'strip-title' },
+        h('span', { html: I.history || I.book }),
+        'Jump Back In (Recent Notes)'
+      ),
+      h('div', { class: 'jump-strip' }, cards)
+    );
+  }
+
   function docCard(d, F = []) {
     const isShared = !!d.shared || myShares.has(d.id);
     const dateStr = fmtDate(d.modified);
     const pageStr = d.pages && d.pages.length > 1 ? `${d.pages.length} pages` : (d.pages && d.pages.length === 1 ? '1 page' : '');
     const folderObj = d.folderId && F.length ? F.find(f => f.id === d.folderId) : null;
+    const isPinned = getPinnedDocs().has(d.id);
+    const isSelected = selectedDocIds.has(d.id);
+
     const subParts = [];
     if (folderObj && (query || filter !== 'all')) {
+      const fColor = folderColorOf(folderObj.id);
       subParts.push(h('span', { class: 'folder-tag', title: 'Folder: ' + folderObj.name },
-        h('span', { class: 'tag-folder-ic', html: I.folder }), folderObj.name));
+        h('span', { class: 'folder-dot dot-' + fColor, style: 'margin-right: 4px;' }),
+        folderObj.name));
       subParts.push(h('span', { class: 'sub-sep' }, '·'));
     }
     subParts.push(h('span', { class: 'sub-date' }, dateStr));
@@ -989,18 +1421,33 @@ export async function mountLibrary(root, folderId, opts = {}) {
       subParts.push(h('span', { class: 'sub-pages' }, pageStr));
     }
 
-    return h('div', { class: 'card', onclick: () => { location.hash = '#/d/' + d.id; } },
+    const card = h('div', {
+      class: 'card' + (isSelected ? ' selected' : ''),
+      onclick: () => {
+        if (selectMode) {
+          if (selectedDocIds.has(d.id)) selectedDocIds.delete(d.id);
+          else selectedDocIds.add(d.id);
+          render();
+          return;
+        }
+        location.hash = '#/d/' + d.id;
+      }
+    },
       h('div', { class: 'cover', style: { '--cover': d.cover || COVERS[0] } },
         d.thumb ? h('img', { src: d.thumb, alt: '', draggable: false }) : h('div', { class: 'cover-blank' }),
         isShared ? h('span', { class: 'shared-mark-badge', title: 'Shared notebook', html: I.users }) : null,
-        d.fav ? h('span', { class: 'fav-badge', html: I.starOn }) : null),
+        d.fav ? h('span', { class: 'fav-badge', html: I.starOn }) : null,
+        isPinned ? h('div', { class: 'pin-badge', title: 'Pinned to top', html: I.bookmark }) : null,
+        selectMode ? h('div', { class: 'check-circle' + (isSelected ? ' checked' : ''), html: isSelected ? I.check : '' }) : null
+      ),
       h('div', { class: 'meta' },
         h('div', { class: 'name' },
           d.title,
           isShared ? h('span', { class: 'shared-name-icon', title: 'Shared notebook', html: I.users }) : null
         ),
         h('div', { class: 'sub' }, ...subParts),
-        d.tags && d.tags.length ? h('div', { class: 'tags' }, d.tags.map(t => h('span', { class: 'tag' }, '#' + t))) : null),
+        d.tags && d.tags.length ? h('div', { class: 'tags' }, d.tags.map(t => h('span', { class: 'tag' }, '#' + t))) : null
+      ),
       h('div', { class: 'card-end' },
         h('span', { class: 'card-date' }, dateStr),
         h('button', {
@@ -1018,6 +1465,16 @@ export async function mountLibrary(root, folderId, opts = {}) {
         h('button', { class: 'ic sm card-more', type: 'button', title: 'Notebook options', html: I.more, onclick: e => { e.stopPropagation(); docMenu(e.currentTarget, d); } })
       )
     );
+
+    card.setAttribute('draggable', 'true');
+    card.addEventListener('dragstart', e => {
+      e.dataTransfer.setData('text/inkleaf-doc', d.id);
+      e.dataTransfer.effectAllowed = 'move';
+      card.classList.add('dragged-card');
+    });
+    card.addEventListener('dragend', () => card.classList.remove('dragged-card'));
+
+    return card;
   }
 
   function sortDocs(ds) {
@@ -1027,7 +1484,12 @@ export async function mountLibrary(root, folderId, opts = {}) {
       name: (a, b) => a.title.localeCompare(b.title, undefined, { numeric: true }),
       created: (a, b) => (b.created || 0) - (a.created || 0)
     }[sort] || ((a, b) => b.modified - a.modified);
-    return ds.sort(by);
+    ds.sort(by);
+    if (!query) {
+      const pinned = getPinnedDocs();
+      ds.sort((a, b) => (pinned.has(b.id) ? 1 : 0) - (pinned.has(a.id) ? 1 : 0));
+    }
+    return ds;
   }
 
   async function renderTools(D) {
@@ -1084,6 +1546,17 @@ export async function mountLibrary(root, folderId, opts = {}) {
       }
     }, viewDensity === 'compact' ? 'Compact' : 'Comfortable') : null;
 
+    const selectBtn = h('button', {
+      class: 'chip sm' + (selectMode ? ' on' : ''),
+      type: 'button',
+      title: selectMode ? 'Exit selection mode' : 'Select multiple notebooks',
+      onclick: () => {
+        selectMode = !selectMode;
+        if (!selectMode) selectedDocIds.clear();
+        render();
+      }
+    }, selectMode ? 'Done' : 'Select');
+
     fill(tools, 
       h('div', { class: 'chips' },
         chip('all', 'All'),
@@ -1092,6 +1565,7 @@ export async function mountLibrary(root, folderId, opts = {}) {
         [...tags].sort().map(t => chip('tag:' + t, '#' + t))
       ),
       h('div', { class: 'grow' }),
+      selectBtn,
       h('button', { class: 'btn sm', type: 'button', title: 'Auto-sort library with AI', onclick: autoSortDialog }, '✨ Auto-sort'),
       sel,
       viewGroup,
@@ -1125,6 +1599,9 @@ export async function mountLibrary(root, folderId, opts = {}) {
           ? [h('span', { class: 'crumb-sep' }, '/'), h('span', { class: 'crumb-note' }, filter === 'fav' ? 'Favourites, in every folder' : '#' + filter.slice(4) + ', in every folder')]
           : null);
     await renderTools(D);
+    renderSidebar(D, F);
+    await renderJumpStrip(D);
+    renderSelectionBar();
 
     if (filter === 'shared') {
       try { sharedItems = await fetchSharedWithMe(); } catch {}
@@ -1214,9 +1691,12 @@ export async function mountLibrary(root, folderId, opts = {}) {
     for (const f of fs) {
       const isFolderShared = mySharedFolders.has(f.id) || D.some(d => d.folderId === f.id && (d.shared || myShares.has(d.id)));
       const count = D.filter(d => d.folderId === f.id).length + F.filter(x => x.parentId === f.id).length;
-      cards.push(h('div', { class: 'card card-folder', onclick: () => { location.hash = '#/f/' + f.id; } },
+      const fColor = folderColorOf(f.id);
+
+      const fCard = h('div', { class: 'card card-folder', onclick: () => { location.hash = '#/f/' + f.id; } },
         h('div', { class: 'cover folder' },
           h('span', { html: I.folder }),
+          h('span', { class: 'folder-dot dot-' + fColor, style: 'position: absolute; top: 10px; right: 10px; width: 11px; height: 11px;' }),
           isFolderShared ? h('span', { class: 'shared-mark-badge', title: 'Shared folder', html: I.users }) : null
         ),
         h('div', { class: 'meta' },
@@ -1229,7 +1709,33 @@ export async function mountLibrary(root, folderId, opts = {}) {
           h('span', { class: 'card-date' }, count === 1 ? '1 item' : count + ' items'),
           h('button', { class: 'ic sm card-more', type: 'button', title: 'Folder options', html: I.more, onclick: e => { e.stopPropagation(); folderMenu(e.currentTarget, f); } })
         )
-      ));
+      );
+
+      fCard.addEventListener('dragover', e => {
+        if (e.dataTransfer.types.includes('text/inkleaf-doc')) {
+          e.preventDefault();
+          e.dataTransfer.dropEffect = 'move';
+          fCard.classList.add('drop-target');
+        }
+      });
+      fCard.addEventListener('dragleave', () => fCard.classList.remove('drop-target'));
+      fCard.addEventListener('drop', async e => {
+        e.preventDefault();
+        fCard.classList.remove('drop-target');
+        const docId = e.dataTransfer.getData('text/inkleaf-doc');
+        if (docId) {
+          const doc = await db.get('docs', docId);
+          if (doc && doc.folderId !== f.id) {
+            doc.folderId = f.id;
+            doc.modified = Date.now();
+            await db.put('docs', doc);
+            toast(`Moved "${doc.title}" to ${f.name}`);
+            render();
+          }
+        }
+      });
+
+      cards.push(fCard);
     }
     for (const d of ds) cards.push(docCard(d, F));
 
@@ -1356,6 +1862,7 @@ export async function mountLibrary(root, folderId, opts = {}) {
   // Dropping a PDF (or a notebook file) anywhere on the library imports it.
   el.addEventListener('dragover', e => { e.preventDefault(); });
   el.addEventListener('drop', async e => {
+    if (e.dataTransfer && e.dataTransfer.types && e.dataTransfer.types.includes('text/inkleaf-doc')) return;
     e.preventDefault();
     const files = [...(e.dataTransfer.files || [])];
     const nb = files.find(x => /\.inkleaf$/i.test(x.name));

@@ -81,5 +81,9 @@ export const I = {
   template: s('<rect x="4" y="3" width="16" height="18" rx="2"/><path d="M8 8h8M8 12h8M8 16h8"/>'),
   spell: s('<path d="M4 19h16"/><path d="M4 14l5-10 5 10"/><path d="M6.5 10.5h5"/><path d="M16 11l2 2 4-4"/>'),
   skip: s('<path d="M5 4l10 8-10 8V4zM19 5h-2v14h2V5z" fill="currentColor"/>'),
-  stop: s('<rect x="6" y="6" width="12" height="12" rx="2" fill="currentColor"/>')
+  stop: s('<rect x="6" y="6" width="12" height="12" rx="2" fill="currentColor"/>'),
+  menu: s('<line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="18" x2="21" y2="18"/>'),
+  check: s('<polyline points="20 6 9 17 4 12"/>'),
+  pin: s('<path d="M16 3l1 1-3 3 5 5-2 2-5-5-3 3-1-1 4-4-5-5 2-2 5 5 2-2zM4 20l4-4"/>'),
+  bookmark: s('<path d="M19 21l-7-5-7 5V5a2 2 0 012-2h10a2 2 0 012 2z"/>')
 };

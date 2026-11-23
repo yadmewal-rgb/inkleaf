@@ -3,27 +3,42 @@
 **Written:** 2026-11-23 by agy (Antigravity). **Next:** Claude Code or agy.
 
 ## What the owner asked
-1. "new notebook can not be adding in laptop"
-2. "add option to add new folder here and then paste" (with screenshot of Destination folder in Open PDF dialog)
+"all of them , lets create once then we see" (implementing the complete redesigned Studio navigation and all 6 approved productivity features).
 
-## Done (v71)
-1. **Fixed "+ New" Menu Crash on Laptops (`js/ui.js`, `js/library.js`)**:
-   - On screens wider than 760px (laptops and desktops), mobile-only items in `newMenu` evaluated to `null`.
-   - `popMenu` attempted to read `.danger` on the `null` item, causing an uncaught `TypeError` that prevented the "+ New" menu from opening on laptops.
-   - Guarded `popMenu` in `js/ui.js` with `(items || []).filter(Boolean)` and added `.filter(Boolean)` to `newMenu`. The "+ New" menu now opens reliably on all screen sizes.
-2. **Added New Folder Creation to Destination Folder Picker (`js/library.js`)**:
-   - Added a visible **`+ New folder`** button right next to the "Destination folder" dropdown in the "Open PDF in Inkleaf" modal.
-   - Also added a **`➕ Create new folder...`** option at the end of the folder select dropdown.
-   - Prompts for a folder name, creates the folder in IndexedDB, and automatically selects it as the destination folder so the PDF imports directly into it.
-3. **Added New Folder Creation to "Move to" Picker (`js/library.js`)**:
-   - Added a `+ New folder` action at the top of the "Move to" folder list to let users create and move notebooks into a new folder in one step.
-4. **PWA Version Bump (`sw.js`, `js/sync.js`)**:
-   - Bumped service worker cache to `inkleaf-v71`.
-   - Updated Settings to `Inkleaf v71 · Build 2026.11`.
-5. **Tested in Headless Chrome**:
-   - Verified "+ New" menu opening and notebook modal on desktop resolution (1200x750).
-   - Verified folder creation inside PDF import dialog and auto-selection of the new folder.
+## Done (v72)
+1. **Sidebar Studio Navigation (`css/app.css`, `js/library.js`, `js/icons.js`)**:
+   - **Laptop & iPad:** Collapsible left sidebar featuring Quick Access (All Notebooks, Favourites, Today's Journal, Shared with me, Recycle Bin) and Folder Tree with live notebook counts and inline `+ New folder` button. Footer displays live sync status and settings. Sidebar toggle button in top header collapses or expands the panel with remembered preference.
+   - **Mobile Phones:** Off-canvas slide-out drawer triggered by the `sidebar-toggle-btn` in the header, with frosted backdrop blur and auto-close upon selection.
+2. **Jump Back In (Recent Notes Strip) (`css/app.css`, `js/library.js`)**:
+   - Prominently positioned above the notebooks grid at library root.
+   - Automatically tracks the 3 most recently opened or edited notebooks and displays their binding cover swatch, notebook title, resume page number, and relative timestamp. One tap jumps directly into that notebook at that exact page.
+3. **Folder Colors (`css/app.css`, `js/library.js`)**:
+   - Added color-coding system with 5 vibrant dot options: Red (`#e05260`), Blue (`#3b82f6`), Green (`#10b981`), Yellow (`#f59e0b`), and Purple (`#a855f7`).
+   - Integrated "Folder color" picker into the folder context menu (`folderMenu`).
+   - Colored dots appear in the sidebar folder list, on folder cards in the grid/list, and inside notebook card folder tags.
+4. **Drag & Drop to Sidebar (`js/library.js`, `css/app.css`)**:
+   - Native HTML5 drag-and-drop on notebook cards (`draggable="true"`).
+   - Dragging a card highlights sidebar folders (and folder cards in the grid) with an emerald dashed outline (`.drop-target`). Dropping instantly moves the notebook to that folder, updates IndexedDB, and shows a confirmation toast.
+   - Dropping onto "All Notebooks" moves a notebook out of a folder to Library root.
+5. **Pin to Top (Bookmarks) (`js/library.js`, `css/app.css`)**:
+   - Added "Pin to top" / "Unpin from top" option in `docMenu`.
+   - Pinned notebooks display a gold ribbon bookmark badge (`.pin-badge`) on their top right corner.
+   - Pinned notebooks are anchored to the top of the grid/list regardless of sort order.
+6. **Multi-Select & Batch Actions (`js/library.js`, `css/app.css`)**:
+   - Added "Select" chip in library tools.
+   - When active, cards display checkmark circles (`.check-circle`) and tapping toggles selection.
+   - Displays a floating glass action bar (`.selection-bar`) at the bottom of the screen with batch actions:
+     - **Move:** Picks destination folder and batch moves all selected notebooks.
+     - **Tag:** Prompts tag name and batch tags all selected notebooks.
+     - **Favourite:** Marks all selected notebooks as favourites.
+     - **Bin:** Prompts confirmation and batch moves all selected notebooks to the recycle bin.
+7. **PWA Version Bump (`sw.js`, `js/sync.js`)**:
+   - Bumped service worker cache to `inkleaf-v72`.
+   - Updated Settings to `Inkleaf v72 · Build 2026.11`.
+8. **Automated Testing & Screenshots**:
+   - Executed live test in Chrome across desktop (1200x750) and mobile (390x844).
+   - Captured and verified 5 high-resolution screenshots with `shots.ps1`.
 
-## Live now
-- Pushed to `origin/main` (live on https://yadmewal-rgb.github.io/inkleaf/).
-- Running locally at http://localhost:8080.
+## Local Status
+- Clean local build, tested at http://localhost:8080.
+- Changes committed locally. Ready to push to `origin/main` upon owner confirmation.
