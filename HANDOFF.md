@@ -25,5 +25,4 @@
 - Implement Step 2: Redesign the drawing toolbar into the clean GoodNotes 6 floating capsule style (from user's Pic 3).
 
 ## Live Status
-- Inkleaf v86 is currently live on GitHub Pages.
-- Inkleaf v87 is committed locally and ready to push upon user confirmation.
+- Inkleaf v87 (commit `55f37fc`) is live on GitHub Pages and deployed.
