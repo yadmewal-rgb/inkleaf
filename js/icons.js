@@ -85,13 +85,5 @@ export const I = {
   menu: s('<line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="18" x2="21" y2="18"/>'),
   check: s('<polyline points="20 6 9 17 4 12"/>'),
   pin: s('<path d="M16 3l1 1-3 3 5 5-2 2-5-5-3 3-1-1 4-4-5-5 2-2 5 5 2-2zM4 20l4-4"/>'),
-  bookmark: s('<path d="M19 21l-7-5-7 5V5a2 2 0 012-2h10a2 2 0 012 2z"/>'),
-  dragHandle: s('<circle cx="9" cy="6" r="1.3" fill="currentColor"/><circle cx="15" cy="6" r="1.3" fill="currentColor"/><circle cx="9" cy="12" r="1.3" fill="currentColor"/><circle cx="15" cy="12" r="1.3" fill="currentColor"/><circle cx="9" cy="18" r="1.3" fill="currentColor"/><circle cx="15" cy="18" r="1.3" fill="currentColor"/>'),
-  dockTop: s('<rect x="3" y="3" width="18" height="18" rx="2.5"/><path d="M3 8h18" stroke-width="2.5"/><path d="M12 16v-4M9 14l3-3 3 3"/>'),
-  dockBottom: s('<rect x="3" y="3" width="18" height="18" rx="2.5"/><path d="M3 16h18" stroke-width="2.5"/><path d="M12 8v4M9 10l3 3 3-3"/>'),
-  dockLeft: s('<rect x="3" y="3" width="18" height="18" rx="2.5"/><path d="M8 3v18" stroke-width="2.5"/><path d="M16 12h-4M14 9l-3 3 3 3"/>'),
-  dockRight: s('<rect x="3" y="3" width="18" height="18" rx="2.5"/><path d="M16 3v18" stroke-width="2.5"/><path d="M8 12h4M10 9l3 3-3 3"/>'),
-  fountain: s('<path d="M12 2l4 7-2 11H10L8 9l4-7z"/><circle cx="12" cy="11" r="1.2" fill="currentColor"/><path d="M12 12v6"/>'),
-  ballpoint: s('<path d="M9 3h6v8l-3 8-3-8V3z"/><circle cx="12" cy="20.5" r="1.3" fill="currentColor"/><path d="M9 7h6"/>'),
-  brush: s('<path d="M9 3h6v5c0 3-1 6-4 10-3-4-4-7-4-10V3z"/><path d="M8 8h8"/>')
+  bookmark: s('<path d="M19 21l-7-5-7 5V5a2 2 0 012-2h10a2 2 0 012 2z"/>')
 };

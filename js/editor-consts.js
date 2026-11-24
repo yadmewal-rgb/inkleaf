@@ -61,15 +61,15 @@ export const DEFAULTS = {
   laser: { color: '#ff2d2d' },
   flow: 'v',      // 'v' = pages run down the screen, 'h' = side by side, one at a time
   tool: 'pen',
-  pen: { color: INK, size: mmToPt(0.7), style: 'fountain', dash: 'solid' },
+  pen: { color: INK, size: mmToPt(0.7), style: 'fountain' },
   scribble: true, // a zigzag over ink erases it
   favs: [],       // favourite pens: [{color, size, style}]
-  hl: { color: '#ffd43b', size: mmToPt(5.5), mode: 'free', dash: 'solid' }, // mode: free, or follow PDF text as hl / ul / st
+  hl: { color: '#ffd43b', size: mmToPt(5.5), mode: 'free' }, // mode: free, or follow PDF text as hl / ul / st
   hlTray: false,  // false = keep highlights tray closed by default; open on demand from More > Highlights
   hlCards: false, // automatic flashcards from highlights
   hlSort: 'marked', // 'marked' = in order marked (Page 1, 11, 9...), 'page' = notebook page order (1, 9, 11...)
   eraser: { size: mmToPt(5.5), mode: 'stroke', only: 'all' },
-  shape: { kind: 'rect', color: '#1971c2', size: mmToPt(0.8), fill: null, dash: 'solid' },
+  shape: { kind: 'rect', color: '#1971c2', size: mmToPt(0.8), fill: null },
   text: { color: INK, size: 16, b: false, i: false, u: false, ff: 'sans', al: 'l' },
   fingerDraw: null, // null = automatic: fingers draw until a stylus has been seen
   applePencilOnly: false, // strict palm rejection: only stylus leaves ink, fingers scroll/zoom
@@ -77,8 +77,7 @@ export const DEFAULTS = {
   openRead: null,
   penSeen: false,
   scrollbar: 'left', // 'left' = left edge (never touches right hand), 'right' = right edge, 'hidden' = hidden
-  spellcheck: true, // handwriting and text spell check as you write (red dotted underline)
-  optsPos: 'top' // movable floating options capsule position: 'top', 'bottom', 'left', or 'right'
+  spellcheck: true // handwriting and text spell check as you write (red dotted underline)
 };
 
 // opts: page (1-based page to open at), q (text to find), pane / other (side by side: this pane's index, the other notebook)
