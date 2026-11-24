@@ -15,7 +15,7 @@ import { modal, toast, confirmBox, busy } from './ui.js';
 import { I } from './icons.js';
 import { hwOn, setHwOn, status as hwStatus, setCloudOcr, getHwUsage, setHwLimit, getHwModel, setHwModel, getHwModelConfig, getActiveHwModel, MODEL_CASCADE, formatModelName } from './hwsearch.js';
 
-export const APP_VER = 'v82';
+export const APP_VER = 'v83';
 const SERVER = 'https://inkleaf-sync.yadmewal.workers.dev';
 // drive.appdata: Inkleaf's hidden app folder (files it syncs); drive.file: only files Inkleaf itself creates, used
 // for the visible "Inkleaf" folder holding copies of the PDFs under their real names.
@@ -2123,13 +2123,11 @@ export async function openSettings() {
       h('option', { value: 'gemini-3.6-flash', selected: curPref === 'gemini-3.6-flash' }, 'Gemini 3.6 Flash'),
       h('option', { value: 'gemini-3.6-flash-lite', selected: curPref === 'gemini-3.6-flash-lite' }, 'Gemini 3.6 Flash Lite'),
       h('option', { value: 'gemini-3.5-flash', selected: curPref === 'gemini-3.5-flash' }, 'Gemini 3.5 Flash'),
-      h('option', { value: 'gemini-3.5-flash-lite', selected: curPref === 'gemini-3.5-flash-lite' }, 'Gemini 3.5 Flash Lite (Low quota & fast)'),
-      h('option', { value: 'gemini-3.1-flash-lite', selected: curPref === 'gemini-3.1-flash-lite' }, 'Gemini 3.1 Flash Lite'),
-      h('option', { value: 'gemini-2.5-flash', selected: curPref === 'gemini-2.5-flash' }, 'Gemini 2.5 Flash')
+      h('option', { value: 'gemini-3.5-flash-lite', selected: curPref === 'gemini-3.5-flash-lite' }, 'Gemini 3.5 Flash Lite (Low quota & fast)')
     ]);
 
     const activeModelBadge = h('div', { class: 'bk-sub', style: 'font-size: 11px; margin-top: 4px; color: var(--muted);' },
-      `Active now: ${activeModel}${curPref === 'auto' && activeModel !== 'gemini-3.8-flash' ? ' (auto fallback)' : ''} · Fallback path: 3.8 ➔ 3.7 ➔ 3.6 ➔ 3.5 ➔ Cloudflare ➔ Device`
+      `Active now: ${activeModel}${curPref === 'auto' && activeModel !== 'gemini-4-hydrogen' ? ' (auto fallback)' : ''} · Fallback path: 4 ➔ 3.8 ➔ 3.7 ➔ 3.6 ➔ 3.5 ➔ Cloudflare`
     );
 
     const limitInp = h('input', {

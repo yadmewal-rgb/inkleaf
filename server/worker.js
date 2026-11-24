@@ -613,15 +613,13 @@ export class User extends DurableObject {
         'gemini-3.6-flash',
         'gemini-3.6-flash-lite',
         'gemini-3.5-flash',
-        'gemini-3.5-flash-lite',
-        'gemini-3.1-flash-lite',
-        'gemini-2.5-flash'
+        'gemini-3.5-flash-lite'
       ]);
       const model = allowedModels.has(body.model) ? body.model : 'gemini-3.8-flash';
       if (!image) return json({ error: 'no-image' }, 400);
 
       const prompt = n > 1
-        ? `This image has ${n} numbered rows of handwriting (red number at the left of each row). Transcribe each row exactly as written. Reply with a JSON array of ${n} strings, one per row, in order. Use "" for a row with only ticks, crosses, lines or marks.`
+        ? `You are an expert handwriting transcription assistant. This image has ${n} numbered rows of handwritten English text (each row has a red number at the left). Transcribe each row carefully. Preserve all words, numbers, punctuation and spaces as written. Return ONLY a valid JSON array of ${n} strings in order, one per row. If a row contains only a mark or doodle, use "".`
         : 'Transcribe all handwritten words and notes in this image. Return ONLY the transcribed text. Do not add quotes, markdown, or commentary.';
 
       const geminiUrl = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`;
@@ -676,7 +674,10 @@ export class User extends DurableObject {
       const raw = (data?.candidates?.[0]?.content?.parts?.[0]?.text || '').trim();
       let text = raw;
       if (n > 1) {
-        try { text = JSON.parse(raw); } catch { text = []; }
+        try {
+          const clean = raw.replace(/^```json\s*/i, '').replace(/^```\s*/, '').replace(/```$/g, '').trim();
+          text = JSON.parse(clean);
+        } catch { text = []; }
       }
       return json({ ok: true, text });
     }
@@ -700,8 +701,7 @@ Return ONLY the valid JSON array without commentary or code fences.`;
       const allowedModels = new Set([
         'gemini-4-hydrogen',
         'gemini-3.8-flash', 'gemini-3.8-flash-lite', 'gemini-3.7-flash', 'gemini-3.7-flash-lite',
-        'gemini-3.6-flash', 'gemini-3.6-flash-lite', 'gemini-3.5-flash', 'gemini-3.5-flash-lite',
-        'gemini-3.1-flash-lite', 'gemini-2.5-flash'
+        'gemini-3.6-flash', 'gemini-3.6-flash-lite', 'gemini-3.5-flash', 'gemini-3.5-flash-lite'
       ]);
       const reqModel = this.kvGet('geminiModel') || 'gemini-3.8-flash';
       const model = allowedModels.has(reqModel) ? reqModel : 'gemini-3.8-flash';
@@ -717,7 +717,7 @@ Return ONLY the valid JSON array without commentary or code fences.`;
           })
         });
         if (!res.ok) {
-          const fallbackUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${apiKey}`;
+          const fallbackUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-3.5-flash-lite:generateContent?key=${apiKey}`;
           res = await fetch(fallbackUrl, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },

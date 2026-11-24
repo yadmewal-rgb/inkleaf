@@ -56,7 +56,7 @@ export function setHwLimit(n) {
 // Tier 1: 4 Hydrogen, 3.8 Flash, 3.8 Flash Lite
 // Tier 2: 3.7 Flash, 3.7 Flash Lite
 // Tier 3: 3.6 Flash, 3.6 Flash Lite
-// Tier 4: 3.5 Flash, 3.5 Flash Lite, 3.1 Flash Lite, 2.5 Flash
+// Tier 4: 3.5 Flash, 3.5 Flash Lite
 export const MODEL_CASCADE = [
   'gemini-4-hydrogen',
   'gemini-3.8-flash',
@@ -66,9 +66,7 @@ export const MODEL_CASCADE = [
   'gemini-3.6-flash',
   'gemini-3.6-flash-lite',
   'gemini-3.5-flash',
-  'gemini-3.5-flash-lite',
-  'gemini-3.1-flash-lite',
-  'gemini-2.5-flash'
+  'gemini-3.5-flash-lite'
 ];
 
 export const DEFAULT_MODEL = 'auto';
@@ -141,9 +139,7 @@ export function formatModelName(m) {
     'gemini-3.6-flash': 'Gemini 3.6 Flash',
     'gemini-3.6-flash-lite': 'Gemini 3.6 Flash Lite',
     'gemini-3.5-flash': 'Gemini 3.5 Flash',
-    'gemini-3.5-flash-lite': 'Gemini 3.5 Flash Lite',
-    'gemini-3.1-flash-lite': 'Gemini 3.1 Flash Lite',
-    'gemini-2.5-flash': 'Gemini 2.5 Flash'
+    'gemini-3.5-flash-lite': 'Gemini 3.5 Flash Lite'
   };
   return map[model] || model;
 }
@@ -266,7 +262,7 @@ async function readBatch(runs) {
   if (!b64) return runs.map(() => '');
 
   const N = runs.length;
-  const prompt = `This image has ${N} numbered rows of handwriting (red number at the left of each row). Transcribe each row exactly as written. Reply with a JSON array of ${N} strings, one per row, in order. Use "" for a row with only ticks, crosses, lines or marks.`;
+  const prompt = `You are an expert handwriting transcription assistant. This image has ${N} numbered rows of handwritten English text (each row has a red number at the left). Transcribe each row carefully. Preserve all words, numbers, punctuation and spaces as written. Return ONLY a valid JSON array of ${N} strings in order, one per row. If a row contains only a mark or doodle, use "".`;
   const directKey = localStorage.getItem('inkleaf.geminiKey');
 
   let resultStrings = null;
@@ -285,9 +281,10 @@ async function readBatch(runs) {
             const raw = (j?.candidates?.[0]?.content?.parts?.[0]?.text || '').trim();
             if (raw) {
               try {
-                const arr = JSON.parse(raw);
-                if (Array.isArray(arr) && arr.length === N) {
-                  resultStrings = arr.map(s => String(s || '').trim());
+                const clean = raw.replace(/^```json\s*/i, '').replace(/^```\s*/, '').replace(/```$/g, '').trim();
+                const arr = JSON.parse(clean);
+                if (Array.isArray(arr) && arr.length > 0) {
+                  resultStrings = runs.map((_, idx) => String(arr[idx] || '').trim());
                   break; // Successful transcription with current model!
                 }
               } catch {}
@@ -324,8 +321,8 @@ async function readBatch(runs) {
       while (currentModel) {
         try {
           const raw = await cloudOcrFn(b64, N, currentModel);
-          if (Array.isArray(raw) && raw.length === N) {
-            resultStrings = raw.map(s => String(s || '').trim());
+          if (Array.isArray(raw) && raw.length > 0) {
+            resultStrings = runs.map((_, idx) => String(raw[idx] || '').trim());
             break; // Successful transcription via Cloudflare!
           } else if (raw && raw.error) {
             console.warn(`[Cloudflare OCR] Model ${currentModel} returned error:`, raw.error);
@@ -664,19 +661,43 @@ export function matchIndex(x, q) {
   const qs = norm(q).split(' ').filter(Boolean);
   if (!x || !qs.length) return [];
   const hits = [];
+  const searchStr = qs.join(' ');
+  const searchCompact = qs.join('');
+
   for (const r of x.r) {
     if (!r.t) continue;
+    const normRow = norm(r.t);
+    const rowClean = normRow.replace(/\s+/g, ' ');
+    const rowCompact = normRow.replace(/\s+/g, '');
+
+    // 1. Direct row substring match (catches exact words, joined words, and phrases)
+    if (rowClean.includes(searchStr) || rowCompact.includes(searchCompact)) {
+      hits.push({ ids: r.ids, text: r.t });
+      continue;
+    }
+
+    // 2. Token-by-token matching across words
     const words = r.w ? r.w.map(w => ({ ids: w.ids, n: norm(w.t) })) : norm(r.t).split(' ').map(n => ({ ids: r.ids, n }));
-    // Words the reader joined ("ofthe") or split are flattened so each piece can be compared.
+    let matched = false;
     for (let i = 0; i + qs.length <= words.length; i++) {
       let ok = true;
       for (let j = 0; j < qs.length && ok; j++) ok = tokMatch(words[i + j].n, qs[j], j === qs.length - 1);
       if (!ok) continue;
       const ids = [...new Set(words.slice(i, i + qs.length).flatMap(w => w.ids))];
       hits.push({ ids, text: r.t });
+      matched = true;
       i += qs.length - 1;
     }
-    if (qs.length > 1 && !hits.some(hh => hh.text === r.t) && norm(r.t).replace(/ /g, '').includes(qs.join(''))) hits.push({ ids: r.ids, text: r.t });
+
+    // 3. Single-word fuzzy fallback
+    if (!matched && qs.length === 1) {
+      for (const w of words) {
+        if (tokMatch(w.n, qs[0], true)) {
+          hits.push({ ids: w.ids || r.ids, text: r.t });
+          break;
+        }
+      }
+    }
   }
   return hits;
 }

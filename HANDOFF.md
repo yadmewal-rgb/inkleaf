@@ -3,31 +3,26 @@
 **Written:** 2026-11-24 by agy (Antigravity). **Next:** Claude Code or agy.
 
 ## What the owner asked
-1. "can we add request usage also for cloudflare ?"
-2. User shared screenshot of Settings showing:
-   `Last problem (just now): Sync service error 500: {"error":"server","message":"Exceeded allowed rows read in Durable Objects free tier."}`
+1. "you can remove 3.1 and 2.5 from list , and handwriting search is very poor , in spelling correction it break words"
 
-## Done (v82)
-1. **Cloudflare Sync Request Usage Meter (`js/sync.js`)**:
-   - Added `getCfUsage()` and `recordCfCall(path)` to monitor daily sync network requests in `localStorage['inkleaf.cfUsage']`.
-   - Added **Cloudflare Sync Requests** card in Settings -> Live sync showing:
-     - Today's sync requests count and progress bar against the 100,000 requests/day free limit.
-     - Free tier limits breakdown (100,000 requests/day, 1,000,000 DO requests/mo, 10,000,000 DO rows read/mo).
-     - Contextual alert badge if the Cloudflare free tier quota is reached, reassuring the owner that notes remain 100% safe locally and will sync once quota resets at midnight UTC.
-2. **Friendly Human-Readable Quota Error Handling (`js/sync.js`)**:
-   - Replaced ugly raw JSON error strings (`{"error":"server","message":"Exceeded allowed rows read in Durable Objects free tier."}`) with clear, reassuring English in both `call(...)` and the Settings health monitor.
-3. **Server-Side SQLite Optimizations to Prevent Quota Exhaustion (`server/worker.js`)**:
-   - Added in-memory caching (`_kvCache` and `_sessCache`) so repeated session checks and KV lookups do not read rows from SQLite.
-   - Optimized `/changes`: if `since >= currentSeq`, immediately return `{ items: [], more: false }` without running `SELECT ... FROM recs`, reducing idle polling reads to 0 SQLite rows.
-   - Wrapped Durable Object `fetch` with try/catch to catch SQLite row quota errors cleanly as HTTP 429 rather than unhandled 500 errors.
+## Done (v83)
+1. **Removed Gemini 3.1 and 2.5 (`js/hwsearch.js`, `js/sync.js`, `server/worker.js`)**:
+   - Removed `gemini-3.1-flash-lite` and `gemini-2.5-flash` from the AI model cascade and Settings dropdown.
+   - Updated Cloudflare Worker OCR and AI outline allowed models and fallback routes.
+2. **Fixed Handwriting Spell Check Breaking Words (`js/spellcheck.js`, `js/editor.js`)**:
+   - Eliminated artificial line slicing in `findSpellingErrorsOnPage` (it no longer divides sentences into equal slices that cut across letters).
+   - Removed destructive stroke deletion: tapping a spelling correction on handwriting **never deletes handwritten strokes** and never converts them into typed text boxes.
+   - Tapping a suggestion now cleanly copies the corrected word to clipboard (`Copied "tomorrow" to clipboard`) and dismisses the underline mark.
+3. **Improved Handwriting Search Matching & OCR Accuracy (`js/hwsearch.js`, `server/worker.js`)**:
+   - Enhanced `matchIndex(x, q)` with direct row substring and single-word fuzzy matching so queries (e.g. "Physics", "Biology", "Notes") match immediately even if words were joined or slightly split.
+   - Made JSON parsing in `readBatch` and Worker OCR resilient to markdown backticks (````json ... ````) and variable row lengths so transcriptions are never discarded.
 4. **PWA Version Bump (`sw.js`, `js/sync.js`)**:
-   - Bumped service worker cache to `inkleaf-v82`.
-   - Updated Settings to `Inkleaf v82 · Build 2026.11`.
+   - Bumped service worker cache to `inkleaf-v83`.
+   - Updated Settings to `Inkleaf v83 · Build 2026.11`.
 
-## Done in v81
-1. **Gemini 4 Hydrogen Added (`js/hwsearch.js`, `js/sync.js`, `server/worker.js`)**:
-   - Added `gemini-4-hydrogen` to top of `MODEL_CASCADE` and Settings model picker.
+## Done in v82
+1. Cloudflare Sync Request Usage Meter and Durable Object SQLite row read optimizations.
 
 ## Live Status
-- Inkleaf v82 is now live on GitHub Pages and deployed to Cloudflare Worker.
-- Commits `446b368` (v81) and `2d14746` (v82) pushed to `main`.
+- Inkleaf v82 is currently live on GitHub Pages.
+- v83 tested locally and ready to push to `main` upon owner's "push" confirmation.

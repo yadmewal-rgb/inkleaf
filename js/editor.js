@@ -968,7 +968,7 @@ export async function mountEditor(root, docId, opts = {}) {
           }
         },
           h('span', { class: 'spell-sug-word' }, s),
-          h('span', { class: 'spell-sug-badge' }, 'Suggestion')
+          h('span', { class: 'spell-sug-badge' }, mark.kind === 'ink' ? 'Copy' : 'Replace')
         )) : h('div', { style: 'padding: 8px 10px; font-size: 13px; color: var(--muted);' }, 'No suggestions found')
       ),
       h('div', { class: 'sep' }),
@@ -1030,31 +1030,13 @@ export async function mountEditor(root, docId, opts = {}) {
     if (!pv || !pv.page) return;
 
     if (mark.kind === 'ink') {
-      const oldItems = pv.page.items.filter(it => it.t === 's' && mark.ids.includes(it.id));
-      if (!oldItems.length) return;
-      const fs = Math.max(12, Math.min(36, Math.round(mark.box.h * 0.85)));
-      const newItem = {
-        id: uid(),
-        t: 'tx',
-        s: replacement,
-        x: mark.box.x0,
-        y: mark.box.y0,
-        w: Math.max(mark.box.w, 40),
-        fs,
-        c: mark.color || '#1a1a1a',
-        ff: 'sans',
-        m: Date.now()
-      };
-      pv.page.items = pv.page.items.filter(it => !mark.ids.includes(it.id));
-      pv.page.items.push(newItem);
-      pushUndo({
-        pageId: pv.page.id,
-        add: [newItem],
-        remove: oldItems
-      });
-      dirty(pv.page);
-      renderPv(pv);
-      toast(`Corrected to "${replacement}" (undo anytime)`);
+      // Handwriting: Never delete pen strokes or convert to mechanical typed font.
+      // Copy the correct spelling to clipboard and remove the error underline.
+      try { navigator.clipboard.writeText(replacement); } catch {}
+      ignoreWord(mark.clean || mark.word);
+      updateSpellMarks();
+      toast(`Copied "${replacement}" to clipboard. Correct with pen or eraser anytime.`);
+      return;
     } else if (mark.kind === 'tx' && mark.item) {
       const oldItem = { ...mark.item };
       const idx = mark.item.s.indexOf(mark.word);

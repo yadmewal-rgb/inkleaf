@@ -270,7 +270,7 @@ export function findSpellingErrorsOnPage(page, hwData) {
   if (hwData && hwData.r && Array.isArray(hwData.r)) {
     for (const run of hwData.r) {
       if (!run.t) continue;
-      // If run has word breakdown
+      // Check handwriting if run has word breakdown
       if (run.w && Array.isArray(run.w)) {
         for (const item of run.w) {
           const w = item.t;
@@ -284,7 +284,7 @@ export function findSpellingErrorsOnPage(page, hwData) {
             let strokeColor = '#1a1a1a';
             for (const s of strokes) {
               if (s.c) strokeColor = s.c;
-              const p = s.p, r = (s.w || 1) / 2;
+              const p = s.p;
               for (let i = 0; i < p.length; i += 3) {
                 const x = p[i], y = p[i + 1];
                 if (x < x0) x0 = x; if (x > x1) x1 = x;
@@ -309,47 +309,6 @@ export function findSpellingErrorsOnPage(page, hwData) {
               }
             }
           }
-        }
-      } else {
-        // Run has full text string: split by space and map across run bounding box
-        const words = run.t.split(/\s+/).filter(Boolean);
-        const strokes = (page.items || []).filter(it => it.t === 's' && run.ids.includes(it.id));
-        if (strokes.length && words.length) {
-          let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
-          let strokeColor = '#1a1a1a';
-          for (const s of strokes) {
-            if (s.c) strokeColor = s.c;
-            const p = s.p;
-            for (let i = 0; i < p.length; i += 3) {
-              const x = p[i], y = p[i + 1];
-              if (x < x0) x0 = x; if (x > x1) x1 = x;
-              if (y < y0) y0 = y; if (y > y1) y1 = y;
-            }
-          }
-          const totalW = Math.max(1, x1 - x0);
-          const stepW = totalW / words.length;
-          words.forEach((w, idx) => {
-            const res = checkWord(w);
-            if (res.misspelled) {
-              const wx0 = x0 + idx * stepW;
-              const wx1 = wx0 + stepW;
-              const markId = `sp-ink-${run.ids[0] || 'r'}-${idx}`;
-              if (!seenIds.has(markId)) {
-                seenIds.add(markId);
-                errors.push({
-                  id: markId,
-                  kind: 'ink',
-                  word: w,
-                  clean: res.clean,
-                  suggestions: res.suggestions,
-                  box: { x0: wx0, y0, x1: wx1, y1, w: wx1 - wx0, h: y1 - y0 },
-                  ids: run.ids,
-                  color: strokeColor,
-                  pageId: page.id
-                });
-              }
-            }
-          });
         }
       }
     }
