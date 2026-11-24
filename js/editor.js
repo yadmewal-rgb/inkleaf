@@ -154,12 +154,7 @@ export async function mountEditor(root, docId, opts = {}) {
   const tabsEl = h('div', { class: 'tabs' });
   const roBtn = h('button', { class: 'ic', type: 'button', onclick: () => setReadOnly(!readOnly), html: I.eye });
   const timerBtn = h('button', { class: 'ic wide', type: 'button', title: 'Timer', onclick: () => toggleTimer(), html: I.timer });
-  const optsGrip = h('button', { class: 'ic grip-handle', type: 'button', title: 'Drag to move toolbar', html: I.dragHandle });
-  const dockBtn = h('button', { class: 'ic dock-toggle', type: 'button', title: 'Move toolbar (Top / Bottom / Left / Right)', html: I.dockTop });
-  const undoBtnCapsule = h('button', { class: 'ic', type: 'button', title: 'Undo (Ctrl+Z)', onclick: () => undo(), html: I.undo });
-  const redoBtnCapsule = h('button', { class: 'ic', type: 'button', title: 'Redo (Ctrl+Y)', onclick: () => redo(), html: I.redo });
-  const optsNav = h('div', { class: 'opts-nav' }, optsGrip, dockBtn, undoBtnCapsule, redoBtnCapsule, h('div', { class: 'vsep' }));
-  const optsFloating = h('div', { class: 'opts-floating' }, optsNav, optsEl);
+  const optsFloating = h('div', { class: 'opts-floating' }, optsEl);
   const el = h('div', { class: 'ed' },
     h('div', { class: 'bar top' },
       h('button', { class: 'ic', type: 'button', title: split ? 'Close this side' : 'Library', onclick: exit, html: split ? I.back : I.home }),
@@ -189,23 +184,10 @@ export async function mountEditor(root, docId, opts = {}) {
   el.addEventListener('pointerdown', () => { activeEd = me; }, true);
   root.append(el);
 
-  // Floating options capsule positioning & dragging (Top, Bottom, Left, Right)
+  // Floating options capsule positioning & direct dragging (Top, Bottom, Left, Right)
   function updateDockBtn() {
     const pos = prefs.optsPos || 'top';
     optsFloating.dataset.pos = pos;
-    if (pos === 'top') {
-      dockBtn.innerHTML = I.dockBottom;
-      dockBtn.title = 'Docked at Top (tap to move to Bottom)';
-    } else if (pos === 'bottom') {
-      dockBtn.innerHTML = I.dockLeft;
-      dockBtn.title = 'Docked at Bottom (tap to move to Left)';
-    } else if (pos === 'left') {
-      dockBtn.innerHTML = I.dockRight;
-      dockBtn.title = 'Docked at Left (tap to move to Right)';
-    } else {
-      dockBtn.innerHTML = I.dockTop;
-      dockBtn.title = 'Docked at Right (tap to move to Top)';
-    }
   }
 
   function setOptsPos(pos) {
@@ -215,19 +197,15 @@ export async function mountEditor(root, docId, opts = {}) {
     updateDockBtn();
     toast(`Toolbar moved to ${pos}`);
   }
-
-  dockBtn.onclick = () => {
-    const cur = prefs.optsPos || 'top';
-    const next = cur === 'top' ? 'bottom' : cur === 'bottom' ? 'left' : cur === 'left' ? 'right' : 'top';
-    setOptsPos(next);
-  };
+  window._setOptsPos = setOptsPos;
 
   let isDraggingOpts = false;
   let dragStartX = 0, dragStartY = 0, initialLeft = 0, initialTop = 0;
 
-  optsGrip.onpointerdown = e => {
+  optsFloating.onpointerdown = e => {
+    if (e.target.closest('button, input, label')) return;
     e.preventDefault();
-    optsGrip.setPointerCapture(e.pointerId);
+    optsFloating.setPointerCapture(e.pointerId);
     isDraggingOpts = true;
     const rect = optsFloating.getBoundingClientRect();
     dragStartX = e.clientX;
@@ -237,7 +215,7 @@ export async function mountEditor(root, docId, opts = {}) {
     optsFloating.classList.add('dragging');
   };
 
-  optsGrip.onpointermove = e => {
+  optsFloating.onpointermove = e => {
     if (!isDraggingOpts) return;
     const dx = e.clientX - dragStartX;
     const dy = e.clientY - dragStartY;
@@ -266,15 +244,15 @@ export async function mountEditor(root, docId, opts = {}) {
       setOptsPos('left');
     } else if (x > w - 140) {
       setOptsPos('right');
-    } else if (y > h * 0.6) {
+    } else if (y > h * 0.65) {
       setOptsPos('bottom');
     } else {
       setOptsPos('top');
     }
   };
 
-  optsGrip.onpointerup = endDragOpts;
-  optsGrip.onpointercancel = endDragOpts;
+  optsFloating.onpointerup = endDragOpts;
+  optsFloating.onpointercancel = endDragOpts;
   updateDockBtn();
 
   // ------------------------------------------------------------------ view state
@@ -1483,8 +1461,8 @@ export async function mountEditor(root, docId, opts = {}) {
   }
 
   function updateUndoUi() {
-    undoBtn.disabled = undoBtn2.disabled = undoBtnCapsule.disabled = !undoStack.length;
-    redoBtn.disabled = redoBtn2.disabled = redoBtnCapsule.disabled = !redoStack.length;
+    undoBtn.disabled = undoBtn2.disabled = !undoStack.length;
+    redoBtn.disabled = redoBtn2.disabled = !redoStack.length;
   }
 
   // ------------------------------------------------------------------ pointer input
@@ -7171,10 +7149,16 @@ export async function mountEditor(root, docId, opts = {}) {
     });
   }
 
-  const seg = (items, cur, onPick) => h('div', { class: 'seg' }, items.map(([v, label]) =>
-    h('button', { class: v === cur ? 'on' : '', type: 'button', title: label, onclick: () => onPick(v) },
-      h('span', { class: 'lbl-full' }, label),
-      h('span', { class: 'lbl-short' }, label.length > 4 ? (label.startsWith('Fount') ? 'Fnt' : label.startsWith('Ball') ? 'Ball' : label.startsWith('Brush') ? 'Brsh' : label.slice(0, 4)) : label))));
+  const seg = (items, cur, onPick) => h('div', { class: 'seg' }, items.map(([v, label, title]) => {
+    const isSvg = typeof label === 'string' && label.trim().startsWith('<svg');
+    return h('button', {
+      class: (v === cur ? 'on' : '') + (isSvg ? ' has-svg' : ''),
+      type: 'button',
+      title: title || (typeof label === 'string' && !isSvg ? label : ''),
+      onclick: () => onPick(v),
+      ...(isSvg ? { html: label } : {})
+    }, isSvg ? null : label);
+  }));
 
   // Favourite pens: saved colour + tip size + style, one tap to switch. Hold (or right-click) one to remove it.
   function favPens() {
@@ -7219,19 +7203,23 @@ export async function mountEditor(root, docId, opts = {}) {
     if (t === 'pen') {
       const curStyle = prefs.pen.style || 'fountain';
       kids = [
-        seg([['fountain', 'Fountain'], ['ball', 'Ballpoint'], ['brush', 'Brush']], curStyle, v => {
+        seg([
+          ['fountain', I.fountain, 'Fountain pen'],
+          ['ball', I.ballpoint, 'Ballpoint pen'],
+          ['brush', I.brush, 'Brush pen']
+        ], curStyle, v => {
           prefs.pen.style = v;
           savePrefs();
           renderOpts();
         }),
         h('div', { class: 'vsep' }),
-        seg([['solid', '—'], ['dashed', '- -'], ['dotted', '···']], prefs.pen.dash || 'solid', v => {
+        seg([['solid', '—', 'Solid line'], ['dashed', '- -', 'Dashed line'], ['dotted', '···', 'Dotted line']], prefs.pen.dash || 'solid', v => {
           prefs.pen.dash = v;
           savePrefs();
           renderOpts();
         }),
         h('div', { class: 'vsep' }),
-        h('div', { class: 'sizes-group' }, ...sizes('pen', [0.3, 0.5, 0.7, 1.0], [3, 5, 7, 10], 3)),
+        h('div', { class: 'sizes-group' }, ...sizes('pen', [0.3, 0.5, 0.7], [3, 5, 8], 3)),
         h('div', { class: 'vsep' }),
         h('div', { class: 'sw-group' }, ...swatches('pen', PEN_COLORS))
       ];
@@ -7383,6 +7371,15 @@ export async function mountEditor(root, docId, opts = {}) {
       { label: 'Page template', icon: I.template, onClick: templateDialog },
       { label: hz ? 'Fit whole page' : 'Fit page width', icon: I.fit, onClick: fitWidth },
       { label: full ? 'Leave full screen' : 'Full screen', icon: full ? I.fullExit : I.full, onClick: () => setFull(!full) },
+      {
+        label: `Toolbar position: ${prefs.optsPos === 'bottom' ? 'Bottom' : prefs.optsPos === 'left' ? 'Left' : prefs.optsPos === 'right' ? 'Right' : 'Top'}`,
+        icon: prefs.optsPos === 'bottom' ? I.dockBottom : prefs.optsPos === 'left' ? I.dockLeft : prefs.optsPos === 'right' ? I.dockRight : I.dockTop,
+        onClick: () => {
+          const cur = prefs.optsPos || 'top';
+          const next = cur === 'top' ? 'left' : cur === 'left' ? 'bottom' : cur === 'bottom' ? 'right' : 'top';
+          setOptsPos(next);
+        }
+      },
       {
         label: 'Scribble to erase: ' + (prefs.scribble !== false ? 'on' : 'off'), icon: I.eraser, onClick: () => {
           prefs.scribble = prefs.scribble === false;

@@ -2567,6 +2567,7 @@ button.pageind:hover {
   pointer-events: auto;
   transition: transform 0.2s cubic-bezier(0.16, 1, 0.3, 1), top 0.2s cubic-bezier(0.16, 1, 0.3, 1), bottom 0.2s cubic-bezier(0.16, 1, 0.3, 1), left 0.2s cubic-bezier(0.16, 1, 0.3, 1), right 0.2s cubic-bezier(0.16, 1, 0.3, 1), opacity 0.15s ease;
   user-select: none;
+  cursor: grab;
 }
 
 .opts-floating.dragging {
@@ -2580,13 +2581,6 @@ button.pageind:hover {
   display: none !important;
 }
 
-.opts-floating .opts-nav {
-  display: inline-flex;
-  align-items: center;
-  gap: 2px;
-  flex: none;
-}
-
 .opts-floating .opts {
   display: inline-flex;
   align-items: center;
@@ -2595,43 +2589,23 @@ button.pageind:hover {
   padding: 0;
 }
 
-.opts-floating .grip-handle {
-  cursor: grab;
-  touch-action: none;
-  color: var(--muted);
-  border-radius: 8px;
-  width: 28px;
-  height: 28px;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-}
-
-.opts-floating .grip-handle:hover {
-  color: var(--ink);
-  background: var(--surface-2);
-}
-
-.opts-floating .dock-toggle {
-  color: var(--muted);
-  border-radius: 8px;
-  width: 28px;
-  height: 28px;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-}
-
-.opts-floating .dock-toggle:hover {
-  color: var(--accent);
-  background: var(--accent-soft);
-}
-
 .opts-floating .sw-group,
 .opts-floating .sizes-group {
   display: inline-flex;
   align-items: center;
   gap: 4px;
+}
+
+.seg button.has-svg {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 5px 8px;
+}
+
+.seg button.has-svg svg {
+  width: 18px;
+  height: 18px;
 }
 
 /* Position: Top (default) */
@@ -2712,35 +2686,6 @@ button.pageind:hover {
 }
 
 /* Vertical adaptations for Left & Right positions: single sleek line */
-.opts-floating[data-pos="left"] .opts-nav,
-.opts-floating[data-pos="right"] .opts-nav {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 2px;
-  width: 100%;
-}
-
-.opts-floating[data-pos="left"] .opts-nav .ic,
-.opts-floating[data-pos="right"] .opts-nav .ic {
-  width: 24px;
-  height: 24px;
-  min-width: 24px;
-  min-height: 24px;
-  padding: 2px;
-}
-
-.opts-floating[data-pos="left"] .opts-nav .ic svg,
-.opts-floating[data-pos="right"] .opts-nav .ic svg {
-  width: 16px;
-  height: 16px;
-}
-
-.opts-floating[data-pos="left"] .opts-nav > .vsep,
-.opts-floating[data-pos="right"] .opts-nav > .vsep {
-  display: block;
-}
-
 .opts-floating[data-pos="left"] .opts,
 .opts-floating[data-pos="right"] .opts {
   display: flex;
@@ -2782,6 +2727,19 @@ button.pageind:hover {
   line-height: 1;
 }
 
+.opts-floating[data-pos="left"] .seg button.has-svg,
+.opts-floating[data-pos="right"] .seg button.has-svg {
+  padding: 4px 1px;
+  width: 24px;
+  height: 24px;
+}
+
+.opts-floating[data-pos="left"] .seg button.has-svg svg,
+.opts-floating[data-pos="right"] .seg button.has-svg svg {
+  width: 16px;
+  height: 16px;
+}
+
 .opts-floating[data-pos="left"] .sw-group,
 .opts-floating[data-pos="right"] .sw-group {
   display: flex;
@@ -2796,6 +2754,12 @@ button.pageind:hover {
   flex-direction: column;
   align-items: center;
   gap: 2px;
+}
+
+.opts-floating[data-pos="left"] .sz,
+.opts-floating[data-pos="right"] .sz {
+  width: 24px;
+  height: 24px;
 }
 
 .opts-floating[data-pos="left"] .sw,
