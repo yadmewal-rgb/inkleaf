@@ -24,6 +24,5 @@
    - Updated Settings to `Inkleaf v84 · Build 2026.11`.
 
 ## Live Status
-- Inkleaf v83 is currently live on GitHub Pages.
-- v84 changes are committed locally and tested in browser with verified screenshot.
-- Ready to push to `main` upon owner's confirmation.
+- Inkleaf v84 is live on GitHub Pages and deployed to Cloudflare Worker.
+- Commit `b789022` (v84) pushed to `main`.
