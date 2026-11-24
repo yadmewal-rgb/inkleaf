@@ -154,6 +154,9 @@ export async function mountEditor(root, docId, opts = {}) {
   const tabsEl = h('div', { class: 'tabs' });
   const roBtn = h('button', { class: 'ic', type: 'button', onclick: () => setReadOnly(!readOnly), html: I.eye });
   const timerBtn = h('button', { class: 'ic wide', type: 'button', title: 'Timer', onclick: () => toggleTimer(), html: I.timer });
+  const undoBtnCapsule = h('button', { class: 'ic undo-btn', type: 'button', title: 'Undo (Ctrl+Z)', onclick: () => undo(), html: I.undo });
+  const redoBtnCapsule = h('button', { class: 'ic redo-btn', type: 'button', title: 'Redo (Ctrl+Y)', onclick: () => redo(), html: I.redo });
+  const undoCapsule = h('div', { class: 'undo-capsule' }, undoBtnCapsule, redoBtnCapsule);
   const optsFloating = h('div', { class: 'opts-floating' }, optsEl);
   const el = h('div', { class: 'ed' },
     h('div', { class: 'bar top' },
@@ -178,7 +181,7 @@ export async function mountEditor(root, docId, opts = {}) {
         h('button', { class: 'ic wide', type: 'button', title: 'Full screen (F)', onclick: () => setFull(true), html: I.full }),
         h('button', { class: 'ic', type: 'button', title: 'More', onclick: e => moreMenu(e.currentTarget), html: I.more })),
       fullTools),
-    h('div', { class: 'stage' }, vp, overlay, optsFloating, tray, zwin, panel),
+    h('div', { class: 'stage' }, vp, overlay, undoCapsule, optsFloating, tray, zwin, panel),
     fileInp, scanInp);
   if (split) el.classList.add('in-split');
   el.addEventListener('pointerdown', () => { activeEd = me; }, true);
@@ -188,6 +191,7 @@ export async function mountEditor(root, docId, opts = {}) {
   function updateDockBtn() {
     const pos = prefs.optsPos || 'top';
     optsFloating.dataset.pos = pos;
+    undoCapsule.dataset.pos = pos;
   }
 
   function setOptsPos(pos) {
@@ -195,6 +199,7 @@ export async function mountEditor(root, docId, opts = {}) {
     prefs.optsPos = pos;
     savePrefs();
     updateDockBtn();
+    renderOpts();
     toast(`Toolbar moved to ${pos}`);
   }
   window._setOptsPos = setOptsPos;
@@ -1461,8 +1466,8 @@ export async function mountEditor(root, docId, opts = {}) {
   }
 
   function updateUndoUi() {
-    undoBtn.disabled = undoBtn2.disabled = !undoStack.length;
-    redoBtn.disabled = redoBtn2.disabled = !redoStack.length;
+    undoBtn.disabled = undoBtn2.disabled = undoBtnCapsule.disabled = !undoStack.length;
+    redoBtn.disabled = redoBtn2.disabled = redoBtnCapsule.disabled = !redoStack.length;
   }
 
   // ------------------------------------------------------------------ pointer input
@@ -7149,16 +7154,18 @@ export async function mountEditor(root, docId, opts = {}) {
     });
   }
 
-  const seg = (items, cur, onPick) => h('div', { class: 'seg' }, items.map(([v, label, title]) => {
-    const isSvg = typeof label === 'string' && label.trim().startsWith('<svg');
-    return h('button', {
-      class: (v === cur ? 'on' : '') + (isSvg ? ' has-svg' : ''),
-      type: 'button',
-      title: title || (typeof label === 'string' && !isSvg ? label : ''),
-      onclick: () => onPick(v),
-      ...(isSvg ? { html: label } : {})
-    }, isSvg ? null : label);
-  }));
+  function seg(items, cur, onPick) {
+    return h('div', { class: 'seg' }, items.map(([v, label, title]) => {
+      const isSvg = typeof label === 'string' && label.trim().startsWith('<svg');
+      return h('button', {
+        class: (v === cur ? 'on' : '') + (isSvg ? ' has-svg' : ''),
+        type: 'button',
+        title: title || (typeof label === 'string' && !isSvg ? label : ''),
+        onclick: () => onPick(v),
+        ...(isSvg ? { html: label } : {})
+      }, isSvg ? null : label);
+    }));
+  }
 
   // Favourite pens: saved colour + tip size + style, one tap to switch. Hold (or right-click) one to remove it.
   function favPens() {
@@ -7198,9 +7205,58 @@ export async function mountEditor(root, docId, opts = {}) {
   }
 
   function renderOpts() {
+    const pos = prefs.optsPos || 'top';
+    const isVertical = pos === 'left' || pos === 'right';
     const t = prefs.tool;
     let kids = [];
-    if (t === 'pen') {
+    if (isVertical) {
+      // GoodNotes style vertical rail:
+      // 1. Tool switcher (Pen, Highlighter, Eraser, Tape, Shapes, Lasso)
+      const railTools = [
+        ['pen', I.pen, 'Pen (P)'],
+        ['hl', I.hl, 'Highlighter (H)'],
+        ['eraser', I.eraser, 'Eraser (E)'],
+        ['tape', I.tape, 'Tape (A)'],
+        ['shape', I.shape, 'Shapes (S)'],
+        ['lasso', I.lasso, 'Select (L)']
+      ];
+      const toolBtns = h('div', { class: 'rail-tools' }, railTools.map(([id, icon, title]) =>
+        h('button', {
+          class: 'ic rail-tool' + (t === id ? ' on' : ''),
+          type: 'button',
+          title: id === 'pen' && t === 'pen' ? title + ' (tap to change pen type)' : title,
+          html: icon,
+          onclick: e => {
+            if (id === 'pen' && t === 'pen' && !readOnly) penTypeMenu(e.currentTarget);
+            else setTool(id);
+          }
+        })
+      ));
+      kids.push(toolBtns, h('div', { class: 'vsep' }));
+
+      // 2. Sizes / Thickness presets for the active tool
+      if (t === 'pen') {
+        kids.push(h('div', { class: 'sizes-group' }, ...sizes('pen', [0.3, 0.5, 0.7], [3, 5, 8], 3)));
+        kids.push(h('div', { class: 'vsep' }));
+        kids.push(h('div', { class: 'sw-group' }, ...swatches('pen', PEN_COLORS)));
+      } else if (t === 'hl') {
+        kids.push(h('div', { class: 'sizes-group' }, ...sizes('hl', [3.5, 5.5, 8.5], [7, 11, 15], 14)));
+        kids.push(h('div', { class: 'vsep' }));
+        kids.push(h('div', { class: 'sw-group' }, ...swatches('hl', HL_COLORS)));
+      } else if (t === 'eraser') {
+        kids.push(h('div', { class: 'sizes-group' }, ...sizes('eraser', [3, 5.5, 10.5], [7, 11, 16], 20)));
+      } else if (t === 'shape') {
+        kids.push(h('div', { class: 'sizes-group' }, ...sizes('shape', [0.4, 0.8, 1.4], [5, 8, 12], 3)));
+        kids.push(h('div', { class: 'vsep' }));
+        kids.push(h('div', { class: 'sw-group' }, ...swatches('shape', PEN_COLORS)));
+      } else if (t === 'tape') {
+        kids.push(h('div', { class: 'sizes-group' }, ...sizes('tape', [4, 7, 11], [7, 11, 15], 20)));
+        kids.push(h('div', { class: 'vsep' }));
+        kids.push(h('div', { class: 'sw-group' }, ...swatches('tape', TAPE_COLORS)));
+      } else {
+        kids.push(h('div', { class: 'sizes-group' }, ...sizes('pen', [0.3, 0.5, 0.7], [3, 5, 8], 3)));
+      }
+    } else if (t === 'pen') {
       const curStyle = prefs.pen.style || 'fountain';
       kids = [
         seg([

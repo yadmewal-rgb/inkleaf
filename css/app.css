@@ -2651,17 +2651,17 @@ button.pageind:hover {
 
 /* Position: Left */
 .opts-floating[data-pos="left"] {
-  top: 50%;
+  top: 50px;
   bottom: auto;
   left: max(8px, env(safe-area-inset-left));
   right: auto;
-  transform: translateY(-50%);
+  transform: none;
   flex-direction: column;
   border-radius: 9999px;
   padding: 6px 3px;
-  width: 32px;
+  width: 34px;
   max-width: 36px;
-  max-height: calc(100% - 24px);
+  max-height: calc(100% - 60px);
   overflow-x: hidden;
   overflow-y: auto;
   scrollbar-width: none;
@@ -2669,23 +2669,78 @@ button.pageind:hover {
 
 /* Position: Right */
 .opts-floating[data-pos="right"] {
-  top: 50%;
+  top: 50px;
   bottom: auto;
   left: auto;
   right: max(8px, env(safe-area-inset-right));
-  transform: translateY(-50%);
+  transform: none;
   flex-direction: column;
   border-radius: 9999px;
   padding: 6px 3px;
-  width: 32px;
+  width: 34px;
   max-width: 36px;
-  max-height: calc(100% - 24px);
+  max-height: calc(100% - 60px);
   overflow-x: hidden;
   overflow-y: auto;
   scrollbar-width: none;
 }
 
-/* Vertical adaptations for Left & Right positions: single sleek line */
+/* GoodNotes Floating Undo/Redo pill */
+.undo-capsule {
+  position: absolute;
+  z-index: 40;
+  display: none;
+  align-items: center;
+  gap: 2px;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.4);
+  border-radius: 10px;
+  padding: 3px 5px;
+  user-select: none;
+}
+
+.undo-capsule[data-pos="left"] {
+  display: inline-flex;
+  top: 10px;
+  left: max(8px, env(safe-area-inset-left));
+}
+
+.undo-capsule[data-pos="right"] {
+  display: inline-flex;
+  top: 10px;
+  right: max(8px, env(safe-area-inset-right));
+}
+
+.undo-capsule .ic {
+  width: 26px;
+  height: 26px;
+  border-radius: 6px;
+  color: var(--ink);
+  border: 0;
+  background: transparent;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  padding: 0;
+}
+
+.undo-capsule .ic:hover:not(:disabled) {
+  background: var(--surface-2);
+}
+
+.undo-capsule .ic:disabled {
+  opacity: 0.3;
+  cursor: default;
+}
+
+.undo-capsule .ic svg {
+  width: 16px;
+  height: 16px;
+}
+
+/* Vertical adaptations for Left & Right positions: single sleek GoodNotes rail */
 .opts-floating[data-pos="left"] .opts,
 .opts-floating[data-pos="right"] .opts {
   display: flex;
@@ -2695,13 +2750,55 @@ button.pageind:hover {
   width: 100%;
 }
 
+.opts-floating[data-pos="left"] .rail-tools,
+.opts-floating[data-pos="right"] .rail-tools {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+}
+
+.opts-floating[data-pos="left"] .rail-tool,
+.opts-floating[data-pos="right"] .rail-tool {
+  width: 26px;
+  height: 26px;
+  border-radius: 7px;
+  color: var(--muted);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.opts-floating[data-pos="left"] .rail-tool:hover,
+.opts-floating[data-pos="right"] .rail-tool:hover {
+  color: var(--ink);
+  background: var(--surface-2);
+}
+
+.opts-floating[data-pos="left"] .rail-tool.on,
+.opts-floating[data-pos="right"] .rail-tool.on {
+  background: #194d4d;
+  color: #4ecdc4;
+}
+
+.opts-floating[data-pos="left"] .rail-tool svg,
+.opts-floating[data-pos="right"] .rail-tool svg {
+  width: 17px;
+  height: 17px;
+}
+
 .opts-floating[data-pos="left"] .vsep,
 .opts-floating[data-pos="right"] .vsep {
   width: 18px;
   height: 1px;
   min-width: 0;
   min-height: 1px;
-  margin: 2px auto;
+  margin: 3px auto;
   background: var(--line);
 }
 
@@ -2745,7 +2842,7 @@ button.pageind:hover {
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 2px;
+  gap: 3px;
 }
 
 .opts-floating[data-pos="left"] .sizes-group,
@@ -2758,8 +2855,45 @@ button.pageind:hover {
 
 .opts-floating[data-pos="left"] .sz,
 .opts-floating[data-pos="right"] .sz {
-  width: 24px;
-  height: 24px;
+  width: 26px;
+  height: 22px;
+  border-radius: 6px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 0;
+  background: transparent;
+  padding: 0;
+  cursor: pointer;
+}
+
+.opts-floating[data-pos="left"] .sz.on,
+.opts-floating[data-pos="right"] .sz.on {
+  background: rgba(255, 255, 255, 0.16);
+}
+
+.opts-floating[data-pos="left"] .sz .dot,
+.opts-floating[data-pos="right"] .sz .dot {
+  border-radius: 9999px !important;
+  background: var(--ink) !important;
+}
+
+.opts-floating[data-pos="left"] .sizes-group .sz:nth-child(1) .dot,
+.opts-floating[data-pos="right"] .sizes-group .sz:nth-child(1) .dot {
+  width: 10px !important;
+  height: 1.5px !important;
+}
+
+.opts-floating[data-pos="left"] .sizes-group .sz:nth-child(2) .dot,
+.opts-floating[data-pos="right"] .sizes-group .sz:nth-child(2) .dot {
+  width: 13px !important;
+  height: 2.5px !important;
+}
+
+.opts-floating[data-pos="left"] .sizes-group .sz:nth-child(3) .dot,
+.opts-floating[data-pos="right"] .sizes-group .sz:nth-child(3) .dot {
+  width: 16px !important;
+  height: 4px !important;
 }
 
 .opts-floating[data-pos="left"] .sw,
@@ -2768,7 +2902,13 @@ button.pageind:hover {
   height: 18px;
   min-width: 18px;
   min-height: 18px;
+  border-radius: 50%;
   margin: 0;
+}
+
+.opts-floating[data-pos="left"] .sw.on,
+.opts-floating[data-pos="right"] .sw.on {
+  box-shadow: 0 0 0 2px var(--surface, #16191c), 0 0 0 3.5px #4ecdc4 !important;
 }
 
 .opts-floating[data-pos="left"] .mm,
