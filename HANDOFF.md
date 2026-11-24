@@ -24,5 +24,5 @@
 1. Cloudflare Sync Request Usage Meter and Durable Object SQLite row read optimizations.
 
 ## Live Status
-- Inkleaf v82 is currently live on GitHub Pages.
-- v83 tested locally and ready to push to `main` upon owner's "push" confirmation.
+- Inkleaf v83 is now live on GitHub Pages and deployed to Cloudflare Worker.
+- Commit `dca9742` (v83) pushed to `main`.
