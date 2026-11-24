@@ -154,6 +154,7 @@ export async function mountEditor(root, docId, opts = {}) {
   const tabsEl = h('div', { class: 'tabs' });
   const roBtn = h('button', { class: 'ic', type: 'button', onclick: () => setReadOnly(!readOnly), html: I.eye });
   const timerBtn = h('button', { class: 'ic wide', type: 'button', title: 'Timer', onclick: () => toggleTimer(), html: I.timer });
+  const optsFloating = h('div', { class: 'opts-floating' }, optsEl);
   const el = h('div', { class: 'ed' },
     h('div', { class: 'bar top' },
       h('button', { class: 'ic', type: 'button', title: split ? 'Close this side' : 'Library', onclick: exit, html: split ? I.back : I.home }),
@@ -165,8 +166,8 @@ export async function mountEditor(root, docId, opts = {}) {
         h('button', { class: 'ic wide', type: 'button', title: 'Find text (Ctrl+F)', onclick: () => openFind(), html: I.search }),
         roBtn),
       h('div', { class: 'vsep nofull' }),
-      h('div', { class: 'capsule' },
-        toolsEl, h('div', { class: 'vsep' }), optsEl),
+      toolsEl,
+      h('div', { class: 'grow' }),
       h('div', { class: 'trail nofull' },
         doc.journal ? h('div', { class: 'journal-nav-bar' },
           h('button', { class: 'ic', type: 'button', title: 'Previous day', onclick: () => journalStepDay(-1), html: I.back }),
@@ -177,7 +178,7 @@ export async function mountEditor(root, docId, opts = {}) {
         h('button', { class: 'ic wide', type: 'button', title: 'Full screen (F)', onclick: () => setFull(true), html: I.full }),
         h('button', { class: 'ic', type: 'button', title: 'More', onclick: e => moreMenu(e.currentTarget), html: I.more })),
       fullTools),
-    h('div', { class: 'stage' }, vp, overlay, tray, zwin, panel),
+    h('div', { class: 'stage' }, vp, overlay, optsFloating, tray, zwin, panel),
     fileInp, scanInp);
   if (split) el.classList.add('in-split');
   el.addEventListener('pointerdown', () => { activeEd = me; }, true);
@@ -2132,6 +2133,7 @@ export async function mountEditor(root, docId, opts = {}) {
     a.c2 = a.map ? zliveCtx() : null; // the same stroke, drawn in the zoom window as it is written
     a.color = inkFor(a.pv, t.color);
     a.size = t.size;
+    a.dash = t.dash || 'solid';
     a.style = a.tool === 'pen' ? (t.style || 'fountain') : null;
     a.twist = getTwist(e) ?? 45;
     a.alt = getAltitude(e);
@@ -2246,7 +2248,8 @@ export async function mountEditor(root, docId, opts = {}) {
     const it = a.snap ? { ...a.snap, id: uid(), z: nextZ(), m: Date.now() } : {
       id: uid(), t: 's', tool: a.tool, c: a.color, w: a.size,
       p: a.pts.map(v => Math.round(v * 100) / 100), z: nextZ(), m: Date.now(),
-      ...(a.style === 'pencil' ? { st: 'pencil' } : a.style === 'calligraphy' ? { st: 'calligraphy' } : {})
+      ...(a.style === 'pencil' ? { st: 'pencil' } : a.style === 'calligraphy' ? { st: 'calligraphy' } : {}),
+      ...(a.dash && a.dash !== 'solid' ? { dash: a.dash } : {})
     };
     // Highlighter set to follow PDF text: the freehand stroke is swapped for neat marks on the lines it crossed.
     const mode = prefs.hl.mode;
@@ -3717,6 +3720,7 @@ export async function mountEditor(root, docId, opts = {}) {
   function tempShape(a) {
     const t = prefs.shape;
     const s = { t: 'sh', k: t.kind, x1: a.x0, y1: a.y0, x2: a.x1, y2: a.y1, c: inkFor(a.pv, t.color), w: t.size };
+    if (t.dash && t.dash !== 'solid') s.dash = t.dash;
     if (t.fill && (t.kind === 'rect' || t.kind === 'ellipse')) s.f = t.fill;
     return s;
   }
@@ -7121,7 +7125,8 @@ export async function mountEditor(root, docId, opts = {}) {
       kids = [
         ...favPens(), h('div', { class: 'vsep' }),
         ...sizes('pen', [0.3, 0.5, 0.7, 1.0], [3, 5, 7, 10], 3), h('div', { class: 'vsep' }),
-        ...swatches('pen', PEN_COLORS)
+        ...swatches('pen', PEN_COLORS), h('div', { class: 'vsep' }),
+        seg([['solid', '—'], ['dashed', '- -'], ['dotted', '···']], prefs.pen.dash || 'solid', v => { prefs.pen.dash = v; savePrefs(); renderOpts(); })
       ];
     }
     else if (t === 'hl') {
@@ -7129,7 +7134,9 @@ export async function mountEditor(root, docId, opts = {}) {
       kids = [
         ...sizes('hl', [3.5, 5.5, 8.5], [7, 11, 15], 14),
         h('div', { class: 'vsep' }),
-        ...swatches('hl', HL_COLORS)
+        ...swatches('hl', HL_COLORS),
+        h('div', { class: 'vsep' }),
+        seg([['solid', '—'], ['dashed', '- -'], ['dotted', '···']], prefs.hl.dash || 'solid', v => { prefs.hl.dash = v; savePrefs(); renderOpts(); })
       ];
       if (hasPdf) {
         kids.push(
@@ -7152,7 +7159,10 @@ export async function mountEditor(root, docId, opts = {}) {
       const fillPick = v => { prefs.shape.fill = v; savePrefs(); renderOpts(); };
       kids = [
         seg(SHAPES, prefs.shape.kind, v => { prefs.shape.kind = v; savePrefs(); renderOpts(); }),
-        h('div', { class: 'vsep' }), ...swatches('shape', PEN_COLORS), h('div', { class: 'vsep' }), ...sizes('shape', [0.4, 0.8, 1.4], [5, 8, 12], 3),
+        h('div', { class: 'vsep' }),
+        seg([['solid', '—'], ['dashed', '- -'], ['dotted', '···']], prefs.shape.dash || 'solid', v => { prefs.shape.dash = v; savePrefs(); renderOpts(); }),
+        h('div', { class: 'vsep' }), ...sizes('shape', [0.4, 0.8, 1.4], [5, 8, 12], 3),
+        h('div', { class: 'vsep' }), ...swatches('shape', PEN_COLORS),
         h('div', { class: 'vsep' }), h('span', { class: 'lbl' }, 'Fill'),
         h('button', { class: 'sw nofill' + (fill ? '' : ' on'), type: 'button', title: 'No fill', onclick: () => fillPick(null) }),
         ...FILL_COLORS.map(c => h('button', { class: 'sw' + (fill === c ? ' on' : ''), type: 'button', title: 'Fill', style: { '--c': c }, onclick: () => fillPick(c) }))

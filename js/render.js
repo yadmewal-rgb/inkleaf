@@ -314,6 +314,13 @@ function drawStroke(ctx, s) {
   ctx.lineCap = 'round';
   ctx.lineJoin = 'round';
   ctx.strokeStyle = ctx.fillStyle = inkPaint(ctx, s.c, s.st);
+  if (s.dash === 'dotted') {
+    ctx.setLineDash([0.01, Math.max(s.w * 2, 5)]);
+  } else if (s.dash === 'dashed') {
+    ctx.setLineDash([Math.max(s.w * 3, 8), Math.max(s.w * 2, 6)]);
+  } else {
+    ctx.setLineDash([]);
+  }
   if (s.tool === 'hl') {
     ctx.globalAlpha = HL_ALPHA;
     ctx.lineWidth = s.w;
@@ -321,19 +328,22 @@ function drawStroke(ctx, s) {
     if (n === 1) { ctx.moveTo(P[0], P[1]); ctx.lineTo(P[0] + 0.01, P[1]); } else tracePath(ctx, P);
     ctx.stroke();
     ctx.globalAlpha = 1;
+    ctx.setLineDash([]);
     return;
   }
   if (n === 1) {
     ctx.beginPath();
     ctx.arc(P[0], P[1], pw(s, P[2]) / 2, 0, 6.2832);
     ctx.fill();
+    ctx.setLineDash([]);
     return;
   }
-  if (uniform(P)) {
+  if (uniform(P) || s.dash) {
     ctx.lineWidth = pw(s, P[2]);
     ctx.beginPath();
     tracePath(ctx, P);
     ctx.stroke();
+    ctx.setLineDash([]);
     return;
   }
   // Pressure-sensitive: the width glides from one point to the next instead of changing in steps.
@@ -347,6 +357,7 @@ function drawStroke(ctx, s) {
   }
   const ex = P[(n - 1) * 3], ey = P[(n - 1) * 3 + 1];
   inkSeg(ctx, px, py, (px + ex) / 2, (py + ey) / 2, ex, ey, w0, pw(s, P[(n - 1) * 3 + 2]));
+  ctx.setLineDash([]);
 }
 
 // One curved piece of a stroke whose width changes from w0 to w1 along it. The curve is cut into as many
@@ -423,6 +434,13 @@ function drawShape(ctx, sh) {
   ctx.lineJoin = 'round';
   ctx.strokeStyle = sh.c;
   ctx.lineWidth = sh.w;
+  if (sh.dash === 'dotted') {
+    ctx.setLineDash([0.01, Math.max(sh.w * 2, 5)]);
+  } else if (sh.dash === 'dashed') {
+    ctx.setLineDash([Math.max(sh.w * 3, 8), Math.max(sh.w * 2, 6)]);
+  } else {
+    ctx.setLineDash([]);
+  }
   ctx.beginPath();
   if (sh.k === 'rect') {
     ctx.rect(Math.min(sh.x1, sh.x2), Math.min(sh.y1, sh.y2), Math.abs(sh.x2 - sh.x1), Math.abs(sh.y2 - sh.y1));
@@ -438,6 +456,7 @@ function drawShape(ctx, sh) {
   }
   if (sh.f && (sh.k === 'rect' || sh.k === 'ellipse')) { ctx.fillStyle = sh.f; ctx.fill(); }
   ctx.stroke();
+  ctx.setLineDash([]);
 }
 
 export function shapeSvg(sh) {
