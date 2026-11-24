@@ -7122,21 +7122,40 @@ export async function mountEditor(root, docId, opts = {}) {
     const t = prefs.tool;
     let kids = [];
     if (t === 'pen') {
+      const curStyle = prefs.pen.style || 'fountain';
       kids = [
-        ...favPens(), h('div', { class: 'vsep' }),
-        ...sizes('pen', [0.3, 0.5, 0.7, 1.0], [3, 5, 7, 10], 3), h('div', { class: 'vsep' }),
-        ...swatches('pen', PEN_COLORS), h('div', { class: 'vsep' }),
-        seg([['solid', '—'], ['dashed', '- -'], ['dotted', '···']], prefs.pen.dash || 'solid', v => { prefs.pen.dash = v; savePrefs(); renderOpts(); })
+        seg([['fountain', 'Fountain'], ['ball', 'Ballpoint'], ['brush', 'Brush']], curStyle, v => {
+          prefs.pen.style = v;
+          savePrefs();
+          renderOpts();
+        }),
+        h('div', { class: 'vsep' }),
+        seg([['solid', '—'], ['dashed', '- -'], ['dotted', '···']], prefs.pen.dash || 'solid', v => {
+          prefs.pen.dash = v;
+          savePrefs();
+          renderOpts();
+        }),
+        h('div', { class: 'vsep' }),
+        ...sizes('pen', [0.3, 0.5, 0.7, 1.0], [3, 5, 7, 10], 3),
+        h('div', { class: 'vsep' }),
+        ...swatches('pen', PEN_COLORS)
       ];
+      if (prefs.favs && prefs.favs.length) {
+        kids.push(h('div', { class: 'vsep' }), ...favPens());
+      }
     }
     else if (t === 'hl') {
       const hasPdf = pvs.some(pv => pv.page && pv.page.pdf && !pv.page.tpl);
       kids = [
+        seg([['solid', '—'], ['dashed', '- -'], ['dotted', '···']], prefs.hl.dash || 'solid', v => {
+          prefs.hl.dash = v;
+          savePrefs();
+          renderOpts();
+        }),
+        h('div', { class: 'vsep' }),
         ...sizes('hl', [3.5, 5.5, 8.5], [7, 11, 15], 14),
         h('div', { class: 'vsep' }),
-        ...swatches('hl', HL_COLORS),
-        h('div', { class: 'vsep' }),
-        seg([['solid', '—'], ['dashed', '- -'], ['dotted', '···']], prefs.hl.dash || 'solid', v => { prefs.hl.dash = v; savePrefs(); renderOpts(); })
+        ...swatches('hl', HL_COLORS)
       ];
       if (hasPdf) {
         kids.push(

@@ -11,10 +11,10 @@
 1. **Constant Upper Portal & Extra Lower Floating Window (`js/editor.js`, `css/app.css`)**:
    - The main upper toolbar is **100% constant**: holds all tools (`Pen`, `Highlighter`, `Eraser`, `Lasso`, `Tape`, `Text`, `Shape`, `Laser`, `Sticky`, `Insert (+)`) plus navigation and utility buttons. It never resizes, shifts, or scrolls.
    - An **extra lower floating window** (`.opts-floating`) floats directly above the notebook paper, showing ONLY the options for the tool chosen in the upper bar:
-     - For Pen: Tip sizes (0.3, 0.5, 0.7, 1.0 mm), color swatches, line style (Solid / Dashed / Dotted), and favorite chips.
-     - For Highlighter: Tip sizes (7px, 11px, 15px), color swatches, line style (Solid / Dashed / Dotted).
+     - For Pen: Pen nib selector (`Fountain`, `Ballpoint`, `Brush`), line style (`—`, `- -`, `···`), tip sizes (0.3, 0.5, 0.7, 1.0 mm), color swatches, and favorite chips.
+     - For Highlighter: Line style (`—`, `- -`, `···`), tip sizes (7px, 11px, 15px), color swatches.
      - For Eraser: Whole stroke vs Precise, eraser sizes, erase target filter.
-     - For Shape: Shape types, line style (Solid / Dashed / Dotted), stroke sizes, stroke colors, fill colors.
+     - For Shape: Shape types, line style (`—`, `- -`, `···`), stroke sizes, stroke colors, fill colors.
      - For Text & Tape: Text formatting, tape sizes and colors.
 2. **Dotted & Dashed Lines (`js/render.js`, `js/editor.js`, `js/editor-consts.js`)**:
    - Added line style selector: Solid (`—`), Dashed (`- -`), and Dotted (`···`) for Pen, Highlighter, and Shape.
