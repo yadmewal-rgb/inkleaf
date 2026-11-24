@@ -110,7 +110,11 @@ export default {
       const stub = env.USER.get(env.USER.idFromName(key));
       return withCors(await stub.fetch(req), cors);
     } catch (e) {
-      return withCors(json({ error: 'server', message: String(e && e.message || e) }, 500), cors);
+      const msg = String(e && e.message || e);
+      if (msg.includes('Exceeded allowed rows read') || msg.includes('free tier')) {
+        return withCors(json({ error: 'quota_exceeded', message: 'Exceeded allowed rows read in Durable Objects free tier.' }, 429), cors);
+      }
+      return withCors(json({ error: 'server', message: msg }, 500), cors);
     }
   }
 };
@@ -244,9 +248,52 @@ export class User extends DurableObject {
     }
   }
 
+  trackUsage(isOcr = false, ocrCount = 1, increment = true) {
+    const today = new Date().toISOString().slice(0, 10);
+    if (!this._dailyUsage || this._dailyUsage.date !== today) {
+      const saved = this.kvGet('usage_' + today);
+      if (saved) {
+        try { this._dailyUsage = JSON.parse(saved); } catch {}
+      }
+      if (!this._dailyUsage || this._dailyUsage.date !== today) {
+        this._dailyUsage = { date: today, cfCalls: 0, ocrCalls: 0 };
+      }
+    }
+    if (increment) {
+      this._dailyUsage.cfCalls = (this._dailyUsage.cfCalls || 0) + 1;
+      if (isOcr) {
+        this._dailyUsage.ocrCalls = (this._dailyUsage.ocrCalls || 0) + ocrCount;
+      }
+      this._usageUnsaved = (this._usageUnsaved || 0) + 1;
+      if (this._usageUnsaved >= 10) {
+        this._usageUnsaved = 0;
+        this.kvSet('usage_' + today, JSON.stringify(this._dailyUsage));
+      }
+    }
+    return this._dailyUsage;
+  }
+
+  usageHeaders() {
+    const today = new Date().toISOString().slice(0, 10);
+    const u = this._dailyUsage && this._dailyUsage.date === today ? this._dailyUsage : { cfCalls: 0, ocrCalls: 0 };
+    return {
+      'X-CF-Calls-Today': String(u.cfCalls || 0),
+      'X-OCR-Calls-Today': String(u.ocrCalls || 0)
+    };
+  }
+
   async fetch(req) {
     try {
-      return await this._fetch(req);
+      const url = new URL(req.url), p = url.pathname.split('/').filter(Boolean);
+      const isOcr = p[0] === 'ocr';
+      const ocrN = Number(url.searchParams.get('n') || 1);
+      this.trackUsage(isOcr, ocrN);
+
+      const resp = await this._fetch(req);
+      const h = new Headers(resp.headers);
+      const uh = this.usageHeaders();
+      for (const k in uh) h.set(k, uh[k]);
+      return new Response(resp.body, { status: resp.status, statusText: resp.statusText, headers: h });
     } catch (err) {
       const msg = String(err?.message || err);
       if (msg.includes('Exceeded allowed rows read') || msg.includes('free tier')) {
@@ -845,7 +892,21 @@ Return ONLY the valid JSON array without commentary or code fences.`;
       const myEmail = String(this.kvGet('email') || '').toLowerCase();
       const allowedList = (this.env.ALLOWED || '').split(',').map(s => s.trim().toLowerCase()).filter(Boolean);
       const friends = allowedList.filter(e => e !== myEmail);
-      return json({ email: this.kvGet('email'), devices: n, bytes: this.usedBytes(), quota: this.quota(), drive: !!this.kvGet('grt'), seq: this.seq(), friends });
+      const u = this.trackUsage(false, 0, false);
+      return json({
+        email: this.kvGet('email'),
+        devices: n,
+        bytes: this.usedBytes(),
+        quota: this.quota(),
+        drive: !!this.kvGet('grt'),
+        seq: this.seq(),
+        friends,
+        cfCallsToday: u?.cfCalls || 0,
+        cfLimit: 100000,
+        ocrCallsToday: u?.ocrCalls || 0,
+        ocrLimit: 1500,
+        merged: true
+      });
     }
 
     if (p[0] === 'signout' && req.method === 'POST') {

@@ -52,6 +52,24 @@ export function setHwLimit(n) {
   bus.emit('hw-usage', u);
 }
 
+export function updateHwUsageFromServer(serverCalls, serverLimit) {
+  const u = getHwUsage();
+  let changed = false;
+  if (typeof serverCalls === 'number' && serverCalls >= (u.calls || 0)) {
+    u.calls = serverCalls;
+    changed = true;
+  }
+  if (typeof serverLimit === 'number' && serverLimit > 0) {
+    u.limit = serverLimit;
+    changed = true;
+  }
+  if (changed) {
+    try { localStorage.setItem(USAGE_KEY, JSON.stringify(u)); } catch {}
+    bus.emit('hw-usage', u);
+  }
+  return u;
+}
+
 // Tiered model cascade in order of reasoning capability & efficiency:
 // Tier 1: 4 Hydrogen, 3.8 Flash, 3.8 Flash Lite
 // Tier 2: 3.7 Flash, 3.7 Flash Lite

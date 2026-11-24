@@ -13,9 +13,10 @@ import { db, assetIdsOf } from './db.js';
 import { h, uid, bus, loadScript, downloadBlob, bufToB64, b64ToBuf } from './util.js';
 import { modal, toast, confirmBox, busy } from './ui.js';
 import { I } from './icons.js';
-import { hwOn, setHwOn, status as hwStatus, setCloudOcr, getHwUsage, setHwLimit, getHwModel, setHwModel, getHwModelConfig, getActiveHwModel, MODEL_CASCADE, formatModelName } from './hwsearch.js';
+import { hwOn, setHwOn, status as hwStatus, setCloudOcr, getHwUsage, setHwLimit, getHwModel, setHwModel, getHwModelConfig, getActiveHwModel, MODEL_CASCADE, formatModelName, updateHwUsageFromServer } from './hwsearch.js';
+export { updateHwUsageFromServer };
 
-export const APP_VER = 'v83';
+export const APP_VER = 'v84';
 const SERVER = 'https://inkleaf-sync.yadmewal.workers.dev';
 // drive.appdata: Inkleaf's hidden app folder (files it syncs); drive.file: only files Inkleaf itself creates, used
 // for the visible "Inkleaf" folder holding copies of the PDFs under their real names.
@@ -222,6 +223,28 @@ export function getCfUsage() {
   return fresh;
 }
 
+export function updateCfUsageFromServer(serverCalls, serverLimit, merged = true) {
+  const usage = getCfUsage();
+  let changed = false;
+  if (typeof serverCalls === 'number' && serverCalls >= (usage.calls || 0)) {
+    usage.calls = serverCalls;
+    changed = true;
+  }
+  if (typeof serverLimit === 'number' && serverLimit > 0) {
+    usage.limit = serverLimit;
+    changed = true;
+  }
+  if (merged) {
+    usage.merged = true;
+    changed = true;
+  }
+  if (changed) {
+    try { localStorage.setItem('inkleaf.cfUsage', JSON.stringify(usage)); } catch {}
+    bus.emit('cf-usage', usage);
+  }
+  return usage;
+}
+
 export function recordCfCall(endpoint = '') {
   const usage = getCfUsage();
   usage.calls = (usage.calls || 0) + 1;
@@ -238,6 +261,10 @@ export async function call(path, opts = {}) {
   if (!session) { const e = new Error('Sign-in needed'); e.signin = true; throw e; }
   recordCfCall(path);
   const r = await http(server + path, { ...opts, headers: { Authorization: 'Bearer ' + session.token, ...(opts.headers || {}) } });
+  const cfH = r.headers.get('x-cf-calls-today');
+  const ocrH = r.headers.get('x-ocr-calls-today');
+  if (cfH) updateCfUsageFromServer(Number(cfH), 100000, true);
+  if (ocrH) updateHwUsageFromServer(Number(ocrH), 1500);
   if (r.status === 401) {
     session = null;
     closeLive();
@@ -2037,14 +2064,14 @@ export async function openSettings() {
 
     const kids = [
       h('div', { class: 'row', style: 'align-items: center; justify-content: space-between; margin-bottom: 4px;' },
-        h('b', { style: 'font-size: 13px;' }, 'Cloudflare Sync Requests:'),
+        h('b', { style: 'font-size: 13px;' }, 'Cloudflare Sync Requests (All devices):'),
         h('span', { class: 'bk-sub' }, `${calls.toLocaleString()} / ${limit.toLocaleString()} requests today`)
       ),
       h('div', { class: 'usage-bar', style: 'margin: 6px 0;' },
         h('div', { class: 'usage-fill' + (pct > 80 || isQuotaExceeded ? ' warn' : ''), style: { width: Math.max(pct, isQuotaExceeded ? 100 : 1) + '%' } })
       ),
       h('div', { class: 'bk-sub', style: 'font-size: 11.5px; color: var(--muted); margin-top: 4px;' },
-        'Free Tier Limits: 100,000 requests/day · Durable Objects: 1M req/mo & 10M rows read/mo'
+        'Merged across iPad, laptop & web · Free tier: 100,000 req/day · Resets daily at 00:00 UTC'
       ),
       isQuotaExceeded ? h('div', { style: 'margin-top: 8px; padding: 6px 10px; background: rgba(224, 49, 49, 0.12); border-left: 3px solid #e03131; border-radius: 4px; font-size: 12px; color: #ff6b6b; line-height: 1.4;' },
         '⚠️ Cloudflare daily row-read budget reached. Your writing and changes are saved 100% safely on this device and will automatically sync once the quota resets at midnight UTC.'
@@ -2058,6 +2085,8 @@ export async function openSettings() {
   const usage = h('div', { class: 'usage', hidden: true });
   if (session && !cfg.off && navigator.onLine) {
     call('/me').then(r => r.json()).then(j => {
+      if (j.cfCallsToday != null) updateCfUsageFromServer(j.cfCallsToday, j.cfLimit, true);
+      if (j.ocrCallsToday != null) updateHwUsageFromServer(j.ocrCallsToday, j.ocrLimit);
       const fmt = b => (b >= 1048576 ? Math.round(b / 1048576) + ' MB' : Math.max(1, Math.round(b / 1024)) + ' KB'); // in MB, as the shares are set
       const quota = Number(j.quota) || 500 * 1048576, used = Number(j.bytes) || 0, pct = Math.min(100, used / quota * 100);
       usage.replaceChildren(
@@ -2142,14 +2171,14 @@ export async function openSettings() {
 
     const usageCard = h('div', { class: 'field', style: 'margin-top: 10px; padding: 10px 12px; background: var(--surface-2); border-radius: 8px;' },
       h('div', { class: 'row', style: 'align-items: center; justify-content: space-between; margin-bottom: 4px;' },
-        h('b', { style: 'font-size: 13px;' }, 'Daily AI Request Usage:'),
+        h('b', { style: 'font-size: 13px;' }, 'Daily AI Request Usage (All devices):'),
         h('span', { class: 'bk-sub' }, `${usage.calls || 0} / ${usage.limit || 1500} requests`)
       ),
       h('div', { class: 'usage-bar', style: 'margin: 6px 0;' },
         h('div', { class: 'usage-fill' + (pct > 85 ? ' warn' : ''), style: { width: Math.max(pct, 1) + '%' } })
       ),
       h('div', { class: 'row', style: 'align-items: center; justify-content: space-between; font-size: 12px; color: var(--muted); margin-top: 4px;' },
-        h('span', null, `${usage.pages || 0} pages transcribed today (1 page = 1 request)`),
+        h('span', null, `Merged across iPad, laptop & web · ${usage.pages || 0} pages transcribed today`),
         h('div', { class: 'row', style: 'align-items: center; gap: 6px;' },
           h('span', null, 'Daily limit:'),
           limitInp
