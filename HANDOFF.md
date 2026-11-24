@@ -19,6 +19,5 @@
 3. Redesign the drawing toolbar into the clean GoodNotes 6 floating capsule layout (Pic 3).
 
 ## Live Status
-- Inkleaf v85 is currently live on GitHub Pages.
-- v86 revert committed locally.
-- Ready to push upon owner's confirmation.
+- Inkleaf v86 is live on GitHub Pages and deployed to Cloudflare Worker.
+- Commit `f10e7f8` (v86 revert) pushed to `main`.
