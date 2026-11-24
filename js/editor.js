@@ -7172,7 +7172,9 @@ export async function mountEditor(root, docId, opts = {}) {
   }
 
   const seg = (items, cur, onPick) => h('div', { class: 'seg' }, items.map(([v, label]) =>
-    h('button', { class: v === cur ? 'on' : '', type: 'button', onclick: () => onPick(v) }, label)));
+    h('button', { class: v === cur ? 'on' : '', type: 'button', title: label, onclick: () => onPick(v) },
+      h('span', { class: 'lbl-full' }, label),
+      h('span', { class: 'lbl-short' }, label.length > 4 ? (label.startsWith('Fount') ? 'Fnt' : label.startsWith('Ball') ? 'Ball' : label.startsWith('Brush') ? 'Brsh' : label.slice(0, 4)) : label))));
 
   // Favourite pens: saved colour + tip size + style, one tap to switch. Hold (or right-click) one to remove it.
   function favPens() {

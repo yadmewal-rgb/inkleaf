@@ -2679,14 +2679,14 @@ button.pageind:hover {
 .opts-floating[data-pos="left"] {
   top: 50%;
   bottom: auto;
-  left: max(10px, env(safe-area-inset-left));
+  left: max(8px, env(safe-area-inset-left));
   right: auto;
   transform: translateY(-50%);
   flex-direction: column;
-  border-radius: 20px;
-  padding: 8px 5px;
-  width: 70px;
-  max-width: 80px;
+  border-radius: 9999px;
+  padding: 6px 3px;
+  width: 32px;
+  max-width: 36px;
   max-height: calc(100% - 24px);
   overflow-x: hidden;
   overflow-y: auto;
@@ -2698,44 +2698,61 @@ button.pageind:hover {
   top: 50%;
   bottom: auto;
   left: auto;
-  right: max(10px, env(safe-area-inset-right));
+  right: max(8px, env(safe-area-inset-right));
   transform: translateY(-50%);
   flex-direction: column;
-  border-radius: 20px;
-  padding: 8px 5px;
-  width: 70px;
-  max-width: 80px;
+  border-radius: 9999px;
+  padding: 6px 3px;
+  width: 32px;
+  max-width: 36px;
   max-height: calc(100% - 24px);
   overflow-x: hidden;
   overflow-y: auto;
   scrollbar-width: none;
 }
 
-/* Vertical adaptations for Left & Right positions */
+/* Vertical adaptations for Left & Right positions: single sleek line */
 .opts-floating[data-pos="left"] .opts-nav,
 .opts-floating[data-pos="right"] .opts-nav {
-  display: grid;
-  grid-template-columns: repeat(2, 28px);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
   gap: 2px;
-  justify-content: center;
-  width: auto;
+  width: 100%;
+}
+
+.opts-floating[data-pos="left"] .opts-nav .ic,
+.opts-floating[data-pos="right"] .opts-nav .ic {
+  width: 24px;
+  height: 24px;
+  min-width: 24px;
+  min-height: 24px;
+  padding: 2px;
+}
+
+.opts-floating[data-pos="left"] .opts-nav .ic svg,
+.opts-floating[data-pos="right"] .opts-nav .ic svg {
+  width: 16px;
+  height: 16px;
 }
 
 .opts-floating[data-pos="left"] .opts-nav > .vsep,
 .opts-floating[data-pos="right"] .opts-nav > .vsep {
-  display: none;
+  display: block;
 }
 
 .opts-floating[data-pos="left"] .opts,
 .opts-floating[data-pos="right"] .opts {
+  display: flex;
   flex-direction: column;
-  gap: 5px;
+  gap: 3px;
+  align-items: center;
   width: 100%;
 }
 
 .opts-floating[data-pos="left"] .vsep,
 .opts-floating[data-pos="right"] .vsep {
-  width: 32px;
+  width: 18px;
   height: 1px;
   min-width: 0;
   min-height: 1px;
@@ -2745,8 +2762,10 @@ button.pageind:hover {
 
 .opts-floating[data-pos="left"] .seg,
 .opts-floating[data-pos="right"] .seg {
+  display: flex;
   flex-direction: column;
   width: 100%;
+  border-radius: 6px;
 }
 
 .opts-floating[data-pos="left"] .seg button+button,
@@ -2757,25 +2776,54 @@ button.pageind:hover {
 
 .opts-floating[data-pos="left"] .seg button,
 .opts-floating[data-pos="right"] .seg button {
-  padding: 4px 2px;
-  font-size: 11px;
+  padding: 3px 1px;
+  font-size: 8.5px;
   text-align: center;
+  line-height: 1;
 }
 
 .opts-floating[data-pos="left"] .sw-group,
 .opts-floating[data-pos="right"] .sw-group {
-  display: grid;
-  grid-template-columns: repeat(2, 26px);
-  gap: 3px;
-  justify-content: center;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
 }
 
 .opts-floating[data-pos="left"] .sizes-group,
 .opts-floating[data-pos="right"] .sizes-group {
-  display: grid;
-  grid-template-columns: repeat(2, 26px);
-  gap: 3px;
-  justify-content: center;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+}
+
+.opts-floating[data-pos="left"] .sw,
+.opts-floating[data-pos="right"] .sw {
+  width: 18px;
+  height: 18px;
+  min-width: 18px;
+  min-height: 18px;
+  margin: 0;
+}
+
+.opts-floating[data-pos="left"] .mm,
+.opts-floating[data-pos="right"] .mm {
+  display: none;
+}
+
+.lbl-short {
+  display: none;
+}
+
+.opts-floating[data-pos="left"] .lbl-full,
+.opts-floating[data-pos="right"] .lbl-full {
+  display: none;
+}
+
+.opts-floating[data-pos="left"] .lbl-short,
+.opts-floating[data-pos="right"] .lbl-short {
+  display: inline;
 }
 
 .ic.on {
