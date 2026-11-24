@@ -20,5 +20,5 @@
 1. Prevented Cloudflare Durable Objects row reads quota exhaustion: eliminated recursive render loop on `filter === 'shared'` in `js/library.js` and added 30s network throttle in `js/sync.js`.
 
 ## Live Status
-- Inkleaf v79 is currently live on GitHub Pages.
-- v80 tested and committed locally; awaiting owner's approval to push to `main`.
+- Inkleaf v80 is live on GitHub Pages: https://yadmewal-rgb.github.io/inkleaf/ (commit `780b9d2`).
+- Clean working tree.
