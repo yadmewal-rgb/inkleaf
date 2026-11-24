@@ -2555,30 +2555,36 @@ button.pageind:hover {
   right: 0;
 }
 
-/* Lower extra floating window: appears according to option chosen above */
+/* Lower extra floating window: movable to top, bottom, left, or right */
 .opts-floating {
   position: absolute;
-  top: 10px;
-  left: 50%;
-  transform: translateX(-50%);
   z-index: 25;
   display: inline-flex;
   align-items: center;
   background: var(--surface);
   border: 1px solid var(--line);
-  border-radius: 9999px;
-  box-shadow: 0 4px 16px rgba(0, 0, 0, .10), 0 1px 3px rgba(0, 0, 0, .05);
-  padding: 4px 12px;
-  max-width: calc(100% - 24px);
-  overflow-x: auto;
-  scrollbar-width: none;
+  box-shadow: 0 4px 18px rgba(0, 0, 0, .12), 0 1px 4px rgba(0, 0, 0, .06);
   pointer-events: auto;
-  transition: transform 0.15s ease, opacity 0.15s ease;
+  transition: transform 0.2s cubic-bezier(0.16, 1, 0.3, 1), top 0.2s cubic-bezier(0.16, 1, 0.3, 1), bottom 0.2s cubic-bezier(0.16, 1, 0.3, 1), left 0.2s cubic-bezier(0.16, 1, 0.3, 1), right 0.2s cubic-bezier(0.16, 1, 0.3, 1), opacity 0.15s ease;
+  user-select: none;
+}
+
+.opts-floating.dragging {
+  transition: none !important;
+  box-shadow: 0 12px 32px rgba(0, 0, 0, .24), 0 2px 8px rgba(0, 0, 0, .12);
+  cursor: grabbing !important;
 }
 
 .opts-floating[hidden],
 .ed.ro .opts-floating {
   display: none !important;
+}
+
+.opts-floating .opts-nav {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  flex: none;
 }
 
 .opts-floating .opts {
@@ -2587,6 +2593,189 @@ button.pageind:hover {
   gap: 6px;
   flex: none;
   padding: 0;
+}
+
+.opts-floating .grip-handle {
+  cursor: grab;
+  touch-action: none;
+  color: var(--muted);
+  border-radius: 8px;
+  width: 28px;
+  height: 28px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.opts-floating .grip-handle:hover {
+  color: var(--ink);
+  background: var(--surface-2);
+}
+
+.opts-floating .dock-toggle {
+  color: var(--muted);
+  border-radius: 8px;
+  width: 28px;
+  height: 28px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.opts-floating .dock-toggle:hover {
+  color: var(--accent);
+  background: var(--accent-soft);
+}
+
+.opts-floating .sw-group,
+.opts-floating .sizes-group {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+/* Position: Top (default) */
+.opts-floating,
+.opts-floating[data-pos="top"] {
+  top: 10px;
+  bottom: auto;
+  left: 50%;
+  right: auto;
+  transform: translateX(-50%);
+  flex-direction: row;
+  border-radius: 9999px;
+  padding: 4px 10px;
+  max-width: calc(100% - 24px);
+  max-height: none;
+  overflow-x: auto;
+  overflow-y: visible;
+  scrollbar-width: none;
+}
+
+/* In fullscreen, if at top, offset below floating tools bar so they never collide */
+.ed.full .opts-floating[data-pos="top"],
+.ed.full .opts-floating:not([data-pos]) {
+  top: calc(64px + env(safe-area-inset-top));
+}
+
+/* Position: Bottom */
+.opts-floating[data-pos="bottom"] {
+  top: auto;
+  bottom: calc(16px + env(safe-area-inset-bottom));
+  left: 50%;
+  right: auto;
+  transform: translateX(-50%);
+  flex-direction: row;
+  border-radius: 9999px;
+  padding: 4px 10px;
+  max-width: calc(100% - 24px);
+  max-height: none;
+  overflow-x: auto;
+  overflow-y: visible;
+  scrollbar-width: none;
+}
+
+/* Position: Left */
+.opts-floating[data-pos="left"] {
+  top: 50%;
+  bottom: auto;
+  left: max(10px, env(safe-area-inset-left));
+  right: auto;
+  transform: translateY(-50%);
+  flex-direction: column;
+  border-radius: 20px;
+  padding: 8px 5px;
+  width: 70px;
+  max-width: 80px;
+  max-height: calc(100% - 24px);
+  overflow-x: hidden;
+  overflow-y: auto;
+  scrollbar-width: none;
+}
+
+/* Position: Right */
+.opts-floating[data-pos="right"] {
+  top: 50%;
+  bottom: auto;
+  left: auto;
+  right: max(10px, env(safe-area-inset-right));
+  transform: translateY(-50%);
+  flex-direction: column;
+  border-radius: 20px;
+  padding: 8px 5px;
+  width: 70px;
+  max-width: 80px;
+  max-height: calc(100% - 24px);
+  overflow-x: hidden;
+  overflow-y: auto;
+  scrollbar-width: none;
+}
+
+/* Vertical adaptations for Left & Right positions */
+.opts-floating[data-pos="left"] .opts-nav,
+.opts-floating[data-pos="right"] .opts-nav {
+  display: grid;
+  grid-template-columns: repeat(2, 28px);
+  gap: 2px;
+  justify-content: center;
+  width: auto;
+}
+
+.opts-floating[data-pos="left"] .opts-nav > .vsep,
+.opts-floating[data-pos="right"] .opts-nav > .vsep {
+  display: none;
+}
+
+.opts-floating[data-pos="left"] .opts,
+.opts-floating[data-pos="right"] .opts {
+  flex-direction: column;
+  gap: 5px;
+  width: 100%;
+}
+
+.opts-floating[data-pos="left"] .vsep,
+.opts-floating[data-pos="right"] .vsep {
+  width: 32px;
+  height: 1px;
+  min-width: 0;
+  min-height: 1px;
+  margin: 2px auto;
+  background: var(--line);
+}
+
+.opts-floating[data-pos="left"] .seg,
+.opts-floating[data-pos="right"] .seg {
+  flex-direction: column;
+  width: 100%;
+}
+
+.opts-floating[data-pos="left"] .seg button+button,
+.opts-floating[data-pos="right"] .seg button+button {
+  border-left: 0;
+  border-top: 1px solid var(--line);
+}
+
+.opts-floating[data-pos="left"] .seg button,
+.opts-floating[data-pos="right"] .seg button {
+  padding: 4px 2px;
+  font-size: 11px;
+  text-align: center;
+}
+
+.opts-floating[data-pos="left"] .sw-group,
+.opts-floating[data-pos="right"] .sw-group {
+  display: grid;
+  grid-template-columns: repeat(2, 26px);
+  gap: 3px;
+  justify-content: center;
+}
+
+.opts-floating[data-pos="left"] .sizes-group,
+.opts-floating[data-pos="right"] .sizes-group {
+  display: grid;
+  grid-template-columns: repeat(2, 26px);
+  gap: 3px;
+  justify-content: center;
 }
 
 .ic.on {

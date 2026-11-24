@@ -77,7 +77,8 @@ export const DEFAULTS = {
   openRead: null,
   penSeen: false,
   scrollbar: 'left', // 'left' = left edge (never touches right hand), 'right' = right edge, 'hidden' = hidden
-  spellcheck: true // handwriting and text spell check as you write (red dotted underline)
+  spellcheck: true, // handwriting and text spell check as you write (red dotted underline)
+  optsPos: 'top' // movable floating options capsule position: 'top', 'bottom', 'left', or 'right'
 };
 
 // opts: page (1-based page to open at), q (text to find), pane / other (side by side: this pane's index, the other notebook)

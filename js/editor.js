@@ -154,7 +154,12 @@ export async function mountEditor(root, docId, opts = {}) {
   const tabsEl = h('div', { class: 'tabs' });
   const roBtn = h('button', { class: 'ic', type: 'button', onclick: () => setReadOnly(!readOnly), html: I.eye });
   const timerBtn = h('button', { class: 'ic wide', type: 'button', title: 'Timer', onclick: () => toggleTimer(), html: I.timer });
-  const optsFloating = h('div', { class: 'opts-floating' }, optsEl);
+  const optsGrip = h('button', { class: 'ic grip-handle', type: 'button', title: 'Drag to move toolbar', html: I.dragHandle });
+  const dockBtn = h('button', { class: 'ic dock-toggle', type: 'button', title: 'Move toolbar (Top / Bottom / Left / Right)', html: I.dockTop });
+  const undoBtnCapsule = h('button', { class: 'ic', type: 'button', title: 'Undo (Ctrl+Z)', onclick: () => undo(), html: I.undo });
+  const redoBtnCapsule = h('button', { class: 'ic', type: 'button', title: 'Redo (Ctrl+Y)', onclick: () => redo(), html: I.redo });
+  const optsNav = h('div', { class: 'opts-nav' }, optsGrip, dockBtn, undoBtnCapsule, redoBtnCapsule, h('div', { class: 'vsep' }));
+  const optsFloating = h('div', { class: 'opts-floating' }, optsNav, optsEl);
   const el = h('div', { class: 'ed' },
     h('div', { class: 'bar top' },
       h('button', { class: 'ic', type: 'button', title: split ? 'Close this side' : 'Library', onclick: exit, html: split ? I.back : I.home }),
@@ -183,6 +188,94 @@ export async function mountEditor(root, docId, opts = {}) {
   if (split) el.classList.add('in-split');
   el.addEventListener('pointerdown', () => { activeEd = me; }, true);
   root.append(el);
+
+  // Floating options capsule positioning & dragging (Top, Bottom, Left, Right)
+  function updateDockBtn() {
+    const pos = prefs.optsPos || 'top';
+    optsFloating.dataset.pos = pos;
+    if (pos === 'top') {
+      dockBtn.innerHTML = I.dockBottom;
+      dockBtn.title = 'Docked at Top (tap to move to Bottom)';
+    } else if (pos === 'bottom') {
+      dockBtn.innerHTML = I.dockLeft;
+      dockBtn.title = 'Docked at Bottom (tap to move to Left)';
+    } else if (pos === 'left') {
+      dockBtn.innerHTML = I.dockRight;
+      dockBtn.title = 'Docked at Left (tap to move to Right)';
+    } else {
+      dockBtn.innerHTML = I.dockTop;
+      dockBtn.title = 'Docked at Right (tap to move to Top)';
+    }
+  }
+
+  function setOptsPos(pos) {
+    if (!['top', 'bottom', 'left', 'right'].includes(pos)) pos = 'top';
+    prefs.optsPos = pos;
+    savePrefs();
+    updateDockBtn();
+    toast(`Toolbar moved to ${pos}`);
+  }
+
+  dockBtn.onclick = () => {
+    const cur = prefs.optsPos || 'top';
+    const next = cur === 'top' ? 'bottom' : cur === 'bottom' ? 'left' : cur === 'left' ? 'right' : 'top';
+    setOptsPos(next);
+  };
+
+  let isDraggingOpts = false;
+  let dragStartX = 0, dragStartY = 0, initialLeft = 0, initialTop = 0;
+
+  optsGrip.onpointerdown = e => {
+    e.preventDefault();
+    optsGrip.setPointerCapture(e.pointerId);
+    isDraggingOpts = true;
+    const rect = optsFloating.getBoundingClientRect();
+    dragStartX = e.clientX;
+    dragStartY = e.clientY;
+    initialLeft = rect.left;
+    initialTop = rect.top;
+    optsFloating.classList.add('dragging');
+  };
+
+  optsGrip.onpointermove = e => {
+    if (!isDraggingOpts) return;
+    const dx = e.clientX - dragStartX;
+    const dy = e.clientY - dragStartY;
+    optsFloating.style.left = (initialLeft + dx) + 'px';
+    optsFloating.style.top = (initialTop + dy) + 'px';
+    optsFloating.style.transform = 'none';
+    optsFloating.style.right = 'auto';
+    optsFloating.style.bottom = 'auto';
+  };
+
+  const endDragOpts = e => {
+    if (!isDraggingOpts) return;
+    isDraggingOpts = false;
+    optsFloating.classList.remove('dragging');
+    optsFloating.style.left = '';
+    optsFloating.style.top = '';
+    optsFloating.style.transform = '';
+    optsFloating.style.right = '';
+    optsFloating.style.bottom = '';
+    
+    const w = window.innerWidth;
+    const h = window.innerHeight;
+    const x = e.clientX;
+    const y = e.clientY;
+    if (x < 140) {
+      setOptsPos('left');
+    } else if (x > w - 140) {
+      setOptsPos('right');
+    } else if (y > h * 0.6) {
+      setOptsPos('bottom');
+    } else {
+      setOptsPos('top');
+    }
+  };
+
+  optsGrip.onpointerup = endDragOpts;
+  optsGrip.onpointercancel = endDragOpts;
+  updateDockBtn();
 
   // ------------------------------------------------------------------ view state
   let scale = 1, ls = 1, tx = 0, ty = 0, vpRect = vp.getBoundingClientRect(), worldW = 0, worldH = 0;
@@ -1390,8 +1483,8 @@ export async function mountEditor(root, docId, opts = {}) {
   }
 
   function updateUndoUi() {
-    undoBtn.disabled = undoBtn2.disabled = !undoStack.length;
-    redoBtn.disabled = redoBtn2.disabled = !redoStack.length;
+    undoBtn.disabled = undoBtn2.disabled = undoBtnCapsule.disabled = !undoStack.length;
+    redoBtn.disabled = redoBtn2.disabled = redoBtnCapsule.disabled = !redoStack.length;
   }
 
   // ------------------------------------------------------------------ pointer input
@@ -7136,9 +7229,9 @@ export async function mountEditor(root, docId, opts = {}) {
           renderOpts();
         }),
         h('div', { class: 'vsep' }),
-        ...sizes('pen', [0.3, 0.5, 0.7, 1.0], [3, 5, 7, 10], 3),
+        h('div', { class: 'sizes-group' }, ...sizes('pen', [0.3, 0.5, 0.7, 1.0], [3, 5, 7, 10], 3)),
         h('div', { class: 'vsep' }),
-        ...swatches('pen', PEN_COLORS)
+        h('div', { class: 'sw-group' }, ...swatches('pen', PEN_COLORS))
       ];
       if (prefs.favs && prefs.favs.length) {
         kids.push(h('div', { class: 'vsep' }), ...favPens());
@@ -7153,9 +7246,9 @@ export async function mountEditor(root, docId, opts = {}) {
           renderOpts();
         }),
         h('div', { class: 'vsep' }),
-        ...sizes('hl', [3.5, 5.5, 8.5], [7, 11, 15], 14),
+        h('div', { class: 'sizes-group' }, ...sizes('hl', [3.5, 5.5, 8.5], [7, 11, 15], 14)),
         h('div', { class: 'vsep' }),
-        ...swatches('hl', HL_COLORS)
+        h('div', { class: 'sw-group' }, ...swatches('hl', HL_COLORS))
       ];
       if (hasPdf) {
         kids.push(
@@ -7171,7 +7264,8 @@ export async function mountEditor(root, docId, opts = {}) {
         h('div', { class: 'vsep' }),
         h('span', { class: 'lbl' }, 'Erases'),
         seg([['all', 'Everything'], ['pen', 'Pen only'], ['hl', 'Highlighter only']], prefs.eraser.only || 'all', v => { prefs.eraser.only = v; savePrefs(); renderOpts(); }),
-        h('div', { class: 'vsep' }), ...sizes('eraser', [3, 5.5, 10.5], [7, 11, 16], 20)
+        h('div', { class: 'vsep' }),
+        h('div', { class: 'sizes-group' }, ...sizes('eraser', [3, 5.5, 10.5], [7, 11, 16], 20))
       ];
     } else if (t === 'shape') {
       const fill = prefs.shape.fill;
@@ -7180,8 +7274,10 @@ export async function mountEditor(root, docId, opts = {}) {
         seg(SHAPES, prefs.shape.kind, v => { prefs.shape.kind = v; savePrefs(); renderOpts(); }),
         h('div', { class: 'vsep' }),
         seg([['solid', '—'], ['dashed', '- -'], ['dotted', '···']], prefs.shape.dash || 'solid', v => { prefs.shape.dash = v; savePrefs(); renderOpts(); }),
-        h('div', { class: 'vsep' }), ...sizes('shape', [0.4, 0.8, 1.4], [5, 8, 12], 3),
-        h('div', { class: 'vsep' }), ...swatches('shape', PEN_COLORS),
+        h('div', { class: 'vsep' }),
+        h('div', { class: 'sizes-group' }, ...sizes('shape', [0.4, 0.8, 1.4], [5, 8, 12], 3)),
+        h('div', { class: 'vsep' }),
+        h('div', { class: 'sw-group' }, ...swatches('shape', PEN_COLORS)),
         h('div', { class: 'vsep' }), h('span', { class: 'lbl' }, 'Fill'),
         h('button', { class: 'sw nofill' + (fill ? '' : ' on'), type: 'button', title: 'No fill', onclick: () => fillPick(null) }),
         ...FILL_COLORS.map(c => h('button', { class: 'sw' + (fill === c ? ' on' : ''), type: 'button', title: 'Fill', style: { '--c': c }, onclick: () => fillPick(c) }))
