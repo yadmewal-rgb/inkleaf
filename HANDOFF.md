@@ -3,26 +3,29 @@
 **Written:** 2026-11-24 by agy (Antigravity). **Next:** Claude Code or agy.
 
 ## What the owner asked
-1. "1 can ve make them editable by long press ? 2 do you see any problem in pic 2 ? , 3 can we make it like this ? what do you think ?" (With 3 pictures: Pic 1 editable color swatches, Pic 2 highlighter mode overflow and black dots, Pic 3 GoodNotes 6 floating capsule toolbar).
-2. Owner confirmed "sure" to start with Step 1 (editable color swatches by long press + fixing Pic 2 issues).
+1. "start step 2 and make it also for highlighter and all" (Implement GoodNotes 6 floating capsule toolbar across all tools).
+2. "in highlighter dot size are equal , make then according to their size" (Fix highlighter dot previews so they scale proportionally).
 
-## Done (v87)
-1. **Editable Color Swatches by Long-Press (`js/editor.js`)**:
-   - Long-press (450ms hold) or tapping an already-selected swatch opens a custom color popover.
-   - Popover contains a curated 20-color grid (standard + vibrant + pastel colors) plus a native "Color Wheel / Hex..." picker.
-   - Selecting a color customizes that swatch slot and persists in `prefs[tool + 'Colors']` across sessions.
-   - Added a "Reset" link in the popover header to quickly restore the default slot color if desired.
-2. **Fixed Highlighter Toolbar Overflow & Cut-Off Buttons (`js/editor.js`, `css/app.css`)**:
-   - Only show PDF text options (`PDF: Free, Highlight, Underline, Strike`) on documents with actual PDF pages, eliminating ~250px of clutter on normal notebooks/journals.
-   - Updated `.trail` sticky positioning in `css/app.css` to cover safe-area padding with full background and a soft shadow, preventing any stray letters from leaking out at the far right edge.
-3. **Fixed Tip Size Preview Dots Color (`js/editor.js`)**:
-   - Size preview dots (`● ● ●`) now reflect the active tool's color (with 0.75 opacity for highlighter ink) instead of being hardcoded solid black.
-4. **PWA Version Bump (`sw.js`, `js/sync.js`)**:
-   - Bumped service worker cache to `inkleaf-v87`.
-   - Updated Settings to `Inkleaf v87 · Build 2026.11`.
+## Done (v88)
+1. **Scaled Tip Size Dots Accurately (`js/editor.js`)**:
+   - Fixed `sizes()` so size preview dots no longer hit an artificial 16px clamp.
+   - For Highlighter: 3.5 mm = 7px (small), 5.5 mm = 11px (medium), 8.5 mm = 15px (large).
+   - For Pen: 0.3 mm = 3px, 0.5 mm = 5px, 0.7 mm = 7px, 1.0 mm = 10px.
+   - Eraser, Shape, and Tape also scale proportionally according to their tip thickness.
+2. **GoodNotes 6 Floating Capsule Toolbar (`js/editor.js`, `css/app.css`)**:
+   - Encapsulated active tools and their options into a centered floating capsule dock (`.capsule`).
+   - Pill rounded corners (`border-radius: 9999px`), soft card shadow, and clean card background (`var(--surface)`).
+   - Tool options reordered to match GoodNotes 6: `[Tools] | [Tip Sizes] | [Color Swatches]`.
+   - Designed to work seamlessly for all tools: Pen, Highlighter, Eraser, Shape, Text, Tape, Lasso, and Laser.
+   - Navigation (`.lead`) and utilities (`.trail`) styled as neat companion floating pills.
+3. **PWA Version Bump (`sw.js`, `js/sync.js`)**:
+   - Bumped service worker cache to `inkleaf-v88`.
+   - Updated Settings to `Inkleaf v88 · Build 2026.11`.
 
 ## Next Steps
-- Implement Step 2: Redesign the drawing toolbar into the clean GoodNotes 6 floating capsule style (from user's Pic 3).
+- Await owner confirmation ("push") to deploy v88 to live.
+- Gather owner feedback from live iPad testing.
 
 ## Live Status
-- Inkleaf v87 (commit `55f37fc`) is live on GitHub Pages and deployed.
+- Inkleaf v87 is currently live on GitHub Pages.
+- Inkleaf v88 is committed locally and ready to push upon owner confirmation.
