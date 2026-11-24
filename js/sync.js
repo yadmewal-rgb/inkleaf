@@ -15,7 +15,7 @@ import { modal, toast, confirmBox, busy } from './ui.js';
 import { I } from './icons.js';
 import { hwOn, setHwOn, status as hwStatus, setCloudOcr, getHwUsage, setHwLimit, getHwModel, setHwModel, getHwModelConfig, getActiveHwModel, MODEL_CASCADE, formatModelName } from './hwsearch.js';
 
-export const APP_VER = 'v80';
+export const APP_VER = 'v81';
 const SERVER = 'https://inkleaf-sync.yadmewal.workers.dev';
 // drive.appdata: Inkleaf's hidden app folder (files it syncs); drive.file: only files Inkleaf itself creates, used
 // for the visible "Inkleaf" folder holding copies of the PDFs under their real names.
@@ -2040,7 +2040,8 @@ export async function openSettings() {
         pushUserSettings({ geminiModel: e.target.value });
       }
     }, [
-      h('option', { value: 'auto', selected: curPref === 'auto' || !curPref }, 'Auto (Best Available: 3.8 ➔ 3.5 fallback) — Recommended'),
+      h('option', { value: 'auto', selected: curPref === 'auto' || !curPref }, 'Auto (Best Available: Hydrogen ➔ Flash fallback) — Recommended'),
+      h('option', { value: 'gemini-4-hydrogen', selected: curPref === 'gemini-4-hydrogen' }, 'Gemini 4 Hydrogen (Ultra-fast · Low latency)'),
       h('option', { value: 'gemini-3.8-flash', selected: curPref === 'gemini-3.8-flash' }, 'Gemini 3.8 Flash (Latest · deep reasoning)'),
       h('option', { value: 'gemini-3.8-flash-lite', selected: curPref === 'gemini-3.8-flash-lite' }, 'Gemini 3.8 Flash Lite (Fast reasoning)'),
       h('option', { value: 'gemini-3.7-flash', selected: curPref === 'gemini-3.7-flash' }, 'Gemini 3.7 Flash'),

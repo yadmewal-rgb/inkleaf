@@ -53,11 +53,12 @@ export function setHwLimit(n) {
 }
 
 // Tiered model cascade in order of reasoning capability & efficiency:
-// Tier 1: 3.8 Flash, 3.8 Flash Lite
+// Tier 1: 4 Hydrogen, 3.8 Flash, 3.8 Flash Lite
 // Tier 2: 3.7 Flash, 3.7 Flash Lite
 // Tier 3: 3.6 Flash, 3.6 Flash Lite
 // Tier 4: 3.5 Flash, 3.5 Flash Lite, 3.1 Flash Lite, 2.5 Flash
 export const MODEL_CASCADE = [
+  'gemini-4-hydrogen',
   'gemini-3.8-flash',
   'gemini-3.8-flash-lite',
   'gemini-3.7-flash',
@@ -132,6 +133,7 @@ export function setHwModel(m) {
 export function formatModelName(m) {
   const model = m || getActiveHwModel();
   const map = {
+    'gemini-4-hydrogen': 'Gemini 4 Hydrogen (Ultra-fast)',
     'gemini-3.8-flash': 'Gemini 3.8 Flash',
     'gemini-3.8-flash-lite': 'Gemini 3.8 Flash Lite',
     'gemini-3.7-flash': 'Gemini 3.7 Flash',

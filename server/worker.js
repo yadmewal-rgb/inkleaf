@@ -576,6 +576,7 @@ export class User extends DurableObject {
       const mimeType = body.mimeType || 'image/jpeg';
       const n = Math.max(1, Math.min(40, Number(body.n) || 1));
       const allowedModels = new Set([
+        'gemini-4-hydrogen',
         'gemini-3.8-flash',
         'gemini-3.8-flash-lite',
         'gemini-3.7-flash',
@@ -668,6 +669,7 @@ export class User extends DurableObject {
 Return ONLY the valid JSON array without commentary or code fences.`;
 
       const allowedModels = new Set([
+        'gemini-4-hydrogen',
         'gemini-3.8-flash', 'gemini-3.8-flash-lite', 'gemini-3.7-flash', 'gemini-3.7-flash-lite',
         'gemini-3.6-flash', 'gemini-3.6-flash-lite', 'gemini-3.5-flash', 'gemini-3.5-flash-lite',
         'gemini-3.1-flash-lite', 'gemini-2.5-flash'
