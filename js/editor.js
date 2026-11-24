@@ -6845,17 +6845,132 @@ export async function mountEditor(root, docId, opts = {}) {
     renderOpts();
   }
 
-  function swatches(key, colors) {
+  function swatches(key, defaultColors) {
+    const prefKey = key + 'Colors';
+    if (!Array.isArray(prefs[prefKey]) || prefs[prefKey].length !== defaultColors.length) {
+      prefs[prefKey] = [...defaultColors];
+    }
+    const colors = prefs[prefKey];
     const cur = prefs[key].color;
-    const pick = c => {
+    const pick = (c, slotIdx) => {
       prefs[key].color = c;
       savePrefs();
       if (key === 'text' && textEd) { textEd.color = inkFor(textEd.pv, c); styleTa(); textEd.ta.focus(); }
       renderOpts();
     };
+
+    const btns = colors.map((c, i) => {
+      let held = false, holdT = 0;
+      const isSelected = cur === c;
+      const openEditor = btn => colorPopover(btn, key, i, defaultColors);
+
+      return h('button', {
+        class: 'sw' + (isSelected ? ' on' : ''),
+        type: 'button',
+        title: `${c} (tap again or hold to edit)`,
+        style: { '--c': c },
+        onpointerdown: e => {
+          held = false;
+          clearTimeout(holdT);
+          const btn = e.currentTarget;
+          holdT = setTimeout(() => { held = true; openEditor(btn); }, 450);
+        },
+        onpointerup: () => clearTimeout(holdT),
+        onpointerleave: () => clearTimeout(holdT),
+        oncontextmenu: e => {
+          e.preventDefault();
+          clearTimeout(holdT);
+          held = true;
+          openEditor(e.currentTarget);
+        },
+        ondblclick: e => {
+          openEditor(e.currentTarget);
+        },
+        onclick: e => {
+          if (held) { held = false; return; }
+          if (isSelected) {
+            openEditor(e.currentTarget);
+          } else {
+            pick(c, i);
+          }
+        }
+      });
+    });
+
     const custom = h('label', { class: 'sw custom' + (colors.includes(cur) ? '' : ' on'), title: 'Custom colour', style: { '--c': colors.includes(cur) ? 'transparent' : cur } },
       h('input', { type: 'color', value: cur, onchange: e => pick(e.target.value) }));
-    return colors.map(c => h('button', { class: 'sw' + (cur === c ? ' on' : ''), type: 'button', title: c, style: { '--c': c }, onclick: () => pick(c) })).concat(custom);
+    return [...btns, custom];
+  }
+
+  function colorPopover(anchor, key, slotIdx, defaultColors) {
+    const prefKey = key + 'Colors';
+    const curColors = prefs[prefKey] || [];
+    const activeColor = curColors[slotIdx] || prefs[key].color;
+    let close = null;
+
+    const PALETTE = key === 'hl' ? [
+      '#ffd43b', '#8ce99a', '#74c0fc', '#faa2c1', '#ffa94d',
+      '#ffe066', '#b2f2bb', '#a5d8ff', '#ffc9c9', '#d0bfff',
+      '#fab005', '#40c057', '#228be6', '#f06595', '#fd7e14'
+    ] : [
+      '#141517', '#495057', '#868e96', '#e03131', '#e8590c',
+      '#f08c00', '#2f9e44', '#0c8599', '#1971c2', '#9c36b5',
+      '#ff8787', '#ffa94d', '#ffd43b', '#8ce99a', '#66d9e8',
+      '#74c0fc', '#b197fc', '#faa2c1', '#fcc419', '#ffffff'
+    ];
+
+    const pickColor = newCol => {
+      if (slotIdx !== undefined && Array.isArray(prefs[prefKey])) {
+        prefs[prefKey][slotIdx] = newCol;
+      }
+      prefs[key].color = newCol;
+      savePrefs();
+      if (key === 'text' && textEd) { textEd.color = inkFor(textEd.pv, newCol); styleTa(); textEd.ta.focus(); }
+      renderOpts();
+      if (close) close();
+    };
+
+    const grid = h('div', { class: 'swrow', style: 'padding: 4px; max-width: 195px; gap: 6px; display: grid; grid-template-columns: repeat(5, 1fr); justify-items: center;' },
+      PALETTE.map(c => h('button', {
+        class: 'sw' + (activeColor && activeColor.toLowerCase() === c.toLowerCase() ? ' on' : ''),
+        type: 'button',
+        title: c,
+        style: { '--c': c, width: '28px', height: '28px' },
+        onclick: () => pickColor(c)
+      }))
+    );
+
+    const customInp = h('input', {
+      type: 'color',
+      value: (activeColor && activeColor.startsWith('#')) ? activeColor : '#141517',
+      style: 'position: absolute; inset: 0; opacity: 0; width: 100%; height: 100%; cursor: pointer;',
+      onchange: e => pickColor(e.target.value)
+    });
+
+    const customBtn = h('label', {
+      class: 'btn sm',
+      style: 'position: relative; overflow: hidden; display: flex; align-items: center; justify-content: center; gap: 6px; cursor: pointer; margin-top: 8px;'
+    }, [
+      h('span', { style: `display: inline-block; width: 14px; height: 14px; border-radius: 50%; background: ${activeColor}; border: 1px solid var(--line);` }),
+      'Color Wheel / Hex...',
+      customInp
+    ]);
+
+    const canReset = defaultColors && defaultColors[slotIdx] && defaultColors[slotIdx] !== activeColor;
+    const popContent = h('div', { style: 'padding: 10px; min-width: 195px;' }, [
+      h('div', { style: 'font-size: 12px; font-weight: 600; color: var(--muted); margin-bottom: 8px; display: flex; justify-content: space-between; align-items: center;' }, [
+        h('span', null, slotIdx !== undefined ? `Color slot #${slotIdx + 1}` : 'Choose color'),
+        canReset ? h('button', {
+          type: 'button',
+          style: 'border: none; background: transparent; font-size: 11px; color: var(--accent); cursor: pointer; padding: 0;',
+          onclick: () => pickColor(defaultColors[slotIdx])
+        }, 'Reset') : h('span', { style: 'font-family: monospace; font-size: 11px;' }, activeColor)
+      ]),
+      grid,
+      customBtn
+    ]);
+
+    close = popover(anchor, popContent);
   }
 
   // Tip sizes are stored in page units (points) and shown in millimetres, as on paper.
@@ -6874,6 +6989,7 @@ export async function mountEditor(root, docId, opts = {}) {
       const s = mmToPt(mm);
       const isSelected = Math.abs(cur - s) < 0.02;
       const dotSize = Math.max(3, Math.min(16, Math.round(mm * 10)));
+      const dotColor = key === 'eraser' ? 'var(--muted)' : prefs[key].color;
       return h('button', {
         class: 'sz' + (isSelected ? ' on' : ''),
         type: 'button',
@@ -6890,7 +7006,7 @@ export async function mountEditor(root, docId, opts = {}) {
         ondblclick: e => {
           sizePopover(e.currentTarget, key, minMm, maxMm, i);
         }
-      }, h('span', { class: 'dot', style: { width: dotSize + 'px', height: dotSize + 'px' } }));
+      }, h('span', { class: 'dot', style: { width: dotSize + 'px', height: dotSize + 'px', background: dotColor, opacity: key === 'hl' ? 0.75 : 1, boxShadow: (key === 'hl' || dotColor === '#ffffff' || dotColor === '#fff') ? '0 0 0 1px rgba(0,0,0,0.18) inset' : 'none' } }));
     });
     return [...btns, h('button', {
       class: 'mm',
@@ -6991,9 +7107,19 @@ export async function mountEditor(root, docId, opts = {}) {
       ];
     }
     else if (t === 'hl') {
-      kids = [...swatches('hl', HL_COLORS), h('div', { class: 'vsep' }), ...sizes('hl', [3.5, 5.5, 8.5], [7, 11, 15], 14), h('div', { class: 'vsep' }),
-        h('span', { class: 'lbl' }, 'On PDF text'),
-        seg([['free', 'Freehand'], ['hl', 'Highlight'], ['ul', 'Underline'], ['st', 'Strike out']], prefs.hl.mode || 'free', v => { prefs.hl.mode = v; savePrefs(); renderOpts(); })];
+      const hasPdf = pvs.some(pv => pv.page && pv.page.pdf && !pv.page.tpl);
+      kids = [
+        ...swatches('hl', HL_COLORS),
+        h('div', { class: 'vsep' }),
+        ...sizes('hl', [3.5, 5.5, 8.5], [7, 11, 15], 14)
+      ];
+      if (hasPdf) {
+        kids.push(
+          h('div', { class: 'vsep' }),
+          h('span', { class: 'lbl' }, 'PDF:'),
+          seg([['free', 'Free'], ['hl', 'Highlight'], ['ul', 'Underline'], ['st', 'Strike']], prefs.hl.mode || 'free', v => { prefs.hl.mode = v; savePrefs(); renderOpts(); })
+        );
+      }
     }
     else if (t === 'eraser') {
       kids = [
