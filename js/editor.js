@@ -4430,12 +4430,17 @@ export async function mountEditor(root, docId, opts = {}) {
 
   async function addPageAfter(pv) {
     const src = pv.page;
+    let tpl = src.template;
+    // In daily journal: daily dashboard templates (focus, planner, braindump) are for page 1 of the day; subsequent pages of the same day automatically get 9mm ruled lines for study notes.
+    if (doc.journal && src.day && (src.template === 'focus' || src.template === 'planner' || src.template === 'braindump')) {
+      tpl = 'ruled';
+    }
     // A page made from one of your own templates is followed by another of the same; a scanned or imported page is not.
     const o = src.tpl
-      ? { w: src.w, h: src.h, template: src.template, paper: src.paper, pdf: src.pdf, bg: src.bg, tpl: src.tpl }
+      ? { w: src.w, h: src.h, template: tpl, paper: src.paper, pdf: src.pdf, bg: src.bg, tpl: src.tpl }
       : src.pdf || src.bg
         ? { w: src.w, h: src.h, template: doc.template, paper: doc.paper }
-        : { w: src.w, h: src.h, template: src.template, paper: src.paper };
+        : { w: src.w, h: src.h, template: tpl, paper: src.paper };
     const pg = newPage(doc.id, o);
     if (src.day) pg.day = src.day; // journal: a second page for the same day
     const i = pages.indexOf(src);
