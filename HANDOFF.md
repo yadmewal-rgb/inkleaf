@@ -26,5 +26,5 @@
    - Updated Settings to `Inkleaf v88 · Build 2026.11`.
 
 ## Live Status
-- Inkleaf v87 is currently live on GitHub Pages.
-- Inkleaf v88 is committed locally and ready to push upon owner confirmation.
+- Inkleaf v88 is live on GitHub Pages.
+- Includes constant upper toolbar, GoodNotes floating capsule for all tool options (pen styles, dotted/dashed/solid line styles, scaled size dots, and swatches).
