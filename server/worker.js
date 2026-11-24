@@ -142,12 +142,25 @@ export class User extends DurableObject {
     try { this.sql.exec('ALTER TABLE shares ADD COLUMN folderName TEXT'); } catch {}
     try { this.sql.exec('ALTER TABLE inbox_shares ADD COLUMN folderId TEXT'); } catch {}
     try { this.sql.exec('ALTER TABLE inbox_shares ADD COLUMN folderName TEXT'); } catch {}
+    this._kvCache = new Map();
+    this._sessCache = new Map();
   }
 
   async getEmail() { return this.kvGet('email') || ''; }
 
-  kvGet(k) { const r = this.sql.exec('SELECT v FROM kv WHERE k = ?', k).toArray()[0]; return r ? r.v : null; }
-  kvSet(k, v) { this.sql.exec('INSERT INTO kv (k, v) VALUES (?, ?) ON CONFLICT (k) DO UPDATE SET v = excluded.v', k, String(v)); }
+  kvGet(k) {
+    if (this._kvCache && this._kvCache.has(k)) return this._kvCache.get(k);
+    const r = this.sql.exec('SELECT v FROM kv WHERE k = ?', k).toArray()[0];
+    const val = r ? r.v : null;
+    if (!this._kvCache) this._kvCache = new Map();
+    this._kvCache.set(k, val);
+    return val;
+  }
+  kvSet(k, v) {
+    if (!this._kvCache) this._kvCache = new Map();
+    this._kvCache.set(k, String(v));
+    this.sql.exec('INSERT INTO kv (k, v) VALUES (?, ?) ON CONFLICT (k) DO UPDATE SET v = excluded.v', k, String(v));
+  }
   seq() { return Number(this.kvGet('seq') || 0); }
   nextSeq() { const s = this.seq() + 1; this.kvSet('seq', s); return s; }
 
@@ -204,8 +217,12 @@ export class User extends DurableObject {
     const secret = String(token || '').split('.')[1];
     if (!secret) return null;
     const h = await sha256(secret);
+    if (!this._sessCache) this._sessCache = new Map();
+    const cached = this._sessCache.get(h);
+    if (cached && Date.now() - cached < 600e3) return h;
     const r = this.sql.exec('SELECT h, seen FROM sessions WHERE h = ?', h).toArray()[0];
     if (!r) return null;
+    this._sessCache.set(h, Date.now());
     if (Date.now() - r.seen > 3600e3) this.sql.exec('UPDATE sessions SET seen = ? WHERE h = ?', Date.now(), h);
     return h;
   }
@@ -228,6 +245,18 @@ export class User extends DurableObject {
   }
 
   async fetch(req) {
+    try {
+      return await this._fetch(req);
+    } catch (err) {
+      const msg = String(err?.message || err);
+      if (msg.includes('Exceeded allowed rows read') || msg.includes('free tier')) {
+        return json({ error: 'quota_exceeded', message: 'Exceeded allowed rows read in Durable Objects free tier.' }, 429);
+      }
+      return json({ error: 'server', message: msg }, 500);
+    }
+  }
+
+  async _fetch(req) {
     const url = new URL(req.url), p = url.pathname.split('/').filter(Boolean);
 
     // Internal registry routes for "Shared with me"
@@ -721,8 +750,12 @@ Return ONLY the valid JSON array without commentary or code fences.`;
     // GET /changes?since=s : what changed after s, oldest first (metadata only; blobs are fetched one by one).
     if (p[0] === 'changes' && req.method === 'GET') {
       const since = Number(url.searchParams.get('since') || 0), limit = Math.min(1000, Number(url.searchParams.get('limit') || 500));
+      const curSeq = this.seq();
+      if (since >= curSeq) {
+        return json({ items: [], more: false, seq: curSeq });
+      }
       const rows = this.sql.exec(`SELECT k, id, s, size, parts, info, gz FROM recs WHERE s > ? AND k IN ${FEED} ORDER BY s LIMIT ?`, since, limit + 1).toArray();
-      return json({ items: rows.slice(0, limit), more: rows.length > limit, seq: this.seq() });
+      return json({ items: rows.slice(0, limit), more: rows.length > limit, seq: curSeq });
     }
 
     // GET /list/b : all records of one kind (the weekly snapshots).

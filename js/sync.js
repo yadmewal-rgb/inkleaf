@@ -15,7 +15,7 @@ import { modal, toast, confirmBox, busy } from './ui.js';
 import { I } from './icons.js';
 import { hwOn, setHwOn, status as hwStatus, setCloudOcr, getHwUsage, setHwLimit, getHwModel, setHwModel, getHwModelConfig, getActiveHwModel, MODEL_CASCADE, formatModelName } from './hwsearch.js';
 
-export const APP_VER = 'v81';
+export const APP_VER = 'v82';
 const SERVER = 'https://inkleaf-sync.yadmewal.workers.dev';
 // drive.appdata: Inkleaf's hidden app folder (files it syncs); drive.file: only files Inkleaf itself creates, used
 // for the visible "Inkleaf" folder holding copies of the PDFs under their real names.
@@ -207,8 +207,36 @@ async function signOut() {
   if (s) http(server + '/signout', { method: 'POST', headers: { Authorization: 'Bearer ' + s.token } }).catch(() => {});
 }
 
+// Cloudflare sync request usage tracking
+export function getCfUsage() {
+  const today = new Date().toISOString().slice(0, 10);
+  try {
+    const raw = localStorage.getItem('inkleaf.cfUsage');
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      if (parsed.date === today) return parsed;
+    }
+  } catch {}
+  const fresh = { date: today, calls: 0, limit: 100000, monthlyLimit: 1000000 };
+  try { localStorage.setItem('inkleaf.cfUsage', JSON.stringify(fresh)); } catch {}
+  return fresh;
+}
+
+export function recordCfCall(endpoint = '') {
+  const usage = getCfUsage();
+  usage.calls = (usage.calls || 0) + 1;
+  usage.lastCall = Date.now();
+  usage.lastEndpoint = endpoint;
+  try {
+    localStorage.setItem('inkleaf.cfUsage', JSON.stringify(usage));
+  } catch {}
+  bus.emit('cf-usage', usage);
+  return usage;
+}
+
 export async function call(path, opts = {}) {
   if (!session) { const e = new Error('Sign-in needed'); e.signin = true; throw e; }
+  recordCfCall(path);
   const r = await http(server + path, { ...opts, headers: { Authorization: 'Bearer ' + session.token, ...(opts.headers || {}) } });
   if (r.status === 401) {
     session = null;
@@ -220,8 +248,18 @@ export async function call(path, opts = {}) {
   }
   if (r.status === 409) { const e = new Error('Changed elsewhere'); e.conflict = (await r.json().catch(() => ({}))).s || 0; throw e; }
   if (!r.ok) {
-    const e = new Error(`Sync service error ${r.status}: ${(await r.text().catch(() => '')).slice(0, 160)}`);
+    const raw = (await r.text().catch(() => '')).slice(0, 300);
+    let msg = raw;
+    try {
+      const parsed = JSON.parse(raw);
+      if (parsed.message) msg = parsed.message;
+    } catch {}
+    if (msg.includes('Exceeded allowed rows read') || msg.includes('Durable Objects free tier')) {
+      msg = 'Cloudflare free tier daily limit reached (rows read). Your notes are safe on this device and sync will resume automatically once quota resets.';
+    }
+    const e = new Error(`Sync service error ${r.status}: ${msg}`);
     e.status = r.status;
+    e.serverMessage = msg;
     throw e;
   }
   return r;
@@ -1975,11 +2013,47 @@ export async function openSettings() {
     ];
     if (x.files) rows.push(h('div', { class: 'bk-sub' }, `${x.files} file${x.files === 1 ? '' : 's'} (PDFs, pictures) being transferred.`));
     if (x.retrying) rows.push(h('div', { class: 'bk-sub' }, `${x.retrying} file${x.retrying === 1 ? '' : 's'} will be tried again shortly.`));
-    if (x.err && x.err.t > Math.max(x.sent, x.checked) - 60e3) rows.push(h('div', { class: 'bk-sub warn' }, `Last problem (${ago(x.err.t)}): ${x.err.msg}`));
+    if (x.err && x.err.t > Math.max(x.sent, x.checked) - 60e3) {
+      let emsg = x.err.msg;
+      if (emsg.includes('Exceeded allowed rows read') || emsg.includes('free tier')) {
+        emsg = 'Cloudflare free tier daily limit reached (rows read). Your notes are safe on this device and sync resumes when quota resets.';
+      }
+      rows.push(h('div', { class: 'bk-sub warn' }, `Last problem (${ago(x.err.t)}): ${emsg}`));
+    }
     healthEl.replaceChildren(...rows);
   };
   drawHealth();
   const healthT = setInterval(() => { if (!healthEl.isConnected) { clearInterval(healthT); return; } drawHealth(); }, 2000);
+
+  // Cloudflare sync request usage
+  const cfUsageBox = h('div', { class: 'field', style: 'margin: 8px 0 12px; padding: 10px 12px; background: var(--surface-2); border-radius: 8px;' });
+  const drawCfUsage = () => {
+    const cf = getCfUsage();
+    const calls = cf.calls || 0;
+    const limit = cf.limit || 100000;
+    const pct = Math.min(100, Math.round((calls / limit) * 100));
+    const lastErrMsg = health.err?.msg || '';
+    const isQuotaExceeded = lastErrMsg.includes('free tier daily limit') || lastErrMsg.includes('Exceeded allowed rows read');
+
+    const kids = [
+      h('div', { class: 'row', style: 'align-items: center; justify-content: space-between; margin-bottom: 4px;' },
+        h('b', { style: 'font-size: 13px;' }, 'Cloudflare Sync Requests:'),
+        h('span', { class: 'bk-sub' }, `${calls.toLocaleString()} / ${limit.toLocaleString()} requests today`)
+      ),
+      h('div', { class: 'usage-bar', style: 'margin: 6px 0;' },
+        h('div', { class: 'usage-fill' + (pct > 80 || isQuotaExceeded ? ' warn' : ''), style: { width: Math.max(pct, isQuotaExceeded ? 100 : 1) + '%' } })
+      ),
+      h('div', { class: 'bk-sub', style: 'font-size: 11.5px; color: var(--muted); margin-top: 4px;' },
+        'Free Tier Limits: 100,000 requests/day · Durable Objects: 1M req/mo & 10M rows read/mo'
+      ),
+      isQuotaExceeded ? h('div', { style: 'margin-top: 8px; padding: 6px 10px; background: rgba(224, 49, 49, 0.12); border-left: 3px solid #e03131; border-radius: 4px; font-size: 12px; color: #ff6b6b; line-height: 1.4;' },
+        '⚠️ Cloudflare daily row-read budget reached. Your writing and changes are saved 100% safely on this device and will automatically sync once the quota resets at midnight UTC.'
+      ) : null
+    ].filter(Boolean);
+    cfUsageBox.replaceChildren(...kids);
+  };
+  drawCfUsage();
+  const offCfUsage = bus.on('cf-usage', () => drawCfUsage());
   // How much of this person's share of the sync service is used, and where PDFs and pictures are kept.
   const usage = h('div', { class: 'usage', hidden: true });
   if (session && !cfg.off && navigator.onLine) {
@@ -2125,7 +2199,7 @@ export async function openSettings() {
   const m = modal({
     title: 'Settings (' + APP_VER + ')',
     wide: true,
-    onClose: () => { offUsage(); offHwStatus(); offModelChanged(); },
+    onClose: () => { offUsage(); offHwStatus(); offModelChanged(); offCfUsage(); },
     body: h('div', null,
       h('div', {
         class: 'row',
@@ -2157,7 +2231,7 @@ export async function openSettings() {
         'Notes are always kept on this device, so they open instantly and work offline. With sync on, every change is also ',
         'sent to Inkleaf\'s own sync service (on Cloudflare) and appears on your other devices within a second or two.'),
       h('p', { class: 'modal-text small' }, who),
-      usage, healthEl, devicesEl,
+      usage, cfUsageBox, healthEl, devicesEl,
       h('div', { class: 'row' },
         h('button', {
           class: 'btn primary', type: 'button',
