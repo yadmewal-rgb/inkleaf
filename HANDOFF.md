@@ -29,5 +29,5 @@
    - Added `gemini-4-hydrogen` to top of `MODEL_CASCADE` and Settings model picker.
 
 ## Live Status
-- Inkleaf v80 is currently live on GitHub Pages.
-- v81 & v82 tested locally and ready to push to `main` upon owner's "push" confirmation.
+- Inkleaf v82 is now live on GitHub Pages and deployed to Cloudflare Worker.
+- Commits `446b368` (v81) and `2d14746` (v82) pushed to `main`.
