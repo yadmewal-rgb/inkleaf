@@ -24,8 +24,11 @@ v93 is exactly v87 apart from the version numbers (checked with git). Found and 
    draw; `db` not imported in app.js; listeners left behind; pages panel placed left and right in CSS.
 
 ## Tested
-Local copy of the sync server (Miniflare) plus visible Chrome: before/after of every bug above, two devices, every tool,
-shortcut and More-menu item. Not tested on the real iPad, and not against the real server.
+Local copy of the sync server (Miniflare) plus visible Chrome: before/after of most bugs above, two devices, the 8 tools
+and their shortcuts, and the More menu except print, export, send, delete, full screen, template and side by side.
+Not tested: the real iPad, the real server, the spell-check buttons and the guest's view-only screen.
+Every line of JS/CSS/server code went through a checker; read by eye: worker.js, ui.js, app.js, editor-consts.js and the
+input, tool bar, paste and sync parts of editor.js / sync.js. Not read by eye: render, export, goodnotes, pdftools, most of library.
 
 ## Next step
 Push (releases the app AND deploys the server), check that the Cloudflare build is green, then ask the owner to try it.
