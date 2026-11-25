@@ -22,13 +22,12 @@ v95 since 2026-11-25 (owner said okay). `tests/check.cmd`: 115 passed; `tests/af
 ## Next step
 Ask how v95 feels on the iPad. Every device must be reloaded (one still on v94 can undo a rename).
 
-## Half done: the check in the owner's own Chrome
+## Done: the check in the owner's own Chrome
 `tests/check.cmd` now opens a tab "Inkleaf check" in the owner's Chrome (tests only: the app is unchanged, nothing to
 publish). First full run there: 4 failures, all from the test setup (an earlier run that was cut off had left its test data
 behind; repeated exactly in a windowless browser). Fixed: cleans up before it starts, new test libraries every run, waits
-only count while the tab is visible, and a part that was out of sight is run again once. Windowless it passes everything,
-also after a cut-off run, pauses and a closed tab. **Still to do: one full pass in the owner's own Chrome, when they can leave
-the tab in front (and the Chrome window uncovered) for about 3 minutes. Ask them first.**
+only count while the tab is visible, and a part that was out of sight is run again once. **Then a full pass in the owner's
+own Chrome: 115 passed, no pauses, 159 seconds (2026-11-25).**
 
 ## Not covered / seen, not changed
 - Not tested on the real iPad, nor signed-in sync on the real server. The spell-check buttons have no check.
