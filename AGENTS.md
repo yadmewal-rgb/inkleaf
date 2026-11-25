@@ -42,7 +42,11 @@ util.js, icons.js. `sw.js` = service worker (bump its cache version, e.g. v40 ->
 - Node 24 is installed (`C:\Program Files\nodejs`); no Python or Flutter. Git is `C:\Program Files\Git\cmd\git.exe` (may not be on PATH). Commits use the
   repo-local noreply identity: keep it that way (no personal e-mail in public history).
 - Run locally: `start.cmd`, or `powershell -ExecutionPolicy Bypass -File serve.ps1` -> http://localhost:8080.
-- **Before every push run `tests/check.cmd`** (about 4 minutes; opens a Chrome window, leave it alone) and push only if it
+- **The owner wants testing in their own Chrome, as a normal tab, never in a separate Chrome window.** `tests/check.cmd`
+  does that: it opens a tab "Inkleaf check" (own local address, pretend clipboard, no reach to the real library) that must
+  stay in front, with the Chrome window not covered; it pauses when it is not, and gives up after 10 minutes. Ask the
+  owner before starting it: it takes over their Chrome for about 3 minutes.
+- **Before every push run `tests/check.cmd`** and push only if it
   says "ready to publish". **After every push run `tests/after-publish.cmd`**: a release is done only when it says ALL
   GOOD (the Cloudflare server failed to build for five days in Nov 2026 and nobody noticed). First run installs its
   tools into `tests/node_modules` (not in git). When a bug is fixed, add a check for it in `tests/check.mjs`.

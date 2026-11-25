@@ -10,19 +10,36 @@ import { ESLint } from 'eslint';
 import globals from 'globals';
 import postcss from 'postcss';
 import { Miniflare } from 'miniflare';
-import { chrome, sleep } from './lib.mjs';
+import { ownChrome, INJECT, sleep } from './lib.mjs';
 
 const here = path.dirname(new URL(import.meta.url).pathname.replace(/^\/(\w:)/, '$1'));
 const ROOT = path.resolve(process.env.INKLEAF_ROOT || path.join(here, '..'));
 const read = f => fs.readFileSync(path.join(ROOT, f), 'utf8');
 let passed = 0;
 const failed = [];
+const c = ownChrome(); // the tab in the owner's Chrome
 const ok = (name, cond, detail = '') => {
   if (cond) passed++; else failed.push(name + (detail !== '' ? `  (${typeof detail === 'string' ? detail : JSON.stringify(detail)})` : ''));
+  c.log((cond ? '✓ ' : '✗ ') + name, cond ? '' : 'f');
   console.log(`  ${cond ? 'ok  ' : 'FAIL'}  ${name}${cond || detail === '' ? '' : '  -> ' + (typeof detail === 'string' ? detail : JSON.stringify(detail))}`);
 };
 // A step that breaks counts as a failure; the rest still runs.
 const step = async (name, fn) => { try { await fn(); } catch (e) { ok(name, false, String(e && e.message || e).slice(0, 300)); } };
+// A part of the check that runs in the tab. If it fails although the tab was out of sight for a while, that proves
+// nothing, so it is run again, once. (A failure while the tab was in front the whole time always counts.)
+const section = async (name, fn) => {
+  for (let go = 1; ; go++) {
+    const p0 = passed, f0 = failed.length, h0 = c.hiddenTimes;
+    await step(name, fn);
+    if (failed.length === f0 || c.hiddenTimes === h0 || go === 2 || c.closed) return;
+    console.log('   The tab was out of sight during this part, so it does not count. Running it again.');
+    c.log('Out of sight during this part: running it again', 'h');
+    passed = p0;
+    failed.length = f0;
+    c.errors.length = 0;
+  }
+};
+const fresh = () => Math.random().toString(36).slice(2, 8); // a new test library every time, whatever older tabs still do
 
 // ------------------------------------------------------------------ 1. the code
 console.log(`Checking ${ROOT}\n\n1. Code`);
@@ -86,15 +103,18 @@ await step('versions', async () => {
 // ------------------------------------------------------------------ a local copy of the app and of the sync server
 const mime = { '.html': 'text/html', '.js': 'text/javascript', '.css': 'text/css', '.svg': 'image/svg+xml', '.png': 'image/png', '.webmanifest': 'application/manifest+json' };
 const site = http.createServer((q, r) => {
+  if (c.handle(q, r)) return;
   let p = decodeURIComponent(q.url.split('?')[0]);
   if (p === '/') p = '/index.html';
   const f = path.join(ROOT, p);
   if (!f.startsWith(ROOT) || p === '/sw.js' || !fs.existsSync(f) || !fs.statSync(f).isFile()) { r.writeHead(404); r.end(); return; }
   r.writeHead(200, { 'Content-Type': mime[path.extname(f)] || 'application/octet-stream', 'Cache-Control': 'no-store' });
+  if (p === '/index.html') { r.end(fs.readFileSync(f, 'utf8').replace('<head>', '<head>' + INJECT)); return; }
   fs.createReadStream(f).pipe(r);
 });
-await new Promise(r => site.listen(0, '127.0.0.1', r));
-const WEB = `http://localhost:${site.address().port}`;
+// Always the same address, used for nothing else: the tab empties its storage when it is done.
+await new Promise((res, rej) => { site.once('error', e => rej(e.code === 'EADDRINUSE' ? new Error('A check is already running.') : e)); site.listen(8099, '127.0.0.1', res); });
+const WEB = 'http://localhost:8099';
 const ENTRY = `import W, { User as U } from './worker.js';
 export class User extends U {}
 export default { async fetch(req, env) {
@@ -169,10 +189,11 @@ if (API) await step('server tests', async () => {
   ws.close(); g.close();
 });
 
-// ------------------------------------------------------------------ 3. the app, in a visible Chrome window
+// ------------------------------------------------------------------ 3. the app, in a tab of the owner's Chrome
 if (!process.argv.includes('--quick')) {
-  console.log('\n3. The app (a Chrome window opens; please leave it alone)');
-  const c = await chrome();
+  console.log('\n3. The app (a tab opens in your Chrome; please keep it in front)');
+  c.log('The app', 'h');
+  await step('the check tab opens', async () => { await c.open(WEB); await c.go(`${WEB}/privacy.html`, 300); });
   let E = { D: `const D=await import('/js/db.js');` };
   const noErrors = name => { const e = [...new Set(c.errors)]; c.errors.length = 0; ok(`${name}: no errors`, !e.length, e.slice(0, 3).join(' ; ')); };
   const pointer = (pid, type) => `const v=document.querySelector('.vp');const P=(t,x,y)=>v.dispatchEvent(new PointerEvent(t,{pointerId:${pid},pointerType:'${type}',pressure:.6,clientX:x,clientY:y,button:0,buttons:t==='pointerup'?0:1,bubbles:true,cancelable:true}));`;
@@ -180,10 +201,10 @@ if (!process.argv.includes('--quick')) {
   const key = (k, o = '') => c.ev(`document.activeElement?.blur();for(const t of ['keydown','keyup'])document.body.dispatchEvent(new KeyboardEvent(t,{key:'${k}',${o}bubbles:true}));await new Promise(r=>setTimeout(r,250));`);
   const pops = () => c.ev(`return document.querySelectorAll('.pop').length`);
   const noPops = `document.querySelectorAll('.pop').forEach(p=>p.remove());`;
-  await step('writing', async () => {
+  await section('writing', async () => {
+    c.errors.length = 0;
     await c.size(1194, 834); await c.dark(true);
-    await c.go(`${WEB}/?profile=check`);
-    await c.send('Browser.grantPermissions', { permissions: ['clipboardReadWrite', 'clipboardSanitizedWrite'], origin: WEB });
+    await c.go(`${WEB}/?profile=check${fresh()}`);
     noErrors('the library opens');
     const id = await c.ev(`${E.D}const d=await D.createDoc({title:'Check'});return d.id`);
     const open = async () => { await c.ev(`location.hash='#/d/${id}'`); await sleep(1700); };
@@ -213,13 +234,12 @@ if (!process.argv.includes('--quick')) {
     ok('selected writing changes colour', recoloured.some(i => i.t === 's' && i.c === '#e03131'), recoloured.map(i => i.t + i.c));
     noErrors('pop-ups');
     const n0 = (await items()).length;
-    await c.send('Page.bringToFront');
     await c.ev(`document.activeElement?.blur();window.focus();await navigator.clipboard.writeText('OLD TEXT')`);
-    const ctrl = async (k, code, vk) => { for (const t of ['rawKeyDown', 'keyUp']) await c.send('Input.dispatchKeyEvent', { type: t, key: k, code, windowsVirtualKeyCode: vk, modifiers: 2 }); await sleep(900); };
-    await ctrl('c', 'KeyC', 67); await ctrl('v', 'KeyV', 86);
+    const ctrl = async k => { await key(k, 'ctrlKey:true,'); await sleep(900); };
+    await ctrl('c'); await ctrl('v');
     let now = await items();
     ok('copied writing is what gets pasted', now.length === n0 + 1 && !now.some(i => i.t === 'tx'), now.map(i => i.t));
-    await c.ev(`await navigator.clipboard.writeText('NEW TEXT')`); await ctrl('v', 'KeyV', 86);
+    await c.ev(`await navigator.clipboard.writeText('NEW TEXT')`); await ctrl('v');
     now = await items();
     ok('text from another app pastes', now.some(i => i.s === 'NEW TEXT'));
     ok('everything has a place in the stack', now.every(i => i.z !== undefined));
@@ -234,7 +254,7 @@ if (!process.argv.includes('--quick')) {
     ok('an edited pen colour is kept', chosen === '#66d9e8' && await sw() === chosen, await sw());
     ok('an edited pen size is kept', await size() === '1.8 mm', await size());
     ok('tip-size dots show on a dark tool bar', await c.ev(`return [...document.querySelectorAll('.opts .sz .dot')].every(d=>getComputedStyle(d).boxShadow!=='none')`));
-    await c.shot('check_editor_dark'); await c.dark(false); await sleep(300); await c.shot('check_editor_light');
+    await c.dark(false);
     await c.ev(`document.querySelectorAll('.opts button.sw')[3].dispatchEvent(new PointerEvent('pointerdown',{bubbles:true}))`); await sleep(600);
     await c.ev(`document.querySelectorAll('.opts button.sw')[3].dispatchEvent(new MouseEvent('contextmenu',{bubbles:true,cancelable:true}))`); await sleep(200);
     ok('a long press opens one pop-up', await pops() === 1, await pops());
@@ -267,10 +287,9 @@ if (!process.argv.includes('--quick')) {
     const where = () => c.ev(`await new Promise(r=>requestAnimationFrame(()=>requestAnimationFrame(r)));const n=document.querySelector('.pageind').textContent.trim();const vr=document.querySelector('.vp').getBoundingClientRect();const pg=[...document.querySelectorAll('.world > *')].map(e=>e.getBoundingClientRect()).filter(r=>r.width>50&&r.height>50);const mid=vr.left+vr.width/2;const off=Math.min(...pg.map(r=>Math.abs(r.left+r.width/2-mid)));return {n,off:Math.round(off)}`);
     const a = await where();
     await c.size(834, 1194); await sleep(900); const b = await where();
-    await c.shot('check_turned');
     await c.size(1194, 834); await sleep(900); const d = await where();
     ok('turning the iPad keeps the page in the middle (side by side)', a.n === b.n && b.n === d.n && a.off < 6 && b.off < 6 && d.off < 6, { a, b, d });
-    for (const [w, h, n] of [[834, 1194, 'iPad'], [412, 915, 'phone']]) { await c.size(w, h, 2, true); await sleep(700); ok(`no sideways scrolling (${n})`, !await c.ev(`const x=document.documentElement;return x.scrollWidth>x.clientWidth+1`)); }
+    for (const [w, h, n] of [[834, 1194, 'iPad'], [412, 915, 'phone']]) { await c.size(w, h); await sleep(700); ok(`no sideways scrolling (${n})`, !await c.ev(`const x=document.documentElement;return x.scrollWidth>x.clientWidth+1`)); }
     await c.size(1194, 834);
     noErrors('screen sizes');
     // nothing left behind
@@ -281,14 +300,17 @@ if (!process.argv.includes('--quick')) {
     noErrors('Settings');
   });
 
-  if (API) await step('two devices', async () => {
+  if (API) await section('two devices', async () => {
     console.log('   ...two devices (about a minute)');
-    const s1 = await auth('55555', 'owner'), s2 = await auth('55555', 'owner'), guest = await auth('66666', 'friend');
-    await c.size(1400, 800, 1);
+    c.log('Two devices (about a minute)', 'h');
+    c.errors.length = 0;
+    const me = '5' + Date.now(), run = fresh(); // a new account and new devices
+    const s1 = await auth(me, 'owner'), s2 = await auth(me, 'owner'), guest = await auth('6' + Date.now(), 'friend');
+    await c.size(1400, 800);
     await c.go(`${WEB}/privacy.html`, 800);
     const seed = (p, s) => c.ev(`const o=indexedDB.open('inkleaf-${p}',1);await new Promise((r,j)=>{o.onupgradeneeded=()=>{const d=o.result;for(const n of ['folders','docs','assets'])d.createObjectStore(n,{keyPath:'id'});d.createObjectStore('pages',{keyPath:'id'}).createIndex('docId','docId');d.createObjectStore('meta',{keyPath:'k'});};o.onsuccess=r;o.onerror=j;});const t=o.result.transaction('meta','readwrite');t.objectStore('meta').put({k:'cloud',v:${JSON.stringify(s)}});t.objectStore('meta').put({k:'cloudServer',v:'${API}'});await new Promise(r=>t.oncomplete=r);o.result.close();`);
-    await seed('da', s1); await seed('db', s2); await seed('dg', guest);
-    await c.ev(`document.body.innerHTML='<iframe id=a style="width:49%;height:760px"></iframe><iframe id=b style="width:49%;height:760px"></iframe>';a.src='/?profile=da';b.src='/?profile=db';`);
+    await seed('da' + run, s1); await seed('db' + run, s2); await seed('dg' + run, guest);
+    await c.ev(`document.body.innerHTML='<iframe id=a style="width:49%;height:760px"></iframe><iframe id=b style="width:49%;height:760px"></iframe>';a.src='/?profile=da${run}';b.src='/?profile=db${run}';`);
     await sleep(4000);
     const on = (f, x) => c.ev(`const w=document.getElementById('${f}').contentWindow;return await w.eval(${JSON.stringify(`(async()=>{${x}})()`)});`);
     const doc = (f, id) => on(f, `${E.D}return JSON.stringify((await D.db.get('docs','${id}'))||null)`).then(JSON.parse);
@@ -327,14 +349,15 @@ if (!process.argv.includes('--quick')) {
     await quiet('no uploads afterwards', 8);
     // a view-only guest
     const sh = await js(await call(s1.token, '/share/' + one, { method: 'POST', body: JSON.stringify({ allowedEmails: 'friend@test.local' }) }));
-    await c.ev(`b.src='/?profile=dg#/live/${sh.shareId}'`); await sleep(5000);
+    await c.ev(`b.src='/?profile=dg${run}#/live/${sh.shareId}'`); await sleep(5000);
     ok('a view-only guest sees the notebook, read-only', await on('b', `return !!document.querySelector('.vp') && document.querySelector('.ro')!==null`));
     await on('b', `const x=[...document.querySelectorAll('button')].find(q=>/Read-only/.test(q.title));if(x)x.click();await new Promise(r=>setTimeout(r,300));`);
     ok('and cannot switch writing on', await on('b', `return document.querySelector('.ro')!==null`));
     const e = [...new Set(c.errors)].filter(x => !/offline/.test(x));
     ok('two devices: no errors', !e.length, e.slice(0, 3).join(' ; '));
   });
-  await c.close();
+  await c.close(failed.length ? `${failed.length} of ${passed + failed.length} checks FAILED. Do not publish.` : `All ${passed} checks passed. You can close this tab.`, failed.length > 0);
+  if (failed.length && c.hiddenTimes) console.log('\nNote: the check tab was out of sight at times, which can make checks fail. Run it again before judging.');
 }
 
 if (mf) await mf.dispose().catch(() => {});
