@@ -42,6 +42,13 @@ util.js, icons.js. `sw.js` = service worker (bump its cache version, e.g. v40 ->
 - Node 24 is installed (`C:\Program Files\nodejs`); no Python or Flutter. Git is `C:\Program Files\Git\cmd\git.exe` (may not be on PATH). Commits use the
   repo-local noreply identity: keep it that way (no personal e-mail in public history).
 - Run locally: `start.cmd`, or `powershell -ExecutionPolicy Bypass -File serve.ps1` -> http://localhost:8080.
+- **Before every push run `tests/check.cmd`** (about 4 minutes; opens a Chrome window, leave it alone) and push only if it
+  says "ready to publish". **After every push run `tests/after-publish.cmd`**: a release is done only when it says ALL
+  GOOD (the Cloudflare server failed to build for five days in Nov 2026 and nobody noticed). First run installs its
+  tools into `tests/node_modules` (not in git). When a bug is fixed, add a check for it in `tests/check.mjs`.
+- Notebook records: a real change sets `modified`; opening, page turns, thumbnails and writing use `touchDoc`
+  (util.js) so they never undo a rename, move or bin made on another device. `mergeDoc` must return one of its
+  inputs untouched when nothing differs, or two devices upload to each other without end.
 - **Never push without loading the app in the browser first, even for a one-line change** (a pushed syntax error
   once broke the whole app).
 - Testing: `?profile=a` / `?profile=b` give separate local libraries (two iframes = two devices);

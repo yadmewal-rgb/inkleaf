@@ -4,7 +4,7 @@ import { chooseNotebook, markOpened, detailsDialog } from './library.js';
 import { openPdf, renderPdfPage } from './pdfrender.js';
 import { straightenScan } from './scan.js';
 import { regionCanvas, textLines, textUnder, hlGroups, hlRegion, hlShot } from './pageshots.js';
-import { h, uid, nextZ, clamp, bus, distSeg, downloadBlob, safeName, debounce, fill, imgReady } from './util.js';
+import { h, uid, nextZ, clamp, bus, distSeg, downloadBlob, safeName, debounce, fill, imgReady, touchDoc } from './util.js';
 import * as R from './render.js';
 import { pageLinks, resolveDest, pdfOutline, generatePdfOutline, pageText, textMatches } from './pdftools.js';
 import { I } from './icons.js';
@@ -208,6 +208,8 @@ export async function mountEditor(root, docId, opts = {}) {
   const undoStack = [], redoStack = [];
   const dirtyPages = new Set();
   let saveT = 0, docDirty = false, changed = false, destroyed = false;
+  let docTouch = false;       // the notebook record needs saving, but only for its reading place or thumbnail
+  let docGone = false;        // deleted or moved to the bin on another device: its record is left alone
   let touched = false;        // has the notebook's "last edited" stamp been bumped this session?
   let pendingRebuild = false; // a page arrived or left on another device while a gesture was in progress
   const gonePages = new Set(); // pages deleted here or elsewhere during this session
@@ -1075,9 +1077,9 @@ export async function mountEditor(root, docId, opts = {}) {
         const now = Date.now();
         doc.lastPage = i + 1;
         doc.lastOpened = now;
-        doc.modified = now;
+        touchDoc(doc, now);
         clearTimeout(posT); // scrolling through many pages saves the place once, when it settles
-        posT = setTimeout(() => { if (!destroyed) db.put('docs', { ...doc }).catch(() => {}); }, 800);
+        posT = setTimeout(() => { if (!destroyed && !docGone) db.put('docs', { ...doc }).catch(() => {}); }, 800);
       } catch { /* private mode */ }
     }
   }
@@ -1160,23 +1162,23 @@ export async function mountEditor(root, docId, opts = {}) {
   async function flush() {
     clearTimeout(saveT);
     saveWait = 0;
-    if (!dirtyPages.size && !docDirty) return;
+    if (!dirtyPages.size && !docDirty && !docTouch) return;
     const ps = [...dirtyPages];
     dirtyPages.clear();
     // The notebook record itself is only rewritten when it changed (or once per session, to mark it as recently edited).
-    const writeDoc = docDirty || !touched;
-    docDirty = false;
+    const editDoc = docDirty, writeDoc = !docGone && (docDirty || docTouch || !touched);
+    docDirty = docTouch = false;
     touched = true;
     try {
       await db.putMany('pages', ps);
       if (writeDoc) {
-        doc.modified = Date.now();
+        if (editDoc) { doc.modified = Date.now(); delete doc.rd; } else touchDoc(doc);
         await db.put('docs', doc);
       }
     } catch (e) {
       // Nothing is dropped: the same pages are saved again in a few seconds, for as long as it takes.
       for (const p of ps) if (pages.includes(p)) dirtyPages.add(p);
-      if (writeDoc) docDirty = true;
+      if (editDoc) docDirty = true; else if (writeDoc) docTouch = true;
       if (!destroyed) saveSoon(3000);
       throw e;
     }
@@ -1323,11 +1325,11 @@ export async function mountEditor(root, docId, opts = {}) {
   function absorbDoc(rec) {
     const m = mergeDoc(doc, rec, gonePages);
     if (m === doc) return;
-    if (m.deleted || m.trashed) { toast('This notebook was moved to the bin on another device.'); exit(); return; }
+    if (m.deleted || m.trashed) { docGone = true; toast('This notebook was moved to the bin on another device.'); exit(); return; }
     const before = pages.map(p => p.id).join();
     Object.assign(doc, m);
     titleBtn.textContent = doc.title;
-    if (m !== rec) { docDirty = true; saveSoon(300); }
+    if (m !== rec) { docTouch = true; saveSoon(300); }
     orderPages();
     if (pages.map(p => p.id).join() !== before) remoteRebuild();
     queueTray(); // cards may have come from another device
@@ -7014,7 +7016,7 @@ export async function mountEditor(root, docId, opts = {}) {
             renderOpts();
           }
         }
-      }, h('span', { class: 'dot', style: { width: dotSize + 'px', height: dotSize + 'px', background: dotColor, opacity: key === 'hl' ? 0.75 : 1, boxShadow: (key === 'hl' || dotColor === '#ffffff' || dotColor === '#fff') ? '0 0 0 1px rgba(0,0,0,0.18) inset' : 'none' } }));
+      }, h('span', { class: 'dot', style: { width: dotSize + 'px', height: dotSize + 'px', background: dotColor, opacity: key === 'hl' ? 0.75 : 1, boxShadow: key === 'hl' ? '0 0 0 1px rgba(0,0,0,0.18) inset' : '0 0 0 1.5px rgba(134,142,150,.75)' } }));
     });
     return [...btns, h('button', {
       class: 'mm',
@@ -7485,7 +7487,18 @@ export async function mountEditor(root, docId, opts = {}) {
     flush().catch(saveFailed); // saving triggers the upload
   }
 
-  const ro = new ResizeObserver(() => { measure(); if (zw) zoomLayout(); applyView(); });
+  const ro = new ResizeObserver(() => {
+    // Side by side, a new width (the iPad was turned) keeps the page being read in place, and fitted if it was.
+    const w0 = vpRect.width, i = hz && pvs.length ? pvs.indexOf(currentPv()) : -1;
+    const fitted = i >= 0 && Math.abs(scale / fitScale(pvs[i].page) - 1) < 0.02;
+    measure();
+    if (zw) zoomLayout();
+    if (i >= 0 && !action && w0 > 0 && Math.abs(vpRect.width - w0) > 1) {
+      if (fitted) scale = fitScale(pvs[i].page);
+      if (pvs[i].page.w * scale <= vpRect.width + 2) { stopInertia(); tx = pageTx(pvs[i]); } else tx += (vpRect.width - w0) / 2;
+    }
+    applyView();
+  });
 
   const findSoon = debounce(() => { if (!destroyed && !findBar.hidden) runFind(); }, 280);
   findInp.addEventListener('input', findSoon);
@@ -7507,10 +7520,6 @@ export async function mountEditor(root, docId, opts = {}) {
       const curIdx = curPv ? pvs.indexOf(curPv) : -1;
       if (curIdx >= 0) {
         localStorage.setItem('inkleaf.pos.' + doc.id, String(curIdx));
-        if (doc.lastPage !== curIdx + 1) {
-          doc.lastPage = curIdx + 1;
-          await db.put('docs', { ...doc, lastPage: curIdx + 1 });
-        }
       }
     } catch { /* ignore */ }
     commitText();
@@ -7540,14 +7549,12 @@ export async function mountEditor(root, docId, opts = {}) {
         const c = document.createElement('canvas');
         await R.renderPageTo(pages[0], c, 320);
         doc.thumb = c.toDataURL('image/jpeg', 0.72);
-        docDirty = true;
       }
       const curIdx = pvs.indexOf(currentPv());
       const now = Date.now();
       doc.lastOpened = now;
       if (curIdx >= 0) doc.lastPage = curIdx + 1;
-      doc.modified = now;
-      docDirty = true;
+      docTouch = true;
       await flush();
     } catch (e) { saveFailed(e); }
     bus.emit('editor-close', doc.id);
@@ -7603,7 +7610,7 @@ export async function mountEditor(root, docId, opts = {}) {
   showSync(syncStatus());
   const nowOpen = Date.now();
   doc.lastOpened = nowOpen;
-  doc.modified = nowOpen;
+  touchDoc(doc, nowOpen);
   db.put('docs', { ...doc }).catch(() => {});
   bus.emit('editor-open', doc.id);
   bmBtn.classList.add('wide'); // on a phone the bookmark star lives in the pages panel only

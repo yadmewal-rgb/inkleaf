@@ -1,0 +1,12 @@
+{
+  "name": "inkleaf-checks",
+  "private": true,
+  "type": "module",
+  "description": "Checks to run before and after publishing Inkleaf. Not part of the app.",
+  "devDependencies": {
+    "eslint": "9.39.5",
+    "globals": "15.15.0",
+    "miniflare": "4.20260730.0",
+    "postcss": "8.5.33"
+  }
+}

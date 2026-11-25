@@ -10,13 +10,13 @@
 //   device asks for what changed. A page edited on two devices is merged stroke by stroke, so nothing is lost.
 // - Sign-in: Google, once per device. The service then gives this device its own key, which does not expire.
 import { db, assetIdsOf } from './db.js';
-import { h, uid, bus, loadScript, downloadBlob, bufToB64, b64ToBuf } from './util.js';
+import { h, uid, bus, loadScript, downloadBlob, bufToB64, b64ToBuf, editedAt } from './util.js';
 import { modal, toast, confirmBox, busy } from './ui.js';
 import { I } from './icons.js';
 import { hwOn, setHwOn, status as hwStatus, setCloudOcr, getHwUsage, setHwLimit, getHwModel, setHwModel, getHwModelConfig, getActiveHwModel, MODEL_CASCADE, formatModelName, updateHwUsageFromServer } from './hwsearch.js';
 export { updateHwUsageFromServer };
 
-export const APP_VER = 'v94';
+export const APP_VER = 'v95';
 const SERVER = 'https://inkleaf-sync.yadmewal.workers.dev';
 // drive.appdata: Inkleaf's hidden app folder (files it syncs); drive.file: only files Inkleaf itself creates, used
 // for the visible "Inkleaf" folder holding copies of the PDFs under their real names.
@@ -397,18 +397,20 @@ export function mergePage(L, R) {
 
 // gone: page ids known to be deleted, which must not be brought back into the page list.
 export function mergeDoc(L, R, gone) {
-  const [nu, old] = R.modified >= L.modified ? [R, L] : [L, R];
+  const eL = editedAt(L), eR = editedAt(R), Rlater = R.modified >= L.modified;
+  const [nu, old] = (eL === eR ? Rlater : eR > eL) ? [R, L] : [L, R]; // the later real change wins, however recently the other was read
   if (nu.deleted || old.deleted) return nu;
   const have = new Set(nu.pages || []);
   const extra = (old.pages || []).filter(id => !have.has(id) && !(gone && gone.has(id)));
   const cards = mergeCards(nu, old);
   const lastOpened = Math.max(nu.lastOpened || 0, old.lastOpened || 0);
   const lastPage = (nu.lastOpened || 0) >= (old.lastOpened || 0) ? (nu.lastPage || old.lastPage || 0) : (old.lastPage || nu.lastPage || 0);
-  const thumb = nu.thumb || old.thumb || null;
+  const thumb = (Rlater ? R.thumb || L.thumb : L.thumb || R.thumb) || null;
   // Nothing to add to the newer one: hand it back untouched. (A fresh copy here made every device think there was
   // something to upload, so two devices kept sending each other the same notebook without end.)
   if (!extra.length && !cards && lastOpened === (nu.lastOpened || 0) && lastPage === (nu.lastPage || 0) && thumb === (nu.thumb || null)) return nu;
-  const out = { ...nu, modified: Date.now() };
+  const t = Math.max(Date.now(), (nu.modified || 0) + 1, (old.modified || 0) + 1);
+  const out = { ...nu, modified: t, rd: { m: t, e: editedAt(nu) } };
   if (extra.length) out.pages = [...(nu.pages || []), ...extra];
   if (cards) Object.assign(out, cards);
   if (lastOpened) out.lastOpened = lastOpened;

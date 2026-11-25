@@ -3,40 +3,27 @@
 **Written:** 2026-11-25 by Claude Code. **Next:** Claude Code or agy.
 
 ## What the owner asked
-"yes verify and also each line of code so that no conflicting commands are there" (verify v93, and check the code
-for conflicting commands).
+"go for 1,2,4": (1) stop reading from undoing changes, (2) an automatic check before every release, (4) two small
+visual problems. The owner agreed to a quiet week: no new AI features and no new toolbar now.
 
-## Done (v94)
-v93 is exactly v87 apart from the version numbers (checked with git). Found and fixed:
-1. **Endless upload loop** (`mergeDoc` in sync.js, since v76): it always returned a new copy, so two devices kept
-   sending each other the same notebook (135 uploads in 20 s with nobody touching anything; now 0). Keep its rule:
-   return one of the inputs untouched when nothing differs. Extra `pushDoc` calls in the editor removed: saving
-   already tells sync to upload.
-2. **Server never deployed since 20 Nov** (`newSize` declared twice in worker.js: Cloudflare builds failed; live was commit
-   4992a62). Fixing only that would have broken live sync (the WebSocket answer was rewrapped). Both fixed. Also: forged
-   keys opened private shared notebooks and showed an e-mail address; 1 in 4 share links failed (secret with "_");
-   sharing a notebook over 100 pages failed; sign-out took 10 minutes; guests could send ink to other notebooks.
-3. **Every pop-up threw an error on closing** (`opts` in ui.js, since v76): selection colour, spell-check Ignore / Add to
-   dictionary / Translate and "Add New Preset" did nothing.
-4. **Edited swatches and tip sizes were lost** on reopening a notebook.
-5. Copy ink then paste inserted old text from another app; a long press opened two pop-ups; a resting palm or two
-   fingers opened the hold menu; the owner's own editor went read-only on "view-only" sharing; view-only guests could
-   draw; `db` not imported in app.js; listeners left behind; pages panel placed left and right in CSS.
-
-## Tested
-Local copy of the sync server (Miniflare) plus visible Chrome: before/after of most bugs above, two devices, the 8 tools
-and their shortcuts, and the More menu except print, export, send, delete, full screen, template and side by side.
-Not tested: the real iPad, signed-in sync on the real server, the spell-check buttons and the guest's view-only screen.
-Every line of JS/CSS/server code went through a checker; read by eye: worker.js, ui.js, app.js, editor-consts.js and the
-input, tool bar, paste and sync parts of editor.js / sync.js. Not read by eye: render, export, goodnotes, pdftools, most of library.
+## Done (v95, committed on this PC, NOT pushed: waiting for the owner's yes)
+1. **Reading no longer undoes changes.** Proved first on v94: a device that only read pages while offline undid a rename,
+   a move and a "move to bin" on both devices. Now `editedAt` / `touchDoc` (util.js) keep the time of the last real
+   change; `mergeDoc` goes by that. A notebook binned elsewhere while open here also stays in the bin.
+2. **Checks:** `tests/check.cmd` before a push (115 checks: code, sync server, app, two devices, guest) and
+   `tests/after-publish.cmd` after it. Run against old versions they find 9 failures in v94 and 35 in v93.
+4. Tip-size dots have a thin ring (black ones show on the dark tool bar). Turning the screen in side-by-side mode keeps the
+   page centred, and fitted if it was.
 
 ## Live
-v94 is live since 2026-11-25 (owner said ok): GitHub Pages shows inkleaf-v94 and the Cloudflare build is green again.
+v94 (app and server) since 2026-11-25. v95 changes the app only, not the server.
 
 ## Next step
-The owner reloads Inkleaf on the iPad and tries it; ask how sync, pen colours and the hold menu feel.
+Push v95 when the owner says yes, run `tests/after-publish.cmd`, then ask how it feels on the iPad.
 
-## Seen, not changed (ask the owner)
-- Turning pages counts as a change to the notebook, so reading on one device can undo a rename, a page move or a "move to
-  bin" made on another device just before.
-- Black tip-size dots are invisible on the dark tool bar. Rotating the iPad in side-by-side mode leaves the view between pages.
+## Not covered / seen, not changed
+- Not tested on the real iPad, nor signed-in sync on the real server. The spell-check buttons have no check.
+- Two REAL changes to one notebook at the same time (a rename on one device, adding a page on another): the later one
+  still wins for the name, folder and bin.
+- In portrait a sliver of the tool bar shows to the right of the "..." button.
+- Restoring a weekly backup has never been tested (suggested to the owner, not asked for yet).

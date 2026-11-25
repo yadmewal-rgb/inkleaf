@@ -4,6 +4,17 @@ let c1 = 0, c2 = 0;
 export const uid = () =>
   Date.now().toString(36) + (c1++ % 1296).toString(36).padStart(2, '0') + Math.random().toString(36).slice(2, 8);
 
+// When a notebook itself (name, folder, bin, page order...) was last changed. Opening it, turning its pages and writing
+// on them also stamp "modified" (so the reading place and thumbnail travel), but must never undo a rename or a move
+// made on another device: touchDoc notes the real time of change in rd, valid only while modified is the stamp it set.
+// Every real change just sets modified, which makes rd count for nothing.
+export const editedAt = d => (d.rd && d.rd.m === d.modified ? d.rd.e : d.modified) || 0;
+export function touchDoc(d, t = Date.now()) {
+  const e = editedAt(d);
+  d.modified = t;
+  d.rd = { m: t, e };
+}
+
 // Monotonic z-order value for new items (later = on top).
 export const nextZ = () => Date.now() * 1000 + (c2++ % 1000);
 
