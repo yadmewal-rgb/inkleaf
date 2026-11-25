@@ -23,10 +23,11 @@
 
 ## What it is
 Plain HTML + ES modules, no build step. Vendored pdf.js 3.11.174 and pdf-lib 1.17.1 in `vendor/`.
-`js/`: app.js, library.js, editor.js (~5,600 lines, the big one), editor-consts.js, render.js, pageshots.js,
+`js/`: app.js, library.js, editor.js (~7,700 lines, the big one), editor-consts.js, render.js, pageshots.js,
 scan.js, export.js, pdfrender.js, pdftools.js, goodnotes.js (GoodNotes import), sync.js, db.js (IndexedDB), ui.js,
-util.js, icons.js. `sw.js` = service worker (bump its cache version, e.g. v40 -> v41, on every release).
-`server/` = Cloudflare Worker sync service (worker.js, wrangler.jsonc).
+util.js, icons.js, hwsearch.js (handwriting search), spellcheck.js, vocab.js. `sw.js` = service worker. On every release
+raise the version in BOTH `sw.js` (CACHE) and `js/sync.js` (APP_VER, shown in Settings).
+`server/` = Cloudflare Worker sync service (worker.js, wrangler.jsonc). `tests/` = the checks (not part of the app).
 
 ## Live
 - Website: https://yadmewal-rgb.github.io/inkleaf/ (GitHub Pages from `main`). **A push to main is a release.**
@@ -34,7 +35,7 @@ util.js, icons.js. `sw.js` = service worker (bump its cache version, e.g. v40 ->
   on every push to main; it sometimes misses one: check Builds, push an empty commit if needed).
   Worker + Durable Object `User` per Google account; Google sign-in once per device (code flow, worker keeps the
   refresh token, secret GOOGLE_SECRET); secret ALLOWED = allowed e-mails (set in the Cloudflare dashboard, never in
-  the repo). PDFs under 200 MB on Cloudflare, bigger ones in the owner's Google Drive (app folder), and every PDF
+  the repo). PDFs under 500 MB (`BIG` in sync.js) on Cloudflare, bigger ones in the owner's Google Drive (app folder), and every PDF
   also copied to a visible "Inkleaf" Drive folder. Quota: owner 2000 MB, friends 500 MB.
   Friends need: e-mail in ALLOWED.
 
@@ -82,7 +83,7 @@ util.js, icons.js. `sw.js` = service worker (bump its cache version, e.g. v40 ->
   - Stability: Keep as an isolated DOM overlay layer above the viewport (`overlay.append(...)`); never interfere with canvas stroke rendering or sync loop.
 
 ## Open ideas (not chosen yet; ask before building)
-AI features (handwriting search, ask about a page), Android APK via PWABuilder, live shared notebooks with friends,
-page sizes (A5/widescreen/square), endless whiteboard, audio recording, more editor.js splitting
+AI features (ask about a page; handwriting search exists), Android APK via PWABuilder, more for live shared notebooks (they
+exist), page sizes (A5/widescreen/square), endless whiteboard, audio recording, more editor.js splitting
 (highlights/flashcards/tray, notebook versions, zoom window). Most features were tested only on the laptop with
 synthetic events: feedback from the iPad and phone is the most useful next step.
