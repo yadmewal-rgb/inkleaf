@@ -1,20 +1,36 @@
 # Handoff
 
-**Written:** 2026-11-24 by agy (Antigravity). **Next:** Claude Code or agy.
+**Written:** 2026-11-25 by Claude Code. **Next:** Claude Code or agy.
 
 ## What the owner asked
-"take back to version 87 if you cant make it properly" (Revert all layout/toolbar experiments back to the stable, working version 87).
+"yes verify and also each line of code so that no conflicting commands are there" (verify v93, and check the code
+for conflicting commands).
 
-## Done (v93 — Revert to v87)
-1. **Full Revert to Version 87 (`css/app.css`, `js/editor.js`, `js/editor-consts.js`, `js/icons.js`, `js/render.js`)**:
-   - Replaced all editor layout and toolbar code with the exact, proven code from v87 (commit `241b12a`).
-   - Restored the standard, clean top toolbar that the owner knows and trusts.
-   - Removed all experimental vertical sidebars, floating option capsules, and undo pills that caused issues.
-   - Preserves v87 features: long-press editable color swatches and matching size dot colors.
-2. **PWA Version Bump (`sw.js`, `js/sync.js`)**:
-   - Bumped service worker cache to `inkleaf-v93`.
-   - Updated Settings version to `v93 (Restored v87)`.
-   - Ensures all client devices (especially iPad) immediately discard cached v88–v92 experimental assets upon reload.
+## Done (v94, committed on this PC, NOT pushed: waiting for the owner's yes)
+v93 is exactly v87 apart from the version numbers (checked with git). Found and fixed:
+1. **Endless upload loop** (`mergeDoc` in sync.js, since v76): it always returned a new copy, so two devices kept
+   sending each other the same notebook (135 uploads in 20 s with nobody touching anything; now 0). Keep its rule:
+   return one of the inputs untouched when nothing differs. Extra `pushDoc` calls in the editor removed: saving
+   already tells sync to upload.
+2. **Server never deployed since 20 Nov** (`newSize` declared twice in worker.js: Cloudflare builds fail; live = commit
+   4992a62). Fixing only that would have broken live sync (the WebSocket answer was rewrapped). Both fixed. Also: forged
+   keys opened private shared notebooks and showed an e-mail address; 1 in 4 share links failed (secret with "_");
+   sharing a notebook over 100 pages failed; sign-out took 10 minutes; guests could send ink to other notebooks.
+3. **Every pop-up threw an error on closing** (`opts` in ui.js, since v76): selection colour, spell-check Ignore / Add to
+   dictionary / Translate and "Add New Preset" did nothing.
+4. **Edited swatches and tip sizes were lost** on reopening a notebook.
+5. Copy ink then paste inserted old text from another app; a long press opened two pop-ups; a resting palm or two
+   fingers opened the hold menu; the owner's own editor went read-only on "view-only" sharing; view-only guests could
+   draw; `db` not imported in app.js; listeners left behind; pages panel placed left and right in CSS.
 
-## Live Status
-- Inkleaf v93 (Restored v87) committed and pushed to `main` (GitHub Pages).
+## Tested
+Local copy of the sync server (Miniflare) plus visible Chrome: before/after of every bug above, two devices, every tool,
+shortcut and More-menu item. Not tested on the real iPad, and not against the real server.
+
+## Next step
+Push (releases the app AND deploys the server), check that the Cloudflare build is green, then ask the owner to try it.
+
+## Seen, not changed (ask the owner)
+- Turning pages counts as a change to the notebook, so reading on one device can undo a rename, a page move or a "move to
+  bin" made on another device just before.
+- Black tip-size dots are invisible on the dark tool bar. Rotating the iPad in side-by-side mode leaves the view between pages.

@@ -574,8 +574,7 @@ export async function mountLibrary(root, folderId, opts = {}) {
     }
   };
   updateAiBadge();
-  bus.on('hw-model-changed', updateAiBadge);
-  bus.on('hw-status', updateAiBadge);
+  const badgeOffs = [bus.on('hw-model-changed', updateAiBadge), bus.on('hw-status', updateAiBadge)];
 
   let sidebarCollapsed = lsGet('inkleaf.sidebarCollapsed', '0') === '1';
   let mobileDrawerOpen = false;
@@ -1940,7 +1939,7 @@ export async function mountLibrary(root, folderId, opts = {}) {
     if (await promptImportPdf(f, folderId)) render();
   });
 
-  const offs = [bus.on('synced', render), bus.on('sync-status', showSync)];
+  const offs = [bus.on('synced', render), bus.on('sync-status', showSync), ...badgeOffs];
   showSync(syncStatus());
   purgeTrash(false).catch(e => console.warn('Bin clean-up failed', e));
   bus.emit('folder-open', folderId);

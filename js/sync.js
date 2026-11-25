@@ -16,7 +16,7 @@ import { I } from './icons.js';
 import { hwOn, setHwOn, status as hwStatus, setCloudOcr, getHwUsage, setHwLimit, getHwModel, setHwModel, getHwModelConfig, getActiveHwModel, MODEL_CASCADE, formatModelName, updateHwUsageFromServer } from './hwsearch.js';
 export { updateHwUsageFromServer };
 
-export const APP_VER = 'v93';
+export const APP_VER = 'v94';
 const SERVER = 'https://inkleaf-sync.yadmewal.workers.dev';
 // drive.appdata: Inkleaf's hidden app folder (files it syncs); drive.file: only files Inkleaf itself creates, used
 // for the visible "Inkleaf" folder holding copies of the PDFs under their real names.
@@ -402,13 +402,18 @@ export function mergeDoc(L, R, gone) {
   const have = new Set(nu.pages || []);
   const extra = (old.pages || []).filter(id => !have.has(id) && !(gone && gone.has(id)));
   const cards = mergeCards(nu, old);
-  const out = { ...nu };
+  const lastOpened = Math.max(nu.lastOpened || 0, old.lastOpened || 0);
+  const lastPage = (nu.lastOpened || 0) >= (old.lastOpened || 0) ? (nu.lastPage || old.lastPage || 0) : (old.lastPage || nu.lastPage || 0);
+  const thumb = nu.thumb || old.thumb || null;
+  // Nothing to add to the newer one: hand it back untouched. (A fresh copy here made every device think there was
+  // something to upload, so two devices kept sending each other the same notebook without end.)
+  if (!extra.length && !cards && lastOpened === (nu.lastOpened || 0) && lastPage === (nu.lastPage || 0) && thumb === (nu.thumb || null)) return nu;
+  const out = { ...nu, modified: Date.now() };
   if (extra.length) out.pages = [...(nu.pages || []), ...extra];
   if (cards) Object.assign(out, cards);
-  out.lastOpened = Math.max(nu.lastOpened || 0, old.lastOpened || 0);
-  out.lastPage = (nu.lastOpened || 0) >= (old.lastOpened || 0) ? (nu.lastPage || old.lastPage || 1) : (old.lastPage || nu.lastPage || 1);
-  if (!out.thumb && old.thumb) out.thumb = old.thumb;
-  out.modified = Math.max(nu.modified || 0, old.modified || 0);
+  if (lastOpened) out.lastOpened = lastOpened;
+  if (lastPage) out.lastPage = lastPage;
+  if (thumb) out.thumb = thumb;
   return out;
 }
 

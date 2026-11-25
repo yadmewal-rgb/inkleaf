@@ -1,5 +1,5 @@
 // Offline support: network first, falling back to the cached copy.
-const CACHE = 'inkleaf-v93';
+const CACHE = 'inkleaf-v94';
 const SHELL = [
   './', 'index.html', 'manifest.webmanifest', 'css/app.css',
   'js/app.js', 'js/util.js', 'js/icons.js', 'js/ui.js', 'js/db.js', 'js/render.js',
@@ -16,7 +16,7 @@ self.addEventListener('install', e => {
 self.addEventListener('activate', e => {
   e.waitUntil(
     caches.keys()
-      .then(keys => Promise.all(keys.filter(k => k !== CACHE).map(k => caches.delete(k))))
+      .then(keys => Promise.all(keys.filter(k => k !== CACHE && k !== 'inkleaf-shared').map(k => caches.delete(k))))
       .then(() => self.clients.claim())
   );
 });

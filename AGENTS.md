@@ -39,7 +39,8 @@ util.js, icons.js. `sw.js` = service worker (bump its cache version, e.g. v40 ->
   Friends need: e-mail in ALLOWED.
 
 ## This PC
-- No Node, Python or Flutter. Git is `C:\Program Files\Git\cmd\git.exe` (may not be on PATH). Commits use the
+- Node 24 is installed (`C:Program Files
+odejs`); no Python or Flutter. Git is `C:\Program Files\Git\cmd\git.exe` (may not be on PATH). Commits use the
   repo-local noreply identity: keep it that way (no personal e-mail in public history).
 - Run locally: `start.cmd`, or `powershell -ExecutionPolicy Bypass -File serve.ps1` -> http://localhost:8080.
 - **Never push without loading the app in the browser first, even for a one-line change** (a pushed syntax error

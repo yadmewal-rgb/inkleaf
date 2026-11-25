@@ -2558,14 +2558,6 @@ button.pageind:hover {
   }
 }
 
-/* the pages panel sits on the left, under the sidebar button */
-.panel {
-  right: auto;
-  left: 0;
-  border-left: 0;
-  border-right: 1px solid var(--line);
-}
-
 /* --- Retro Flip Pomodoro & Clock --- */
 .timer {
   position: absolute;
@@ -3786,10 +3778,11 @@ body.split-dragging canvas {
   min-height: 1em;
 }
 
+/* the pages panel sits on the left, under the sidebar button */
 .panel {
   position: absolute;
   top: 0;
-  right: 0;
+  left: 0;
   bottom: 0;
   width: 255px;
   z-index: 15;
@@ -3797,7 +3790,7 @@ body.split-dragging canvas {
   -webkit-overflow-scrolling: touch;
   padding: 12px 10px calc(12px + env(safe-area-inset-bottom));
   background: var(--surface);
-  border-left: 1px solid var(--line);
+  border-right: 1px solid var(--line);
   box-shadow: var(--shadow);
   transition: width .18s ease;
 }

@@ -10,13 +10,13 @@ import { pageLinks, resolveDest, pdfOutline, generatePdfOutline, pageText, textM
 import { I } from './icons.js';
 import { popMenu, popover, confirmBox, promptText, toast, modal, chipGroup, templatePicker, PAPER_OPTS, busy } from './ui.js';
 import { exportFlow, pdfAsPictures } from './export.js';
-import { syncNow, syncStatus, mergePage, mergeDoc, shareNotebook, sendLiveDelta, sendGuestLiveDelta, pushDoc } from './sync.js';
+import { syncNow, syncStatus, mergePage, mergeDoc, shareNotebook, sendLiveDelta, sendGuestLiveDelta } from './sync.js';
 import { matchPage, matchSync, hwOn, pageIndex, queuePages, getActiveHwModel, formatModelName } from './hwsearch.js';
 import { findSpellingErrorsOnPage, addToUserDict, ignoreWord } from './spellcheck.js';
 import {
   GAP, MIN_S, MAX_S, COARSE, MAXPX, REGION_PX, REGION_PAD, PULL_PX, PALM_MS, INK, INK_ON_DARK, PEN_COLORS, HL_COLORS, SHAPES,
   MM, mmToPt, TAPE_COLORS, LASER_COLORS, RULER_L, RULER_W, ZOOM_TOOLS, NOTE_COLORS, FILL_COLORS, HIST_GAP, HIST_MAX, HIST_DAYS,
-  TAGS, SEC_COLORS, fmtWhen, TM, DEFAULTS
+  TAGS, SEC_COLORS, fmtWhen, TM, DEFAULTS, CLIP_MARK
 } from './editor-consts.js';
 
 
@@ -42,7 +42,7 @@ export async function mountEditor(root, docId, opts = {}) {
   if (saved) {
     for (const k in saved) {
       if (prefs[k] && typeof prefs[k] === 'object' && saved[k] && typeof saved[k] === 'object') Object.assign(prefs[k], saved[k]);
-      else if (k in prefs) prefs[k] = saved[k];
+      else if (k in prefs || (/^[a-z]+(Colors|Sizes)$/.test(k) && Array.isArray(saved[k]))) prefs[k] = saved[k]; // edited swatches and tip sizes
     }
   }
   const savePrefs = () => db.setMeta('prefs', prefs).catch(() => {});
@@ -112,13 +112,15 @@ export async function mountEditor(root, docId, opts = {}) {
     style: hwOn() ? '' : 'display:none;'
   }, formatModelName(getActiveHwModel()).replace('Gemini ', ''));
 
-  bus.on('hw-model-changed', () => {
-    findAiBadge.textContent = formatModelName(getActiveHwModel()).replace('Gemini ', '');
-    findAiBadge.style.display = hwOn() ? '' : 'none';
-  });
-  bus.on('hw-status', () => {
-    findAiBadge.style.display = hwOn() ? '' : 'none';
-  });
+  const badgeOffs = [
+    bus.on('hw-model-changed', () => {
+      findAiBadge.textContent = formatModelName(getActiveHwModel()).replace('Gemini ', '');
+      findAiBadge.style.display = hwOn() ? '' : 'none';
+    }),
+    bus.on('hw-status', () => {
+      findAiBadge.style.display = hwOn() ? '' : 'none';
+    })
+  ];
 
   const findBar = h('div', { class: 'findbar', hidden: true },
     findInp, findAiBadge, findLbl,
@@ -227,6 +229,7 @@ export async function mountEditor(root, docId, opts = {}) {
 
   let oneShot = null;     // 'excerpt' while the next drag marks out a part of the page to copy
   let readOnly = false; // read-only view: nothing that touches the page draws on it
+  let guestLocked = !!opts.readOnly; // a guest of a view-only live link cannot switch writing on
   if (hwOn()) {
     pages.forEach(p => pageIndex(p.id).catch(() => {}));
     const curId = (pages[0] && pages[0].id);
@@ -238,6 +241,7 @@ export async function mountEditor(root, docId, opts = {}) {
   // on touch devices where fingers would draw (no stylus seen, e.g. phones); an iPad with Apple Pencil opens for writing.
   const openRead = () => prefs.openRead === true || (prefs.openRead == null && COARSE && !prefs.penSeen && prefs.fingerDraw !== false);
   try { readOnly = openRead() || localStorage.getItem('inkleaf.ro.' + doc.id) === '1'; } catch { readOnly = openRead(); }
+  if (guestLocked) readOnly = true;
   const pencilOnly = () => Boolean(prefs.applePencilOnly);
   const fingerDraws = () => !readOnly && !pencilOnly() && (prefs.fingerDraw === true || (prefs.fingerDraw == null && !penSeen));
   const getTwist = e => (typeof e?.twist === 'number' && !isNaN(e.twist) ? e.twist : null);
@@ -1057,7 +1061,7 @@ export async function mountEditor(root, docId, opts = {}) {
   }
 
   // Runs on every frame while scrolling, so it only touches the page (and storage) when something changed.
-  let indShown = '', posSaved = -1;
+  let indShown = '', posSaved = -1, posT = 0;
   function updateIndicator() {
     const i = pvs.indexOf(currentPv());
     const txt = `${i + 1} / ${pvs.length}`;
@@ -1072,8 +1076,8 @@ export async function mountEditor(root, docId, opts = {}) {
         doc.lastPage = i + 1;
         doc.lastOpened = now;
         doc.modified = now;
-        db.put('docs', { ...doc }).catch(() => {});
-        pushDoc(doc.id).catch(() => {});
+        clearTimeout(posT); // scrolling through many pages saves the place once, when it settles
+        posT = setTimeout(() => { if (!destroyed) db.put('docs', { ...doc }).catch(() => {}); }, 800);
       } catch { /* private mode */ }
     }
   }
@@ -1437,8 +1441,10 @@ export async function mountEditor(root, docId, opts = {}) {
 
     if (pencilOnly() && e.pointerType === 'touch') {
       p.ignored = false;
+      if ((action && action.ptype === 'pen') || performance.now() - lastPenT < PALM_MS) clearPointerHold(); // a resting hand does not open the hold menu
       const ts = [...ptrs.values()].filter(q => q.type === 'touch' && !q.ignored);
       if (ts.length >= 2) {
+        clearPointerHold();
         if (action) cancelAction();
         pan = null;
         if (!pinch) {
@@ -1484,12 +1490,14 @@ export async function mountEditor(root, docId, opts = {}) {
     // touch: anything that lands while the stylus is writing or hovering is the resting hand
     if ((action && action.ptype === 'pen') || performance.now() - lastPenT < PALM_MS) {
       p.ignored = true;
+      clearPointerHold(); // a resting hand does not open the hold menu
       if (dbg) dbgEv(e, 'palm');
       return;
     }
     const ts = [...ptrs.values()].filter(q => q.type === 'touch' && !q.ignored);
     if (dbg) dbgEv(e, ts.length >= 2 ? 'fingers ' + ts.length : fingerDraws() ? 'draw' : 'scroll');
     if (ts.length >= 2) {
+      clearPointerHold(); // two fingers are a pinch or a tap, not a hold
       if (action) cancelAction();
       pan = null;
       if (!pinch) {
@@ -2532,6 +2540,8 @@ export async function mountEditor(root, docId, opts = {}) {
   async function copySel(cut) {
     if (!sel) return;
     clipItems = sel.items.map(it => ({ ...it, p: it.p ? it.p.slice() : undefined }));
+    // Mark the device's clipboard too, so Paste brings these items and not something copied earlier in another app.
+    try { if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(CLIP_MARK).catch(() => {}); } catch { /* not allowed */ }
     db.setMeta('clip', clipItems).catch(() => {});
     const n = clipItems.length;
     if (cut) deleteSel();
@@ -2593,7 +2603,7 @@ export async function mountEditor(root, docId, opts = {}) {
         }
         if (navigator.clipboard.readText) {
           const text = await navigator.clipboard.readText().catch(() => '');
-          if (text && text.trim()) {
+          if (text && text.trim() && text !== CLIP_MARK) {
             const pv = currentPv(), pg = pv.page;
             const [cx, cy] = viewCentre(pv);
             const newItem = {
@@ -2601,7 +2611,7 @@ export async function mountEditor(root, docId, opts = {}) {
               x: Math.round(clamp(cx - 150, 8, pg.w - 320)),
               y: Math.round(clamp(cy - 20, 8, pg.h - 60)),
               w: Math.min(360, pg.w - 40),
-              fs: 16, c: prefs.textColor || '#1a1a1a', ff: 'sans', m: Date.now()
+              fs: 16, c: inkFor(pv, prefs.text.color || INK), ff: 'sans', z: nextZ(), m: Date.now()
             };
             addItems(pg, [newItem]);
             pushUndo({ pageId: pg.id, add: [newItem], remove: [] });
@@ -2619,6 +2629,10 @@ export async function mountEditor(root, docId, opts = {}) {
     }
 
     // 2. Internal clipItems (copied/cut strokes, shapes, images within Inkleaf)
+    await pasteOwn();
+  }
+
+  async function pasteOwn() {
     const src = (await db.getMeta('clip')) || clipItems; // the stored copy first: it may have been made in another tab or pane
     if (!src || !src.length) { toast('Nothing copied yet.'); return; }
     await placeItems(src);
@@ -2672,12 +2686,12 @@ export async function mountEditor(root, docId, opts = {}) {
             if (err && (err.name === 'NotAllowedError' || /permission/i.test(err.message))) permBlocked = true;
             return '';
           });
-          if (text && text.trim()) {
+          if (text && text.trim() && text !== CLIP_MARK) {
             const newItem = {
               id: uid(), t: 'tx', s: text.trim(),
               x: Math.round(px), y: Math.round(py),
               w: Math.min(360, Math.max(120, pv.page.w - px - 20)),
-              fs: 16, c: prefs.textColor || '#1a1a1a', ff: 'sans', m: Date.now()
+              fs: 16, c: inkFor(pv, prefs.text.color || INK), ff: 'sans', z: nextZ(), m: Date.now()
             };
             addItems(pv.page, [newItem]);
             pushUndo({ pageId: pv.page.id, add: [newItem], remove: [] });
@@ -2803,7 +2817,7 @@ export async function mountEditor(root, docId, opts = {}) {
         label: 'Add sticky note',
         icon: I.edit,
         onClick: () => {
-          const note = { id: uid(), t: 'nt', x: Math.round(px), y: Math.round(py), w: 180, fs: 14, c: prefs.noteColor || '#fdf7c4', s: '', m: Date.now() };
+          const note = { id: uid(), t: 'nt', x: Math.round(px), y: Math.round(py), w: 180, fs: 14, c: prefs.noteColor || '#fdf7c4', s: '', z: nextZ(), m: Date.now() };
           addItems(pv.page, [note]);
           pushUndo({ pageId: pv.page.id, add: [note], remove: [] });
           dirty(pv.page);
@@ -5081,9 +5095,10 @@ export async function mountEditor(root, docId, opts = {}) {
 
   // --- read-only view
   function setReadOnly(on, quiet) {
+    if (!on && guestLocked) { toast('This notebook was shared with you as view-only.', 2600); return; }
     if (on) { commitText(); clearSel(); if (action) cancelAction(); }
     readOnly = on;
-    try { localStorage.setItem('inkleaf.ro.' + doc.id, on ? '1' : '0'); } catch { /* private mode */ }
+    try { if (!opts.liveShare) localStorage.setItem('inkleaf.ro.' + doc.id, on ? '1' : '0'); } catch { /* private mode */ }
     el.classList.toggle('ro', on);
     roBtn.classList.toggle('on', on);
     roBtn.title = on ? 'Read-only is on: tap to write again' : 'Read-only: look without leaving marks';
@@ -6877,14 +6892,10 @@ export async function mountEditor(root, docId, opts = {}) {
         },
         onpointerup: () => clearTimeout(holdT),
         onpointerleave: () => clearTimeout(holdT),
-        oncontextmenu: e => {
+        oncontextmenu: e => { // a long press on Android sends this as well as the hold above: open one pop-up, not two
           e.preventDefault();
           clearTimeout(holdT);
-          held = true;
-          openEditor(e.currentTarget);
-        },
-        ondblclick: e => {
-          openEditor(e.currentTarget);
+          if (!held) { held = true; openEditor(e.currentTarget); }
         },
         onclick: e => {
           if (held) { held = false; return; }
@@ -7002,9 +7013,6 @@ export async function mountEditor(root, docId, opts = {}) {
             savePrefs();
             renderOpts();
           }
-        },
-        ondblclick: e => {
-          sizePopover(e.currentTarget, key, minMm, maxMm, i);
         }
       }, h('span', { class: 'dot', style: { width: dotSize + 'px', height: dotSize + 'px', background: dotColor, opacity: key === 'hl' ? 0.75 : 1, boxShadow: (key === 'hl' || dotColor === '#ffffff' || dotColor === '#fff') ? '0 0 0 1px rgba(0,0,0,0.18) inset' : 'none' } }));
     });
@@ -7373,6 +7381,7 @@ export async function mountEditor(root, docId, opts = {}) {
 
     // Check plain text
     const text = cd.getData('text/plain');
+    if (text === CLIP_MARK) { e.preventDefault(); await pasteOwn(); return; }
     if (text && text.trim()) {
       e.preventDefault();
       const pv = currentPv(), pg = pv.page;
@@ -7382,7 +7391,7 @@ export async function mountEditor(root, docId, opts = {}) {
         x: Math.round(clamp(cx - 150, 8, pg.w - 320)),
         y: Math.round(clamp(cy - 20, 8, pg.h - 60)),
         w: Math.min(360, pg.w - 40),
-        fs: 16, c: prefs.textColor || '#1a1a1a', ff: 'sans', m: Date.now()
+        fs: 16, c: inkFor(pv, prefs.text.color || INK), ff: 'sans', z: nextZ(), m: Date.now()
       };
       addItems(pg, [newItem]);
       pushUndo({ pageId: pv.page.id, add: [newItem], remove: [] });
@@ -7511,6 +7520,7 @@ export async function mountEditor(root, docId, opts = {}) {
     stopInertia();
     clearTimeout(sbFadeTimer);
     clearTimeout(spellTimer);
+    clearTimeout(posT);
     ro.disconnect();
     if (thumbObs) thumbObs.disconnect();
     clearInterval(timerInt);
@@ -7539,13 +7549,13 @@ export async function mountEditor(root, docId, opts = {}) {
       doc.modified = now;
       docDirty = true;
       await flush();
-      pushDoc(doc.id).catch(() => {});
     } catch (e) { saveFailed(e); }
     bus.emit('editor-close', doc.id);
     el.remove();
   }
 
   const offs = [
+    ...badgeOffs,
     bus.on('remote-record', onRemote),
     bus.on('sync-status', showSync),
     bus.on('live-message', onLive),
@@ -7561,7 +7571,9 @@ export async function mountEditor(root, docId, opts = {}) {
 
   function onLive(m) {
     if (m.docId !== doc.id) return;
+    if ((m.type === 'perm' || m.type === 'revoked') && !opts.liveShare) return; // the owner's own devices hear these too
     if (m.type === 'perm') {
+      guestLocked = !m.canWrite;
       setReadOnly(!m.canWrite);
       toast(m.canWrite ? 'You now have write permission.' : 'Notebook switched to view-only.', 2600);
       return;
@@ -7593,7 +7605,6 @@ export async function mountEditor(root, docId, opts = {}) {
   doc.lastOpened = nowOpen;
   doc.modified = nowOpen;
   db.put('docs', { ...doc }).catch(() => {});
-  pushDoc(doc.id).catch(() => {});
   bus.emit('editor-open', doc.id);
   bmBtn.classList.add('wide'); // on a phone the bookmark star lives in the pages panel only
   drawTabs();

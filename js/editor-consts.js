@@ -19,6 +19,7 @@ export const mmToPt = mm => Math.round(mm / MM * 100) / 100;
 export const TAPE_COLORS = ['#e9d8a6', '#f4b6c2', '#a9d6e5', '#c9c9c9', '#2b2d42'];
 export const LASER_COLORS = ['#ff2d2d', '#22c55e', '#3b82f6'];
 export const RULER_L = 170 / MM, RULER_W = 46; // the on-screen ruler: 17 cm long, in page units
+export const CLIP_MARK = 'Copied in Inkleaf (paste it inside Inkleaf)'; // put on the device's clipboard when ink is copied
 export const ZOOM_TOOLS = ['pen', 'hl', 'eraser'];
 
 export const NOTE_COLORS = ['#ffe066', '#ffc9c9', '#b2f2bb', '#a5d8ff', '#d0bfff'];

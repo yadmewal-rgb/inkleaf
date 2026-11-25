@@ -25,7 +25,7 @@ function corsHeaders(req, env) {
     'Access-Control-Allow-Origin': origin,
     'Access-Control-Allow-Headers': 'Authorization, Content-Type',
     'Access-Control-Allow-Methods': 'GET, PUT, POST, DELETE, OPTIONS',
-    'Access-Control-Expose-Headers': 'X-Seq, X-Parts, X-Gz',
+    'Access-Control-Expose-Headers': 'X-Seq, X-Parts, X-Gz, X-CF-Calls-Today, X-OCR-Calls-Today',
     'Access-Control-Max-Age': '86400',
     Vary: 'Origin'
   };
@@ -92,11 +92,14 @@ export default {
         return withCors(json({ token: who.sub + '.' + r.secret, email: who.email, drive: r.drive }), cors);
       }
 
+      // Only the service itself (one Durable Object asking another) may use these.
+      if (/^\/+(registry|internal)(\/|$)/.test(url.pathname)) return withCors(json({ error: 'not-found' }, 404), cors);
+
       // Guest access to a shared notebook via share link: /live/:shareId/...
       if (url.pathname.startsWith('/live/')) {
         const segs = url.pathname.slice('/live/'.length).split('/').filter(Boolean);
         const shareId = segs[0] || '';
-        const [sub, secret] = shareId.split('_');
+        const cut = shareId.indexOf('_'), sub = shareId.slice(0, Math.max(0, cut)), secret = shareId.slice(cut + 1); // the secret may itself contain "_"
         if (!sub || !secret || !/^\d+$/.test(sub)) return withCors(json({ error: 'invalid-share-id' }, 400), cors);
         const stub = env.USER.get(env.USER.idFromName(sub));
         return withCors(await stub.fetch(req), cors);
@@ -150,7 +153,8 @@ export class User extends DurableObject {
     this._sessCache = new Map();
   }
 
-  async getEmail() { return this.kvGet('email') || ''; }
+  // Who holds this device key? '' unless the key really is one of this person's signed-in devices.
+  async emailFor(token) { return (await this.session(token)) ? (this.kvGet('email') || '') : ''; }
 
   kvGet(k) {
     if (this._kvCache && this._kvCache.has(k)) return this._kvCache.get(k);
@@ -164,6 +168,10 @@ export class User extends DurableObject {
     if (!this._kvCache) this._kvCache = new Map();
     this._kvCache.set(k, String(v));
     this.sql.exec('INSERT INTO kv (k, v) VALUES (?, ?) ON CONFLICT (k) DO UPDATE SET v = excluded.v', k, String(v));
+  }
+  kvDel(k) {
+    if (this._kvCache) this._kvCache.delete(k);
+    this.sql.exec('DELETE FROM kv WHERE k = ?', k);
   }
   seq() { return Number(this.kvGet('seq') || 0); }
   nextSeq() { const s = this.seq() + 1; this.kvSet('seq', s); return s; }
@@ -189,7 +197,7 @@ export class User extends DurableObject {
       body: new URLSearchParams({ refresh_token: rt, client_id: this.env.CLIENT_ID || CLIENT_ID, client_secret: this.env.GOOGLE_SECRET, grant_type: 'refresh_token' })
     })).json().catch(() => ({}));
     if (!t.access_token) {
-      if (t.error === 'invalid_grant') this.sql.exec("DELETE FROM kv WHERE k = 'grt'"); // revoked or expired: sign in again links it anew
+      if (t.error === 'invalid_grant') this.kvDel('grt'); // revoked or expired: sign in again links it anew
       return null;
     }
     this.gat = t.access_token;
@@ -233,6 +241,7 @@ export class User extends DurableObject {
 
   // End the live connections of one signed-out device (it then shows "sign in again").
   closeSockets(h) {
+    if (this._sessCache) this._sessCache.delete(h); // signed out now, not when the remembered check runs out
     for (const ws of this.ctx.getWebSockets()) {
       const a = ws.deserializeAttachment();
       if (a && a.h === h) { try { ws.close(4001, 'signed out'); } catch { /* closing */ } }
@@ -290,6 +299,7 @@ export class User extends DurableObject {
       this.trackUsage(isOcr, ocrN);
 
       const resp = await this._fetch(req);
+      if (resp.status === 101) return resp; // a WebSocket hand-over cannot be rewrapped
       const h = new Headers(resp.headers);
       const uh = this.usageHeaders();
       for (const k in uh) h.set(k, uh[k]);
@@ -343,7 +353,7 @@ export class User extends DurableObject {
     // Unauthenticated Guest Routes for Live Share: /live/:shareId/...
     if (p[0] === 'live' && p[1]) {
       const shareId = p[1];
-      const [, secret] = shareId.split('_');
+      const secret = shareId.slice(shareId.indexOf('_') + 1);
       if (!secret) return json({ error: 'no-secret' }, 400);
       const sh = this.sql.exec('SELECT docId, canWrite, allowedEmails FROM shares WHERE secret = ?', secret).toArray()[0];
       if (!sh) return json({ error: 'invalid-share' }, 404);
@@ -366,11 +376,7 @@ export class User extends DurableObject {
         let guestEmail = '';
         try {
           const guestStub = this.env.USER.get(this.env.USER.idFromName(guestSub));
-          guestEmail = (await guestStub.getEmail().catch(() => null) || '').toLowerCase();
-          if (!guestEmail) {
-            const resp = await guestStub.fetch(new Request('http://internal/internal/email'));
-            if (resp.ok) guestEmail = (await resp.json()).email || '';
-          }
+          guestEmail = await guestStub.emailFor(guestToken);
         } catch {}
         guestEmail = (guestEmail || '').toLowerCase();
         if (!guestEmail) {
@@ -407,8 +413,10 @@ export class User extends DurableObject {
         }
         let pageRecs = [];
         if (pageIds.length > 0) {
-          const placeholders = pageIds.map(() => '?').join(',');
-          pageRecs = this.sql.exec(`SELECT id, s, size, parts, info, gz FROM recs WHERE k = 'p' AND id IN (${placeholders})`, ...pageIds).toArray();
+          for (let i = 0; i < pageIds.length; i += 90) { // a query takes at most 100 values
+            const some = pageIds.slice(i, i + 90);
+            pageRecs.push(...this.sql.exec(`SELECT id, s, size, parts, info, gz FROM recs WHERE k = 'p' AND id IN (${some.map(() => '?').join(',')})`, ...some).toArray());
+          }
         } else {
           pageRecs = this.sql.exec("SELECT id, s, size, parts, info, gz FROM recs WHERE k = 'p' AND size >= 0").toArray()
             .filter(r => {
@@ -447,10 +455,6 @@ export class User extends DurableObject {
           }
         });
       }
-    }
-
-    if (url.pathname === '/internal/email') {
-      return json({ email: this.kvGet('email') || '' });
     }
 
     const token = ((req.headers.get('Authorization') || '').match(/^Bearer\s+(\S+)$/) || [])[1];
@@ -510,7 +514,7 @@ export class User extends DurableObject {
           console.warn('Failed to register share in inbox:', e);
         }
       }
-      return json({ shareId, canWrite: sh ? !!sh.canWrite : !!canWrite, allowedEmails: sh ? (sh.allowedEmails || '') : emails, secret, folderId: effFolderId, folderName: effFolderName });
+      return json({ shareId, canWrite: sh ? !!sh.canWrite : !!canWrite, allowedEmails: emails, secret, folderId: effFolderId, folderName: effFolderName });
     }
 
     // GET /shared-with-me : list items shared with this user
@@ -863,8 +867,7 @@ Return ONLY the valid JSON array without commentary or code fences.`;
         ON CONFLICT (k, id) DO UPDATE SET s = excluded.s, size = excluded.size, parts = excluded.parts, info = excluded.info, gz = excluded.gz`,
         k, id, s, size, parts, q.get('info') || '', q.get('gz') === '1' ? 1 : 0);
       const oldSize = (cur && cur.size > 0 ? cur.size : 0);
-      const newSize = (size > 0 ? size : 0);
-      this._cachedBytes = Math.max(0, this.usedBytes() - oldSize + newSize);
+      this._cachedBytes = Math.max(0, this.usedBytes() - oldSize + (size > 0 ? size : 0));
       this.kvSet('total_bytes', this._cachedBytes);
       if (k !== 'b') this.broadcast(s);
       return json({ s });
@@ -959,7 +962,7 @@ Return ONLY the valid JSON array without commentary or code fences.`;
     if (m.ping) { ws.send(JSON.stringify({ pong: true, s: this.seq() })); return; }
     // Live ink streaming across the share room
     if (m.live && m.docId) {
-      if (a.guest && !a.canWrite) return; // View-only guest cannot send edits
+      if (a.guest && (!a.canWrite || m.docId !== a.docId || !m.delta)) return; // guests: edits only, and only to the shared notebook
       this.broadcastLive(m.docId, m, ws);
     }
   }

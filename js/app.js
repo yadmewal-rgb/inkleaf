@@ -2,6 +2,7 @@ import { mountLibrary, promptImportPdf } from './library.js';
 import { mountEditor } from './editor.js';
 import { initSync, openSettings, fetchLiveDoc, openLiveGuestSocket, closeLiveGuestSocket, signIn } from './sync.js';
 import { toast } from './ui.js';
+import { db } from './db.js';
 import { h } from './util.js';
 
 const root = document.getElementById('app');

@@ -79,7 +79,7 @@ export function confirmBox(title, message, okLabel = 'OK', danger = false) {
 }
 
 // Floating panel anchored to an element; closes on any outside press.
-export function popover(anchor, content, { align = 'left' } = {}) {
+export function popover(anchor, content, { align = 'left', onClose } = {}) {
   const pop = h('div', { class: 'pop' }, content);
   document.body.append(pop);
   const r = anchor.getBoundingClientRect();
@@ -99,12 +99,15 @@ export function popover(anchor, content, { align = 'left' } = {}) {
   pop.style.left = x + 'px';
   pop.style.top = y + 'px';
   const onDoc = e => { if (!pop.contains(e.target)) close(); };
+  let closed = false;
   function close() {
+    if (closed) return;
+    closed = true;
     pop.remove();
     document.removeEventListener('pointerdown', onDoc, true);
-    if (typeof opts?.onClose === 'function') opts.onClose();
+    if (onClose) onClose();
   }
-  setTimeout(() => document.addEventListener('pointerdown', onDoc, true), 0);
+  setTimeout(() => { if (!closed) document.addEventListener('pointerdown', onDoc, true); }, 0);
   return close;
 }
 
