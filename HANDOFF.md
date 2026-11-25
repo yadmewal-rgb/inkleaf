@@ -3,35 +3,30 @@
 **Written:** 2026-11-25 by Claude Code. **Next:** Claude Code or agy.
 
 ## What the owner asked
-"go for 1,2,4": (1) stop reading from undoing changes, (2) an automatic check before every release, (4) two small
-visual problems. Claude suggested a quiet week without new AI features or a new toolbar; the owner asked why and was told,
-but has not said yes or no to it. Later: "open chrome in same chrome , not in separate", then "In your own Chrome".
+A picture from the iPad with a drawing (no words), then "is this solved ?": the sidebar button, logo and name in the
+library's top bar are boxed, with an arrow from that button to the sidebar's X, which is crossed out.
 
-## Done (v95)
-1. **Reading no longer undoes changes.** Proved first on v94: a device that only read pages while offline undid a rename,
-   a move and a "move to bin" on both devices. Now `editedAt` / `touchDoc` (util.js) keep the time of the last real
-   change; `mergeDoc` goes by that. A notebook binned elsewhere while open here also stays in the bin.
-2. **Checks:** `tests/check.cmd` before a push (115 checks: code, sync server, app, two devices, guest) and
-   `tests/after-publish.cmd` after it. Run against old versions they find 9 failures in v94 and 31 in v93.
-4. Tip-size dots have a thin ring (black ones show on the dark tool bar). Turning the screen in side-by-side mode keeps the
-   page centred, and fitted if it was.
+## Done (v96, committed on this PC, NOT pushed)
+- Sidebar open: the top bar no longer repeats the button, logo and name; the sidebar button is where the X was (same button
+  in the phone drawer). Sidebar closed: the top bar shows them, as before.
+- The cause of the mess in the picture: at 820 px wide the search box had about 80 px left, so the AI label lay on the
+  name and the box spilled over the Journal and Sync buttons. Now nothing overlaps at any width; where the search box is too
+  narrow for the AI label (phones around 375 px), the label goes.
+- The lines under the two headers now meet (they were 5 px apart).
+- `tests/check.mjs` has a new part "library" (16 checks; 6 of them fail on v95). Windowless: 130 passed, 0 failed.
 
 ## Live
-v95 since 2026-11-25 (owner said okay). `tests/check.cmd`: 115 passed; `tests/after-publish.cmd`: ALL GOOD.
+v95 since 2026-11-25. The server is unchanged in v96.
 
 ## Next step
-Ask how v95 feels on the iPad. Every device must be reloaded (one still on v94 can undo a rename).
+Ask the owner, run `tests/check.cmd` in their Chrome, push, run `tests/after-publish.cmd`, ask how it looks on the iPad.
 
-## Done: the check in the owner's own Chrome
-`tests/check.cmd` now opens a tab "Inkleaf check" in the owner's Chrome (tests only: the app is unchanged, nothing to
-publish). First full run there: 4 failures, all from the test setup (an earlier run that was cut off had left its test data
-behind; repeated exactly in a windowless browser). Fixed: cleans up before it starts, new test libraries every run, waits
-only count while the tab is visible, and a part that was out of sight is run again once. **Then a full pass in the owner's
-own Chrome: 115 passed, no pauses, 159 seconds (2026-11-25).**
-
-## Not covered / seen, not changed
+## Seen, not changed (ask the owner)
+- Folder dots: a folder without a chosen colour gets one by its position in the sidebar but is always red in the list, on
+  cards and in the colour chooser (`folderColorOf` gets an index in one place only). Chosen colours stay on that device.
 - Not tested on the real iPad, nor signed-in sync on the real server. The spell-check buttons have no check.
 - Two REAL changes to one notebook at the same time (a rename on one device, adding a page on another): the later one
   still wins for the name, folder and bin.
-- In portrait a sliver of the tool bar shows to the right of the "..." button.
+- In portrait a sliver of the editor's tool bar shows to the right of the "..." button.
 - Restoring a weekly backup has never been tested (suggested to the owner, not asked for yet).
+- The owner has not said yes or no to a quiet week without new AI features or a new toolbar.

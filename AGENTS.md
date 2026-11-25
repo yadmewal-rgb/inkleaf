@@ -69,6 +69,8 @@ util.js, icons.js. `sw.js` = service worker (bump its cache version, e.g. v40 ->
 - Writing "disappears" on iPad: likely canvas memory limit; temp canvases are zeroed, fewer pages kept drawn on
   touch devices.
 - Layers and hold-to-erase were REMOVED at the owner's request; don't bring them back.
+- Library (owner's drawing, 2026-11-25): while the sidebar is open, the name and the sidebar button are ONLY in the sidebar
+  (the button sits where the X was); the top bar shows them only while the sidebar is closed. Don't bring the copy back.
 - Apple Pencil double-tap/squeeze are not available to web apps (pressure, tilt, hover are).
 - Screenshots for chat: Always capture and resize website/desktop screenshots at full 1000px width with high DPI (`shots.ps1 ... -Width 1000` or `--force-device-scale-factor=1.5`) so all menus, text, and labels are crisp and easy to read.
 - Pomodoro & Clock Widget specifications (owner chosen):

@@ -225,6 +225,7 @@ p {
   min-width: 0;
   max-width: 450px;
   margin-left: auto;
+  container-type: inline-size;
 }
 
 .search-ic {
@@ -286,6 +287,30 @@ p {
   position: static;
   transform: none;
   margin: 0 4px;
+}
+
+/* Where the search box has no room for the label, the label goes (Settings shows the model too) instead of pushing
+   the box over its neighbours. */
+@media not all and (max-width: 640px) {
+  @container (max-width: 175px) {
+    .search-wrap .hw-ai-badge {
+      display: none;
+    }
+    .search-wrap .search.has-ai-pill {
+      padding-right: 12px;
+    }
+  }
+}
+
+@media (max-width: 640px) {
+  @container (max-width: 135px) {
+    .search-wrap .hw-ai-badge {
+      display: none;
+    }
+    .search-wrap .search.has-ai-pill {
+      padding-right: 12px;
+    }
+  }
 }
 
 .search:focus,
@@ -657,14 +682,24 @@ p {
   border-right: none;
 }
 
+/* The same height as the top bar beside it, so their lines meet. */
 .side-head {
-  padding: 12px 14px;
+  padding: calc(10px + env(safe-area-inset-top)) 9px 10px 14px;
   display: flex;
   align-items: center;
   justify-content: space-between;
   border-bottom: 1px solid var(--line);
-  min-height: 56px;
+  min-height: 61px;
   box-sizing: border-box;
+}
+
+/* While the sidebar is open it shows the name and the sidebar button; the top bar shows them only while it is closed.
+   (On a phone the sidebar is a drawer over the page, and the top bar always keeps them.) */
+@media not all and (max-width: 760px) {
+  .lib-sidebar:not(.collapsed) ~ .lib-main .lib-head > .brand,
+  .lib-sidebar:not(.collapsed) ~ .lib-main .lib-head > .sidebar-toggle-btn {
+    display: none;
+  }
 }
 
 .side-brand {

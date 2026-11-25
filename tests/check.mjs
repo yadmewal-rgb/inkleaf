@@ -201,6 +201,40 @@ if (!process.argv.includes('--quick')) {
   const key = (k, o = '') => c.ev(`document.activeElement?.blur();for(const t of ['keydown','keyup'])document.body.dispatchEvent(new KeyboardEvent(t,{key:'${k}',${o}bubbles:true}));await new Promise(r=>setTimeout(r,250));`);
   const pops = () => c.ev(`return document.querySelectorAll('.pop').length`);
   const noPops = `document.querySelectorAll('.pop').forEach(p=>p.remove());`;
+  await section('library', async () => {
+    c.errors.length = 0;
+    const clear = `for(const k of ['hw','geminiModel','sidebarCollapsed'])localStorage.removeItem('inkleaf.'+k);`;
+    await c.ev(clear + `localStorage.setItem('inkleaf.hw','1');localStorage.setItem('inkleaf.geminiModel','gemini-3.5-flash-lite')`); // shows the AI label in the search box
+    await c.size(820, 1180); // an iPad held upright
+    await c.go(`${WEB}/?profile=check${fresh()}`);
+    // What is in the top bar, what lies on top of something else, and whether the lines of both headers meet.
+    const look = () => c.ev(`const R=e=>{if(!e||!e.getClientRects().length)return null;const r=e.getBoundingClientRect();return r.width<1?null:r};
+      const hit=(a,b)=>a&&b&&a.left<b.right-1&&b.left<a.right-1&&a.top<b.bottom-1&&b.top<a.bottom-1;
+      const q=x=>document.querySelector(x),head=q('.lib-head'),box=R(head.querySelector('.search')),label=R(head.querySelector('.hw-ai-badge'));
+      const rest=[...head.children].filter(e=>!e.classList.contains('search-wrap')).map(e=>[e.title||e.textContent,R(e)]).filter(x=>x[1]);
+      const on=[];for(const [n,r] of rest){if(hit(box,r))on.push('search box on '+n);if(hit(label,r))on.push('label on '+n);}
+      if(hit(label,R(head.querySelector('.search-ic'))))on.push('label on the search sign');
+      if(box&&label&&(label.left<box.left||label.right>box.right))on.push('label outside the search box');
+      return {name:!!R(head.querySelector('.brand')),button:!!R(head.querySelector('.sidebar-toggle-btn')),side:Math.round((R(q('.lib-sidebar'))||{right:0}).right),sideButtons:q('.side-head').querySelectorAll('button').length,on,lines:[Math.round(R(head).bottom),Math.round(R(q('.side-head')).bottom)]}`);
+    const press = async x => { await c.ev(`document.querySelector('${x}').click()`); await sleep(600); };
+    let v = await look();
+    ok('sidebar open: name and button are only in the sidebar', v.side === 250 && !v.name && !v.button && v.sideButtons === 1, v);
+    ok('sidebar open: both headers are the same height', v.lines[0] === v.lines[1], v.lines);
+    for (const [w, h] of [[820, 1180], [768, 1024], [1194, 834], [1366, 900]]) { await c.size(w, h); await sleep(500); v = await look(); ok(`sidebar open, ${w} wide: nothing covers anything in the top bar`, !v.on.length, v.on); }
+    await c.size(820, 1180); await sleep(400);
+    await press('.side-head button'); v = await look();
+    ok('the sidebar button closes it; the top bar then has the name and the button', v.side === 0 && v.name && v.button, v);
+    ok('sidebar closed: nothing covers anything in the top bar', !v.on.length, v.on);
+    await press('.lib-head .sidebar-toggle-btn'); v = await look();
+    ok('the top bar button opens it again', v.side === 250 && !v.name && !v.button, v);
+    for (const [w, h] of [[694, 834], [507, 834], [412, 915], [375, 812]]) { await c.size(w, h); await sleep(500); v = await look(); ok(`${w} wide: nothing covers anything in the top bar`, !v.on.length && v.button, v); }
+    await press('.lib-head .sidebar-toggle-btn');
+    ok('phone: the button opens the drawer', await c.ev(`return document.querySelector('.lib-sidebar').classList.contains('mobile-open')`));
+    await press('.side-head button');
+    ok('phone: the drawer button closes it', await c.ev(`return !document.querySelector('.lib-sidebar').classList.contains('mobile-open')`));
+    noErrors('the library top bar');
+    await c.ev(clear);
+  });
   await section('writing', async () => {
     c.errors.length = 0;
     await c.size(1194, 834); await c.dark(true);

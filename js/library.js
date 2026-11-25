@@ -596,22 +596,19 @@ export async function mountLibrary(root, folderId, opts = {}) {
     drawerBackdrop.classList.toggle('active', mobileDrawerOpen);
   }
 
-  const sidebarToggleBtn = h('button', {
-    class: 'ic sidebar-toggle-btn',
-    type: 'button',
-    title: 'Toggle sidebar',
-    html: I.sidebar,
-    onclick: () => {
-      if (innerWidth <= 760) {
-        mobileDrawerOpen = !mobileDrawerOpen;
-        updateDrawerState();
-      } else {
-        sidebarCollapsed = !sidebarCollapsed;
-        lsSet('inkleaf.sidebarCollapsed', sidebarCollapsed ? '1' : '0');
-        sidebar.classList.toggle('collapsed', sidebarCollapsed);
-      }
+  // The sidebar's own button closes it; the one in the top bar, shown only while it is closed, opens it.
+  function toggleSidebar() {
+    if (innerWidth <= 760) {
+      mobileDrawerOpen = !mobileDrawerOpen;
+      updateDrawerState();
+    } else {
+      sidebarCollapsed = !sidebarCollapsed;
+      lsSet('inkleaf.sidebarCollapsed', sidebarCollapsed ? '1' : '0');
+      sidebar.classList.toggle('collapsed', sidebarCollapsed);
     }
-  });
+  }
+
+  const sidebarToggleBtn = h('button', { class: 'ic sidebar-toggle-btn', type: 'button', title: 'Show the sidebar', html: I.sidebar, onclick: toggleSidebar });
 
   const mainArea = h('main', { class: 'lib-main' },
     h('header', { class: 'lib-head' },
@@ -1205,21 +1202,7 @@ export async function mountLibrary(root, folderId, opts = {}) {
         h('img', { src: 'icons/icon.svg', alt: 'Inkleaf', width: 26, height: 26, style: 'border-radius: 6px;' }),
         h('span', null, 'Inkleaf')
       ),
-      h('button', {
-        class: 'ic sm',
-        type: 'button',
-        title: 'Collapse sidebar',
-        html: I.close,
-        onclick: () => {
-          if (innerWidth <= 760) {
-            closeDrawer();
-          } else {
-            sidebarCollapsed = true;
-            lsSet('inkleaf.sidebarCollapsed', '1');
-            sidebar.classList.add('collapsed');
-          }
-        }
-      })
+      h('button', { class: 'ic side-toggle', type: 'button', title: 'Hide the sidebar', html: I.sidebar, onclick: toggleSidebar })
     );
 
     const makeNavBtn = (icon, label, badge, active, onClick, dropTargetHandler) => {
