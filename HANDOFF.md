@@ -6,7 +6,7 @@
 "go for 1,2,4": (1) stop reading from undoing changes, (2) an automatic check before every release, (4) two small
 visual problems. The owner agreed to a quiet week: no new AI features and no new toolbar now.
 
-## Done (v95, committed on this PC, NOT pushed: waiting for the owner's yes)
+## Done (v95)
 1. **Reading no longer undoes changes.** Proved first on v94: a device that only read pages while offline undid a rename,
    a move and a "move to bin" on both devices. Now `editedAt` / `touchDoc` (util.js) keep the time of the last real
    change; `mergeDoc` goes by that. A notebook binned elsewhere while open here also stays in the bin.
@@ -16,10 +16,13 @@ visual problems. The owner agreed to a quiet week: no new AI features and no new
    page centred, and fitted if it was.
 
 ## Live
-v94 (app and server) since 2026-11-25. v95 changes the app only, not the server.
+v95 since 2026-11-25 (owner said okay). `tests/check.cmd`: 115 passed; `tests/after-publish.cmd`: ALL GOOD.
 
 ## Next step
-Push v95 when the owner says yes, run `tests/after-publish.cmd`, then ask how it feels on the iPad.
+Ask how v95 feels on the iPad. Every device must be reloaded (one still on v94 can undo a rename).
+Owner, 2026-11-25: "open chrome in same chrome , not in separate". `tests/check.cmd` still opens its own Chrome window
+(its remote control does not work on the normal Chrome profile): ask the owner before running it, until they choose
+how (hidden, or through the Claude in Chrome extension).
 
 ## Not covered / seen, not changed
 - Not tested on the real iPad, nor signed-in sync on the real server. The spell-check buttons have no check.
