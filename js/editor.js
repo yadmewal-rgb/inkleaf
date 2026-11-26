@@ -11,7 +11,7 @@ import { I } from './icons.js';
 import { popMenu, popover, confirmBox, promptText, toast, modal, chipGroup, templatePicker, PAPER_OPTS, busy } from './ui.js';
 import { exportFlow, pdfAsPictures } from './export.js';
 import { syncNow, syncStatus, mergePage, mergeDoc, shareNotebook, sendLiveDelta, sendGuestLiveDelta } from './sync.js';
-import { matchPage, matchSync, hwOn, pageIndex, queuePages, getActiveHwModel, formatModelName } from './hwsearch.js';
+import { matchPage, matchSync, hwOn, pageIndex, warmDocIndexes, queuePages, getActiveHwModel, formatModelName } from './hwsearch.js';
 import { findSpellingErrorsOnPage, addToUserDict, ignoreWord } from './spellcheck.js';
 import {
   GAP, MIN_S, MAX_S, COARSE, MAXPX, REGION_PX, REGION_PAD, PULL_PX, PALM_MS, INK, INK_ON_DARK, PEN_COLORS, HL_COLORS, SHAPES,
@@ -23,7 +23,7 @@ import {
 let activeEd = null; // with two notebooks side by side, the one last touched gets the keyboard
 
 export async function mountEditor(root, docId, opts = {}) {
-  const doc = await db.get('docs', docId);
+  const [doc, saved, clip] = await Promise.all([db.get('docs', docId), db.getMeta('prefs'), db.getMeta('clip')]);
   if (!doc || doc.deleted || doc.trashed) { location.hash = opts.other ? '#/d/' + opts.other : '#/'; return { destroy() {} }; }
   const split = !!opts.other, me = {};
   if (!split || opts.pane === 0 || !activeEd) activeEd = me;
@@ -36,9 +36,17 @@ export async function mountEditor(root, docId, opts = {}) {
     await db.put('pages', pg);
     await db.put('docs', doc);
   }
+  const page0Id0 = pages[0]?.id, page0Mod0 = pages[0]?.modified;
+  let startAt = 0;
+  try {
+    const loc = parseInt(localStorage.getItem('inkleaf.pos.' + doc.id) || '-1', 10);
+    if (!isNaN(loc) && loc >= 0) startAt = loc;
+    else if (doc.lastPage && doc.lastPage > 0) startAt = doc.lastPage - 1;
+  } catch { /* ignore */ }
+  if (opts.page) startAt = opts.page - 1;
+  startAt = clamp(startAt, 0, pages.length - 1);
 
   const prefs = JSON.parse(JSON.stringify(DEFAULTS));
-  const saved = await db.getMeta('prefs');
   if (saved) {
     for (const k in saved) {
       if (prefs[k] && typeof prefs[k] === 'object' && saved[k] && typeof saved[k] === 'object') Object.assign(prefs[k], saved[k]);
@@ -196,7 +204,7 @@ export async function mountEditor(root, docId, opts = {}) {
   let multiTap = null;   // a two/three finger tap in progress
   let lastTap = null;    // previous single finger tap, for double-tap
   let full = false, dbg = null;
-  let clipItems = (await db.getMeta('clip')) || null; // copied items, shared by every notebook on this device
+  let clipItems = clip || null; // copied items, shared by every notebook on this device
   let panelQ = '', panelBm = false, panelList = null; // pages panel: search text, bookmarks-only, the list element
   let panelTab = 'thumbnails';                         // 'thumbnails' | 'bookmarks' | 'outlines'
   let outlineMode = null;                              // 'ai' | 'native' | null (auto)
@@ -233,10 +241,10 @@ export async function mountEditor(root, docId, opts = {}) {
   let readOnly = false; // read-only view: nothing that touches the page draws on it
   let guestLocked = !!opts.readOnly; // a guest of a view-only live link cannot switch writing on
   if (hwOn()) {
-    pages.forEach(p => pageIndex(p.id).catch(() => {}));
-    const curId = (pages[0] && pages[0].id);
+    warmDocIndexes(pages, startAt, () => destroyed);
+    const curId = (pages[startAt] && pages[startAt].id);
     if (curId) queuePages([curId], 1);
-    if (pages[1]) queuePages([pages[1].id], 2);
+    if (pages[startAt + 1]) queuePages([pages[startAt + 1].id], 2);
     queuePages(pages.map(p => p.id), 3);
   }
   // Notebooks can open in view-only, so a phone held in the hand does not draw stray lines. Automatic (null):
@@ -507,7 +515,7 @@ export async function mountEditor(root, docId, opts = {}) {
     if (!pg.pdf) { put(null); return; }
     // The previous sharp piece stays in place until the new one is ready.
     const pb = R.pdfBox(pg);
-    renderPdfPage(pg.pdf.a, pg.pdf.i, rs, () => tok !== pv.hiTok || !pv.rs, { ...k, x: k.x - pb.x, y: k.y - pb.y })
+    renderPdfPage(pg.pdf.a, pg.pdf.i, rs, () => destroyed || tok !== pv.hiTok || !pv.rs, { ...k, x: k.x - pb.x, y: k.y - pb.y })
       .then(c => { if (c && tok === pv.hiTok && pv.rs) put(c); })
       .catch(err => console.warn('PDF region render failed', err));
   }
@@ -527,7 +535,7 @@ export async function mountEditor(root, docId, opts = {}) {
     };
     if (!pg.pdf) { draw(null); return; }
     if (!pv.bg.width) draw(null); // show paper immediately, the PDF arrives when rendered
-    renderPdfPage(pg.pdf.a, pg.pdf.i, rs, () => tok !== pv.bgTok || !pv.rs)
+    renderPdfPage(pg.pdf.a, pg.pdf.i, rs, () => destroyed || tok !== pv.bgTok || !pv.rs)
       .then(c => { if (c && tok === pv.bgTok && pv.rs) draw(c); })
       .catch(err => console.warn('PDF page render failed', err));
   }
@@ -935,7 +943,7 @@ export async function mountEditor(root, docId, opts = {}) {
     for (const pv of visPvs) {
       let hw = pv.page.hw;
       if (!hw) {
-        try { hw = await pageIndex(pv.page.id); } catch {}
+        try { hw = await pageIndex(pv.page.id, pv.page); } catch {}
       }
       const errs = findSpellingErrorsOnPage(pv.page, hw);
       for (const err of errs) {
@@ -5079,19 +5087,15 @@ export async function mountEditor(root, docId, opts = {}) {
     if (on && on.scrollIntoView) on.scrollIntoView({ block: 'nearest', inline: 'nearest' });
   }
 
-  async function switchTab(id) {
-    commitText();
-    await flush().catch(saveFailed);
+  function switchTab(id) {
     location.hash = '#/d/' + id;
   }
 
-  async function closeTab(id) {
+  function closeTab(id) {
     const ids = readTabs(), i = ids.indexOf(id);
     saveTabs(ids.filter(x => x !== id));
     if (id !== doc.id) { drawTabs(); return; }
     const next = ids[i + 1] || ids[i - 1];
-    commitText();
-    await flush().catch(saveFailed);
     location.hash = next ? '#/d/' + next : doc.folderId ? '#/f/' + doc.folderId : '#/';
   }
 
@@ -7544,13 +7548,16 @@ export async function mountEditor(root, docId, opts = {}) {
     offs.forEach(off => off());
     offImg();
     if (activeEd === me) activeEd = null;
+    const curIdx = pvs.indexOf(currentPv());
+    for (const pv of pvs) releasePv(pv);
     try {
-      if (changed || !doc.thumb) {
+      const p0 = pages[0];
+      const page0Changed = !doc.thumb || (p0 && (p0.id !== page0Id0 || p0.modified !== page0Mod0));
+      if (page0Changed && p0) {
         const c = document.createElement('canvas');
-        await R.renderPageTo(pages[0], c, 320);
+        await R.renderPageTo(p0, c, 320);
         doc.thumb = c.toDataURL('image/jpeg', 0.72);
       }
-      const curIdx = pvs.indexOf(currentPv());
       const now = Date.now();
       doc.lastOpened = now;
       if (curIdx >= 0) doc.lastPage = curIdx + 1;
@@ -7612,7 +7619,7 @@ export async function mountEditor(root, docId, opts = {}) {
   doc.lastOpened = nowOpen;
   touchDoc(doc, nowOpen);
   db.put('docs', { ...doc }).catch(() => {});
-  bus.emit('editor-open', doc.id);
+  bus.emit('editor-open', doc.id, pages);
   bmBtn.classList.add('wide'); // on a phone the bookmark star lives in the pages panel only
   drawTabs();
   setReadOnly(readOnly, true);
@@ -7654,14 +7661,6 @@ export async function mountEditor(root, docId, opts = {}) {
   renderOpts();
   updateUndoUi();
   measure();
-  let startAt = 0;
-  try {
-    const loc = parseInt(localStorage.getItem('inkleaf.pos.' + doc.id) || '-1', 10);
-    if (!isNaN(loc) && loc >= 0) startAt = loc;
-    else if (doc.lastPage && doc.lastPage > 0) startAt = doc.lastPage - 1;
-  } catch { /* ignore */ }
-  if (opts.page) startAt = opts.page - 1;
-  startAt = clamp(startAt, 0, pages.length - 1);
   scale = fitScale(pages[startAt], COARSE ? 2.5 : 1.6);
   tx = (vpRect.width - worldW * scale) / 2;
   scrollToPage(startAt);

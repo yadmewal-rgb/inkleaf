@@ -65,12 +65,24 @@ export function updateHwUsageFromServer(serverCalls, serverLimit, serverTotal = 
     u.calls = serverCalls;
     changed = true;
   }
-  if (typeof serverTotal === 'number' && serverTotal >= (u.totalCalls || 0)) {
-    u.totalCalls = serverTotal;
-    changed = true;
-  }
   if (Array.isArray(serverUsers)) {
-    u.users = serverUsers.map(x => ({ me: !!x.me, label: x.label, ocrCalls: Number(x.ocrCalls) || 0 }));
+    u.users = serverUsers.map(x => ({
+      me: !!x.me,
+      label: x.label,
+      ocrCalls: x.me ? Math.max(Number(x.ocrCalls) || 0, u.calls || 0) : (Number(x.ocrCalls) || 0)
+    }));
+    changed = true;
+  } else if (Array.isArray(u.users)) {
+    const me = u.users.find(x => x.me);
+    if (me && (u.calls || 0) > (me.ocrCalls || 0)) {
+      me.ocrCalls = u.calls;
+      changed = true;
+    }
+  }
+  const usersSum = Array.isArray(u.users) ? u.users.reduce((s, x) => s + (x.ocrCalls || 0), 0) : 0;
+  const bestTotal = Math.max(u.totalCalls || 0, typeof serverTotal === 'number' ? serverTotal : 0, u.calls || 0, usersSum);
+  if (bestTotal !== (u.totalCalls || 0)) {
+    u.totalCalls = bestTotal;
     changed = true;
   }
   if (!localStorage.getItem('inkleaf.hwLimit') && typeof serverLimit === 'number' && serverLimit > 0 && u.limit !== serverLimit) {
@@ -571,14 +583,14 @@ const keyOf = id => 'hw:' + id;
 
 const partialMem = new Map(); // pageId -> Map of signature -> run data (keeps partial work if a subsequent chunk fails)
 
-export async function pageIndex(pageId) {
+export async function pageIndex(pageId, pg = null) {
   if (mem.has(pageId)) return mem.get(pageId);
   // 1. Check if the page record itself has synced handwriting index from cloud:
   try {
-    const pg = await db.get('pages', pageId);
-    if (pg && pg.hw && pg.hw.v === VER && pg.hw.pm === (pg.modified || 0)) {
-      mem.set(pageId, pg.hw);
-      return pg.hw;
+    const p = pg || await db.get('pages', pageId);
+    if (p && p.hw && p.hw.v === VER && p.hw.pm === (p.modified || 0)) {
+      mem.set(pageId, p.hw);
+      return p.hw;
     }
   } catch {}
   // 2. Check local meta
@@ -586,6 +598,32 @@ export async function pageIndex(pageId) {
   const v = x && x.v === VER ? x : null;
   mem.set(pageId, v);
   return v;
+}
+
+// Warm in-memory handwriting indexes for an opened notebook without flooding IndexedDB at open time.
+export function warmDocIndexes(pages, startAt = 0, isCancelled = null) {
+  const needMeta = [];
+  for (let i = 0; i < pages.length; i++) {
+    const p = pages[i];
+    if (mem.has(p.id)) continue;
+    if (p.hw && p.hw.v === VER && p.hw.pm === (p.modified || 0)) {
+      mem.set(p.id, p.hw);
+    } else {
+      needMeta.push({ id: p.id, p, d: Math.abs(i - startAt) });
+    }
+  }
+  if (!needMeta.length) return;
+  needMeta.sort((a, b) => a.d - b.d);
+  for (const item of needMeta.splice(0, 3)) pageIndex(item.id, item.p).catch(() => {});
+  if (!needMeta.length) return;
+  const pump = () => {
+    if (isCancelled && isCancelled()) return;
+    const batch = needMeta.splice(0, 15);
+    Promise.all(batch.map(item => pageIndex(item.id, item.p).catch(() => {}))).then(() => {
+      if (needMeta.length) setTimeout(pump, 60);
+    });
+  };
+  setTimeout(pump, 250);
 }
 
 const upToDate = (x, pg) => x && x.v === VER && x.pm === (pg.modified || 0);
@@ -608,7 +646,7 @@ async function saveHw(pg, x) {
 }
 
 async function indexPage(pg) {
-  const old = await pageIndex(pg.id);
+  const old = await pageIndex(pg.id, pg);
   if (upToDate(old, pg)) return false;
 
   const known = new Map((old ? old.r : []).map(r => [r.k, r]));
@@ -744,7 +782,7 @@ export function matchIndex(x, q) {
 export const matchSync = (pg, q) => matchIndex(mem.get(pg.id), q);
 
 export async function matchPage(pg, q) {
-  const x = await pageIndex(pg.id);
+  const x = await pageIndex(pg.id, pg);
   return x && x.pm !== (pg.modified || 0) ? matchIndex(x, q).filter(hh => hh.ids.every(id => pg.items.some(it => it.id === id))) : matchIndex(x, q);
 }
 
@@ -809,7 +847,7 @@ async function run() {
       try {
         if (!pg.items.some(isInk)) {
           const x = { v: VER, pm: pg.modified || 0, r: [] };
-          if (!upToDate(await pageIndex(id), pg)) await saveHw(pg, x);
+          if (!upToDate(await pageIndex(id, pg), pg)) await saveHw(pg, x);
           continue;
         }
         status.state = 'working';
@@ -854,7 +892,7 @@ export async function indexAll() {
   const todo = [];
   for (const pg of pages) {
     if (pg.deleted || pg.trashed || !live.has(pg.docId)) continue;
-    const x = await pageIndex(pg.id);
+    const x = await pageIndex(pg.id, pg);
     if (!upToDate(x, pg)) todo.push(pg.id);
   }
   queuePages(todo, 9);

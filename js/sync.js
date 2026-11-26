@@ -16,7 +16,7 @@ import { I } from './icons.js';
 import { hwOn, setHwOn, status as hwStatus, setCloudOcr, setDirectOcrReport, getHwUsage, setHwLimit, getHwModel, setHwModel, getHwModelConfig, getActiveHwModel, MODEL_CASCADE, formatModelName, updateHwUsageFromServer } from './hwsearch.js';
 export { updateHwUsageFromServer };
 
-export const APP_VER = 'v97';
+export const APP_VER = 'v98';
 const SERVER = 'https://inkleaf-sync.yadmewal.workers.dev';
 // drive.appdata: Inkleaf's hidden app folder (files it syncs); drive.file: only files Inkleaf itself creates, used
 // for the visible "Inkleaf" folder holding copies of the PDFs under their real names.
@@ -68,6 +68,9 @@ function setStatus(state, text) {
 const inFlightDocs = new Set(), inFlightFolders = new Set();
 const pendingDocs = new Set(), pendingFolders = new Set();
 const assetDocs = new Map(); // assetId -> Set<docId>
+const readyAssets = new Set(); // assetId confirmed locally present (data or deleted)
+let docFolderMap = null, folderParentMap = null;
+const staleDocMeta = new Set(), staleFolderMeta = new Set();
 let curTargets = { docs: new Set(), folders: new Set() };
 let targetsRunning = false, targetsAgain = false;
 
@@ -86,6 +89,37 @@ function scheduleTargetsUpdate() {
     targetsRunning = false;
     if (targetsAgain) { targetsAgain = false; scheduleTargetsUpdate(); }
   });
+}
+
+async function ensureTargetMaps() {
+  if (!docFolderMap || !folderParentMap) {
+    staleDocMeta.clear();
+    staleFolderMeta.clear();
+    const [allDocs, allFolders] = await Promise.all([db.all('docs').catch(() => []), db.all('folders').catch(() => [])]);
+    docFolderMap = new Map(allDocs.map(d => [d.id, d.folderId || null]));
+    folderParentMap = new Map(allFolders.map(f => [f.id, f.parentId || null]));
+    return;
+  }
+  if (staleDocMeta.size) {
+    const ids = [...staleDocMeta];
+    staleDocMeta.clear();
+    const recs = await Promise.all(ids.map(id => db.get('docs', id).catch(() => null)));
+    for (let i = 0; i < ids.length; i++) {
+      const r = recs[i];
+      if (r && !r.deleted) docFolderMap.set(ids[i], r.folderId || null);
+      else docFolderMap.delete(ids[i]);
+    }
+  }
+  if (staleFolderMeta.size) {
+    const ids = [...staleFolderMeta];
+    staleFolderMeta.clear();
+    const recs = await Promise.all(ids.map(id => db.get('folders', id).catch(() => null)));
+    for (let i = 0; i < ids.length; i++) {
+      const r = recs[i];
+      if (r && !r.deleted) folderParentMap.set(ids[i], r.parentId || null);
+      else folderParentMap.delete(ids[i]);
+    }
+  }
 }
 
 async function refreshSyncTargets() {
@@ -108,6 +142,7 @@ async function refreshSyncTargets() {
             assetDocs.get(aid).add(p.docId);
           }
         }
+        for (const aid of qAssetIds) if (!assetDocs.has(aid)) assetDocs.set(aid, new Set());
       }
       for (const aid of qAssetIds) {
         const set = assetDocs.get(aid);
@@ -115,25 +150,23 @@ async function refreshSyncTargets() {
       }
     }
     if (docs.size || folders.size) {
-      const [allDocs, allFolders] = await Promise.all([db.all('docs').catch(() => []), db.all('folders').catch(() => [])]);
-      const docMap = new Map(allDocs.map(d => [d.id, d]));
-      const folderMap = new Map(allFolders.map(f => [f.id, f]));
+      await ensureTargetMaps();
       const addAncestors = startFid => {
         const seen = new Set();
         let fid = startFid;
-        while (fid && !seen.has(fid) && folderMap.has(fid)) {
+        while (fid && !seen.has(fid) && folderParentMap.has(fid)) {
           seen.add(fid);
           folders.add(fid);
-          fid = folderMap.get(fid).parentId;
+          fid = folderParentMap.get(fid);
         }
       };
       for (const did of docs) {
-        const d = docMap.get(did);
-        if (d && d.folderId) addAncestors(d.folderId);
+        const fid = docFolderMap.get(did);
+        if (fid) addAncestors(fid);
       }
       for (const fid of [...folders]) {
-        const f = folderMap.get(fid);
-        if (f && f.parentId) addAncestors(f.parentId);
+        const pid = folderParentMap.get(fid);
+        if (pid) addAncestors(pid);
       }
     }
   }
@@ -293,6 +326,9 @@ export async function signOut() {
   lastSharedFetch = 0; lastMySharesFetch = 0;
   inFlightDocs.clear(); inFlightFolders.clear();
   pendingDocs.clear(); pendingFolders.clear();
+  assetDocs.clear(); readyAssets.clear();
+  docFolderMap = null; folderParentMap = null;
+  staleDocMeta.clear(); staleFolderMeta.clear();
   st = {}; cursor = 0;
   await db.setMeta('cloud', null);
   await db.setMeta('cloudState', {});
@@ -332,12 +368,24 @@ export function updateCfUsageFromServer(serverCalls, serverLimit, merged = true,
     usage.calls = serverCalls;
     changed = true;
   }
-  if (typeof serverTotal === 'number' && serverTotal >= (usage.totalCalls || 0)) {
-    usage.totalCalls = serverTotal;
-    changed = true;
-  }
   if (Array.isArray(serverUsers)) {
-    usage.users = serverUsers.map(x => ({ me: !!x.me, label: x.label, cfCalls: Number(x.cfCalls) || 0 }));
+    usage.users = serverUsers.map(x => ({
+      me: !!x.me,
+      label: x.label,
+      cfCalls: x.me ? Math.max(Number(x.cfCalls) || 0, usage.calls || 0) : (Number(x.cfCalls) || 0)
+    }));
+    changed = true;
+  } else if (Array.isArray(usage.users)) {
+    const me = usage.users.find(x => x.me);
+    if (me && (usage.calls || 0) > (me.cfCalls || 0)) {
+      me.cfCalls = usage.calls;
+      changed = true;
+    }
+  }
+  const usersSum = Array.isArray(usage.users) ? usage.users.reduce((s, x) => s + (x.cfCalls || 0), 0) : 0;
+  const bestTotal = Math.max(usage.totalCalls || 0, typeof serverTotal === 'number' ? serverTotal : 0, usage.calls || 0, usersSum);
+  if (bestTotal !== (usage.totalCalls || 0)) {
+    usage.totalCalls = bestTotal;
     changed = true;
   }
   if (typeof serverLimit === 'number' && serverLimit > 0) {
@@ -358,11 +406,12 @@ export function updateCfUsageFromServer(serverCalls, serverLimit, merged = true,
 export function recordCfCall(endpoint = '') {
   const usage = getCfUsage();
   usage.calls = (usage.calls || 0) + 1;
-  usage.totalCalls = Math.max(usage.totalCalls || 0, (usage.calls || 1) - 1) + 1;
   if (Array.isArray(usage.users)) {
     const me = usage.users.find(x => x.me);
     if (me) me.cfCalls = Math.max(me.cfCalls || 0, usage.calls);
   }
+  const usersSum = Array.isArray(usage.users) ? usage.users.reduce((s, x) => s + (x.cfCalls || 0), 0) : 0;
+  usage.totalCalls = Math.max((usage.totalCalls || 0) + 1, usage.calls, usersSum);
   usage.lastCall = Date.now();
   usage.lastEndpoint = endpoint;
   try {
@@ -654,7 +703,7 @@ async function pushAsset(id) {
 async function pullAsset(id, item) {
   const name = 'a_' + id;
   const have = await db.get('assets', id);
-  if (have && (have.data || have.deleted)) { if (!st[name]) st[name] = item && item.s ? { s: item.s } : { drive: 1 }; return false; }
+  if (have && (have.data || have.deleted)) { readyAssets.add(id); if (!st[name]) st[name] = item && item.s ? { s: item.s } : { drive: 1 }; return false; }
   let rec = null;
 
   // 1. Try Cloudflare sync service first (super fast CDN edge streaming)
@@ -692,18 +741,33 @@ async function pullAsset(id, item) {
 
   if (!rec) return false;
   await db.put('assets', rec, true);
+  readyAssets.add(id);
   bus.emit('remote-record', { kind: 'a', rec: { id } });
   return true;
 }
 
 // Files the pages here use but this device does not have yet (they arrive by Drive, not in the change feed).
+// Deduplicates by asset id first so a multi-hundred-page PDF triggers at most one IndexedDB lookup (and zero once cached).
 async function fetchMissingFiles(pages, priority = false) {
+  const byAsset = new Map();
   for (const p of pages) {
     if (p.deleted) continue;
     for (const id of assetIdsOf([p])) {
-      const a = await db.get('assets', id);
-      if (!a || (!a.data && !a.deleted)) queueAsset(id, 'pull', priority, p.docId);
+      let set = byAsset.get(id);
+      if (!set) byAsset.set(id, set = new Set());
+      if (p.docId) set.add(p.docId);
     }
+  }
+  for (const [id, docIds] of byAsset) {
+    if (docIds.size) {
+      let ad = assetDocs.get(id);
+      if (!ad) assetDocs.set(id, ad = new Set());
+      for (const did of docIds) ad.add(did);
+    }
+    if (readyAssets.has(id)) continue;
+    const a = await db.get('assets', id);
+    if (a && (a.data || a.deleted)) readyAssets.add(id);
+    else queueAsset(id, 'pull', priority);
   }
 }
 
@@ -797,6 +861,11 @@ async function applyRemote(item) {
     // Only store it if the local record did not change while we were downloading; otherwise retry next round.
     if (!await db.putIf(store, m, L ? L.modified : undefined)) return false;
     st[name] = { lm: m === R ? R.modified : -1, s: item.s };
+    if (kind === 'd' && docFolderMap) {
+      if (m.deleted) docFolderMap.delete(m.id); else docFolderMap.set(m.id, m.folderId || null);
+    } else if (kind === 'f' && folderParentMap) {
+      if (m.deleted) folderParentMap.delete(m.id); else folderParentMap.set(m.id, m.parentId || null);
+    }
     if (m !== R) await pushRecord(kind, m);
     bus.emit('remote-record', { kind, rec: m });
     if (kind === 'p') fetchMissingFiles([m]).catch(() => {});
@@ -836,6 +905,7 @@ async function pullChanges() {
       const used = assetIdsOf((await db.all('pages')).filter(p => !p.deleted));
       for (const it of gone) {
         delete st['a_' + it.id];
+        readyAssets.delete(it.id);
         if (used.has(it.id)) queueAsset(it.id, 'up');
         else if (await db.get('assets', it.id)) await db.put('assets', { id: it.id, deleted: true, modified: Date.now() }, true);
       }
@@ -1081,6 +1151,9 @@ export async function initSync() {
     wired = true;
     bus.on('db-write', w => {                                                     // something was saved locally
       writeSeq++;
+      if (w && w.s === 'assets') for (const id of w.ids || []) readyAssets.delete(id);
+      if (w && w.s === 'docs' && docFolderMap) for (const id of w.ids || []) staleDocMeta.add(id);
+      if (w && w.s === 'folders' && folderParentMap) for (const id of w.ids || []) staleFolderMeta.add(id);
       if (savedPages && w && w.s === 'pages') for (const id of w.ids) savedPages.add(id);
       if (session && !off) {
         if (w && Array.isArray(w.docIds)) for (const id of w.docIds) pendingDocs.add(id);
@@ -1088,10 +1161,10 @@ export async function initSync() {
         pushSoon();
       }
     });
-    bus.on('editor-open', async id => {
+    bus.on('editor-open', async (id, pages) => {
       openDocs.add(id);
       try {
-        const docPages = await db.byDoc(id);
+        const docPages = Array.isArray(pages) ? pages : await db.byDoc(id);
         await fetchMissingFiles(docPages, true); // Prioritize open notebook/PDF assets
       } catch {}
       if (ready()) { run(pullChanges, false); }
@@ -1101,10 +1174,8 @@ export async function initSync() {
     bus.on('folder-open', async folderId => {
       try {
         const docs = (await db.all('docs')).filter(d => !d.deleted && !d.trashed && (folderId ? d.folderId === folderId : true));
-        for (const d of docs) {
-          const docPages = await db.byDoc(d.id);
-          await fetchMissingFiles(docPages, true); // Prioritize open folder's notebooks
-        }
+        const allPages = (await Promise.all(docs.map(d => db.byDoc(d.id)))).flat();
+        await fetchMissingFiles(allPages, true); // Prioritize open folder's notebooks
       } catch {}
     });
     window.addEventListener('online', () => { if (ready()) { fullRun(false); openLive(); } });

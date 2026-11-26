@@ -190,8 +190,12 @@ if (API) await step('server tests', async () => {
     && meBody.usageUsers.some(u => u.label === 'You' && u.me)
     && meBody.usageUsers.some(u => /^Other user/.test(u.label) && !u.me)
     && !/test\.local/i.test(JSON.stringify(meBody.usageUsers))
-    && meBody.cfTotalToday >= meBody.cfCallsToday,
+    && meBody.cfTotalToday >= meBody.cfCallsToday
+    && meBody.cfTotalToday === meBody.usageUsers.reduce((s, x) => s + x.cfCalls, 0),
     meBody.usageUsers);
+  for (let i = 0; i < 4; i++) await put('p', 'pg' + i, { id: 'pg' + i, docId: 'doc1', items: [{ id: 's' + i }] }, { docId: 'doc1' });
+  const meAfter = await js(await call(own.token, '/me'));
+  ok('cumulative usage stays exact after page mutations', meAfter.cfTotalToday === meAfter.usageUsers.reduce((s, x) => s + x.cfCalls, 0), meAfter.usageUsers);
   ok('direct OCR report increments cumulative Gemini usage', (await call(own.token, '/usage-ocr', { method: 'POST' })).status === 200 && (await js(await call(own.token, '/me'))).ocrTotalToday >= 1);
   ok('internal config and usage routes stay blocked outside', (await call('22222.fake', '/config/allowed')).status === 404 && (await call('22222.fake', '/usage/summary')).status === 404);
   ok('only owner can manage allowed users in-app',
@@ -355,6 +359,23 @@ if (!process.argv.includes('--quick')) {
     // nothing left behind
     const left = await c.ev(`const u=await import('/js/util.js');location.hash='#/';await new Promise(r=>setTimeout(r,1000));const real=u.bus.on;let n=0;u.bus.on=(...x)=>{n++;const off=real.apply(u.bus,x);let z=false;return()=>{if(!z){z=true;n--;}return off();};};for(let i=0;i<3;i++){location.hash='#/d/${id}';await new Promise(r=>setTimeout(r,900));location.hash='#/x'+i;await new Promise(r=>setTimeout(r,900));}const a=n;location.hash='#/d/${id}';await new Promise(r=>setTimeout(r,900));location.hash='#/y';await new Promise(r=>setTimeout(r,900));u.bus.on=real;return n-a`);
     ok('opening notebooks leaves nothing behind', left === 0, `${left} listeners per visit`);
+    const assetReads = await c.ev(`${E.D}const S=await import('/js/sync.js'),U=await import('/js/util.js');
+      await D.db.put('assets',{id:'shared_pdf_test',mime:'application/pdf',name:'s.pdf',data:new Uint8Array(32).buffer,modified:Date.now()},true);
+      const makeBig=async t=>{const d=await D.createDoc({title:t});const ps=[];for(let i=0;i<39;i++){const p=D.newPage(d.id,{w:d.w,h:d.h,pdf:{a:'shared_pdf_test',i}});ps.push(p);d.pages.push(p.id);}await D.db.putMany('pages',ps);d.thumb='data:image/gif;base64,R0lGODlhAQABAAAAACw=';d.modified=Date.now();await D.db.put('docs',d);return d.id;};
+      const d1=await makeBig('PDF A'),d2=await makeBig('PDF B');
+      const realGet=D.db.get;let reads=0;D.db.get=(s,k)=>{if(s==='assets'&&k==='shared_pdf_test')reads++;return realGet(s,k);};
+      location.hash='#/d/'+d1;await new Promise(r=>setTimeout(r,800));
+      const tabB=[...document.querySelectorAll('.tabs .tab')].find(t=>t.title==='PDF B'||t.textContent.includes('PDF B'));
+      if(tabB)tabB.click();else location.hash='#/d/'+d2;
+      await new Promise(r=>setTimeout(r,800));
+      const tabA=[...document.querySelectorAll('.tabs .tab')].find(t=>t.title==='PDF A'||t.textContent.includes('PDF A'));
+      const clickedTab=!!tabA;
+      if(tabA)tabA.click();else location.hash='#/d/'+d1;
+      await new Promise(r=>setTimeout(r,800));
+      D.db.get=realGet;
+      const cfU=S.updateCfUsageFromServer(10,100000,true,10,[{me:true,label:'You',cfCalls:9}]);
+      return {reads,clickedTab,okCf:cfU.users[0].cfCalls>=cfU.calls&&cfU.totalCalls>=cfU.users[0].cfCalls};`);
+    ok('switching multi-page PDF tabs avoids repeated asset reads', assetReads.clickedTab && assetReads.reads <= 1 && assetReads.okCf, assetReads);
     await c.ev(`(await import('/js/sync.js')).openSettings()`); await sleep(700);
     ok('Settings opens', await c.ev(`return !!document.querySelector('dialog')`));
     ok('Settings shows the top account card', await c.ev(`return !!document.querySelector('dialog .account-card')`));

@@ -366,9 +366,9 @@ export class User extends DurableObject {
       const u = this.trackUsage(isGemini, 1);
 
       const resp = await this._fetch(req);
-      const isMutation = (p[0] === 'blob' && (req.method === 'PUT' || req.method === 'DELETE')) || p[0] === 'commit';
-      if (isGemini || isMutation || !this._lastGlobalDate || this._lastGlobalDate !== u.date || (u.cfCalls - (this._lastGlobalCf || 0) >= 10)) {
-        this.ctx.waitUntil(this.syncGlobalUsage(isGemini || isMutation));
+      const isStrongMutation = (p[0] === 'blob' && (req.method === 'DELETE' || p[1] === 'a')) || p[0] === 'commit';
+      if (isGemini || isStrongMutation || !this._lastGlobalDate || this._lastGlobalDate !== u.date || (u.cfCalls - (this._lastGlobalCf || 0) >= 10)) {
+        this.ctx.waitUntil(this.syncGlobalUsage(isGemini || isStrongMutation));
       }
       if (resp.status === 101) return resp; // a WebSocket hand-over cannot be rewrapped
       const h = new Headers(resp.headers);
