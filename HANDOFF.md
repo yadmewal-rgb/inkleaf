@@ -1,7 +1,8 @@
 # Handoff
 
-**Written:** 2026-11-26, about 20:50, by Claude Code. **Next:** Claude Code or agy.
-**State:** nothing half-done. **v100** is live. Only this note is newer (on this PC, goes up with the next release).
+**Written:** 2026-11-26, about 21:00, by Claude Code. **Next:** Claude Code or agy.
+**State:** nothing half-done, working tree clean. **v100** is live. Only the notes are newer (committed on this PC, not pushed:
+they go up with the next release, so no extra build).
 
 ## Live now
 - App **v100** (`999a7a1`) on GitHub Pages; sync server from the same commit (unchanged since v99). `tests/check.cmd` in the
@@ -22,7 +23,7 @@
   live connection and private-link guest is checked at most every 5 minutes (ALLOWED secret read at once), so people taken
   out of Cloudflare ALLOWED, or never mapped, go too. No answer = allowed: a failed question never signs anybody out.
   Checks: at once, old key refused, never-allowed refused, allowed people stay. They fail on the v98 server (proved).
-- **Folder colours.** `folderColorOf(id)` = chosen colour, else from the folder's id (no list position any more). The whole
+- **Folder colours.** `folderColorOf(folder)` = chosen colour, else from the folder's id (no list position any more). The whole
   folder takes it: tinted cover with a filled folder sign on folder cards (corner dot gone), coloured folder signs in the
   sidebar and on notebook cards, coloured folders in the chooser (`.fc-*`, `--fc` in app.css). Some automatic colours changed
   once. (Chosen colours were per device in v99; they sync from v100.) Pictures:
@@ -30,15 +31,24 @@
 - **Proof:** the faster check on v93's app (with today's server) fails 10 two-device checks (uploads while both open, undone
   rename/move/bin). It still catches the old bugs.
 
-## Earlier today
-- App **v98** (`055440f`, by agy). Full `tests/check.cmd` on it in the owner's Chrome: 144 passed (agy could only run `--quick`).
+## Earlier today, by agy (between 2026-11-25 13:41 and 2026-11-26 19:28)
+- **v97** (`ad0b60c`): OneDrive-style spinning sync signs on folders and notebooks; owner-only "Allowed users" in Settings
+  (add friends without Cloudflare); Sign out easy to find (account card, sidebar); combined usage "You" / "Other user".
+- **v98** (`055440f`): faster switching between open notebooks (PDF read once, fewer full scans); usage counters consistent.
+- agy could only run `tests/check.cmd --quick`; the full check on v98 in the owner's Chrome (run by Claude Code): 144 passed.
 
-## Owner's words on 2026-11-26 (to Claude Code)
-1. "inkleaf" -> read the handoff; 2. "check handoff" -> agy had made v97 + v98 meanwhile; 3. "yes agy is closed, go" (full
-check + read v97/v98); 4. "check only failed and which take more time than required"; 5. "okay" (make the check faster);
-6. "yes go" (run it).
+## Owner's words on 2026-11-26 (to Claude Code), in order
+1. "inkleaf" -> read the handoff
+2. "check handoff" -> agy had made v97 + v98 meanwhile; full check never run on them
+3. "yes agy is closed, go" -> full check + read v97/v98 code
+4. "check only failed and which take more time than required" -> `--only`, time report
+5. "okay" (make the check faster); "yes go" (run it)
+6. "1 make it , 2 color the whole folder not only dot , 3 okay" -> sign-out on removal, coloured folders, v93 proof
+7. "1" (run the check), "and 2 also and go" (pictures, publish) -> v99
+8. "... why didnt you make it syncking ?" -> "yes make it and go" -> v100
+9. "is it done ?" -> yes; "save it all to handoff"
 
-## Done today (tests only, app untouched)
+## The checks (tests/), changed today (before v99)
 - agy's v98 check "switching multi-page PDF tabs avoids repeated asset reads" was wrong, not the app: it used 32 empty bytes as a
   PDF, which pdf.js cannot open, so every page tried again (7 reads). With a real 39-page PDF: 2 reads in all (one by sync's
   `readyAssets`, one by `pdfDoc`), none per tab switch. The check now makes a real PDF and allows 2.
@@ -52,9 +62,16 @@ check + read v97/v98); 4. "check only failed and which take more time than requi
   owner-only and the internal `app_config` / `app_usage` objects cannot be reached from outside (keys must be digits).
   Saving still happens on switching notebooks (`destroy()` does `commitText` + `flush`).
 - An earlier failure "one finger held opens the menu" was the tab being out of sight; it passes.
+- How long now: code 1 s, server 8 s, library 11 s, writing 41 s, two devices 51 s; about 2 minutes in all.
 
-## Open questions
-- None asked.
+## Mistakes made today (told to the owner)
+- A patch script stopped halfway and the next line started the old full check in the owner's Chrome without asking; stopped
+  after about 2 minutes, nothing harmed. Lesson: never chain a check run after a patch step in one command.
+- A first "before" picture captured the whole laptop screen (the terminal covered Chrome) and was deleted unseen by anyone.
+  Pictures are now taken in a hidden Chrome of the page only (scratchpad `folder_pics.mjs`; not in the project).
+
+## Next step
+Wait for the owner's view of v100 on the iPad and phone, or new notes in "Temp". No question is waiting.
 
 ## What the owner must do
 1. Reload Inkleaf twice on every device (friends too) until Settings shows **v100**; try switching between open PDF notebooks
@@ -70,4 +87,4 @@ check + read v97/v98); 4. "check only failed and which take more time than requi
 - Two real changes to one notebook at once: the later one wins for name, folder and bin.
 - In portrait a sliver of the editor's tool bar shows right of the "..." button.
 
-Pictures: AgentTools\shots (`v93_*` to `v96_*`).
+Pictures: AgentTools\shots (`v93_*` to `v96_*`, `v99_before_*`, `v99_after_*`).
