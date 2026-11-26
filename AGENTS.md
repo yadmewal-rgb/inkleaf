@@ -77,7 +77,8 @@ raise the version in BOTH `sw.js` (CACHE) and `js/sync.js` (APP_VER, shown in Se
 - Library (owner's drawing, 2026-11-25): while the sidebar is open, the name and the sidebar button are ONLY in the sidebar
   (the button sits where the X was); the top bar shows them only while the sidebar is closed. Don't bring the copy back.
 - Folders (owner, 2026-11-26): one colour per folder everywhere (`folderColorOf(id)`, never by list position), and the
-  WHOLE folder is coloured (cover and folder signs), not a dot. Don't bring the dots back.
+  WHOLE folder is coloured (cover and folder signs), not a dot. Don't bring the dots back. A chosen colour lives in the
+  folder record (`color`) and syncs (v100).
 - Apple Pencil double-tap/squeeze are not available to web apps (pressure, tilt, hover are).
 - Screenshots for chat: Always capture and resize website/desktop screenshots at full 1000px width with high DPI (`shots.ps1 ... -Width 1000` or `--force-device-scale-factor=1.5`) so all menus, text, and labels are crisp and easy to read.
 - Pomodoro & Clock Widget specifications (owner chosen):

@@ -1,11 +1,19 @@
 # Handoff
 
-**Written:** 2026-11-26, about 20:25, by Claude Code. **Next:** Claude Code or agy.
-**State:** nothing half-done. **v99** is live. Only this note is newer (on this PC, goes up with the next release).
+**Written:** 2026-11-26, about 20:50, by Claude Code. **Next:** Claude Code or agy.
+**State:** nothing half-done. **v100** is live. Only this note is newer (on this PC, goes up with the next release).
 
 ## Live now
-- App **v99** (`9d0c3d1`) on GitHub Pages and the sync server from the same commit. `tests/check.cmd` in the owner's Chrome:
-  **150 passed, 0 failed** (112 s); `tests/after-publish.cmd`: **ALL GOOD** (Cloudflare build success).
+- App **v100** (`999a7a1`) on GitHub Pages; sync server from the same commit (unchanged since v99). `tests/check.cmd` in the
+  owner's Chrome: **153 passed, 0 failed** (115 s); `tests/after-publish.cmd`: **ALL GOOD**.
+
+## v100 (owner: "why didnt you make it syncking ?" -> "yes make it and go")
+- Chosen folder colours sync: kept in the folder record (`color`, set by `setFolderColor(folder, key)` with `modified`, so
+  the later choice wins like a rename). `moveLocalFolderColors()` moves the old per-device localStorage colours into the
+  folders whenever the library opens and that key still exists (a colour already synced in is kept), then removes the key.
+- Found by the new check: while a notebook was open, `pushNow` only pushed that notebook, so folder changes (now colours;
+  before also e.g. a folder made from the editor) waited until it closed. `savedFolders` now go up with it.
+- The first v100 check failed on both points (not published then); fixed, then 153/153.
 
 ## v99 (owner: "1 make it , 2 color the whole folder not only dot , 3 okay", then "1", "and 2 also and go")
 - **Removing a user signs them out.** Settings > Allowed users > Remove: `revokeAll()` on their Durable Object deletes every
@@ -17,7 +25,7 @@
 - **Folder colours.** `folderColorOf(id)` = chosen colour, else from the folder's id (no list position any more). The whole
   folder takes it: tinted cover with a filled folder sign on folder cards (corner dot gone), coloured folder signs in the
   sidebar and on notebook cards, coloured folders in the chooser (`.fc-*`, `--fc` in app.css). Some automatic colours changed
-  once. Chosen colours are still per device (localStorage `inkleaf.folderColors`, not synced). Pictures:
+  once. (Chosen colours were per device in v99; they sync from v100.) Pictures:
   AgentTools/shots/v99_before_* and v99_after_* (taken in a hidden Chrome with its own empty profile; testing was in the owner's).
 - **Proof:** the faster check on v93's app (with today's server) fails 10 two-device checks (uploads while both open, undone
   rename/move/bin). It still catches the old bugs.
@@ -46,10 +54,10 @@ check + read v97/v98); 4. "check only failed and which take more time than requi
 - An earlier failure "one finger held opens the menu" was the tab being out of sight; it passes.
 
 ## Open questions
-- None asked. Possible next: sync chosen folder colours between devices (now per device).
+- None asked.
 
 ## What the owner must do
-1. Reload Inkleaf twice on every device (friends too) until Settings shows **v99**; try switching between open PDF notebooks
+1. Reload Inkleaf twice on every device (friends too) until Settings shows **v100**; try switching between open PDF notebooks
    on the iPad, and look at the coloured folders.
 2. Friends: open Settings once so they appear in the usage count.
 3. Problems go into the "Temp" notebook.
