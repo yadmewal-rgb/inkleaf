@@ -1,39 +1,52 @@
 # Handoff
 
-**Written:** 2026-11-26, about 19:21, by agy (Antigravity). **Next:** agy or Claude Code.
-**State:** **v98** (`055440f`) is pushed and live everywhere. Working tree has only this handoff note committed locally (not pushed, so it goes up with the next release without triggering an extra build).
+**Written:** 2026-11-26, about 20:30, by Claude Code. **Next:** Claude Code or agy.
+**State:** nothing half-done. The app is unchanged since v98; today's commits are tests and notes only, kept on this PC (not
+pushed: they go up with the next release, so no extra build).
 
 ## Live now
-- App **v98** (commit `055440f`) on GitHub Pages (`https://yadmewal-rgb.github.io/inkleaf/`).
-- Sync service (`server/worker.js` from `055440f`) on Cloudflare (`https://inkleaf-sync.yadmewal.workers.dev`); Cloudflare build `success`, `tests/after-publish.cmd`: **ALL GOOD**.
+- App **v98** (`055440f`, by agy) on GitHub Pages; sync server from the same commit; `tests/after-publish.cmd` ALL GOOD (agy).
+- **Full `tests/check.cmd` on v98 in the owner's own Chrome: 144 passed, 0 failed, 111 s** (agy could only run `--quick`).
 
-## Owner's words on 2026-11-26
-1. `i think after this update when i switch between opend notebook , it take more time then earlier and also check cloudflare usage`
-2. `push live`
+## Owner's words on 2026-11-26 (to Claude Code)
+1. "inkleaf" -> read the handoff; 2. "check handoff" -> agy had made v97 + v98 meanwhile; 3. "yes agy is closed, go" (full
+check + read v97/v98); 4. "check only failed and which take more time than required"; 5. "okay" (make the check faster);
+6. "yes go" (run it).
 
-## Done in v98 (`055440f`)
-1. **Faster open-notebook tab switching (`js/sync.js`, `js/editor.js`, `js/hwsearch.js`):**
-   - `fetchMissingFiles` deduplicates by asset ID before checking IndexedDB and caches locally verified assets in `readyAssets` (no more N-per-page full PDF reads on tab switch).
-   - `refreshSyncTargets` uses incremental cached `docFolderMap` / `folderParentMap` instead of full `db.all('docs')` / `db.all('folders')` scans on every sync tick.
-   - `mountEditor` batches startup reads (`Promise.all`), uses `warmDocIndexes` instead of `pages.forEach(p => pageIndex(p.id))`, passes `pages` to `editor-open`, skips redundant `flush()` in `switchTab`/`closeTab`, and in `destroy()` frees canvases (`releasePv`), marks `destroyed` in `renderPdfPage` stale checks, and skips re-rendering page 1's thumbnail unless `!doc.thumb` or page 0 changed.
-2. **Cloudflare usage & counter consistency (`js/sync.js`, `js/hwsearch.js`, `server/worker.js`):**
-   - Checked live Inkleaf Settings (`v97` before push): Cloudflare Sync Requests `3,018 / 100,000`, Cloudflare Storage `107 MB / 5.00 GB (2%)`, Daily AI Request Usage `39 / 1,500`, sync status `All in step.`.
-   - Kept the `You` usage pill consistent with `totalCalls` across concurrent Settings calls and pre-`v97` direct Gemini calls.
-   - Reduced extra `app_usage` Durable Object writes during regular stroke/page `PUT`s.
-   - Added regression checks in `tests/check.mjs`; bumped `sw.js` & `js/sync.js` to `v98`.
+## Done today (tests only, app untouched)
+- agy's v98 check "switching multi-page PDF tabs avoids repeated asset reads" was wrong, not the app: it used 32 empty bytes as a
+  PDF, which pdf.js cannot open, so every page tried again (7 reads). With a real 39-page PDF: 2 reads in all (one by sync's
+  `readyAssets`, one by `pdfDoc`), none per tab switch. The check now makes a real PDF and allows 2.
+- `--only=<parts>` (code, server, library, writing, devices) and a time report at the end.
+- Fixed waits replaced by `until(...)` / `settle()` (go on when ready, with a limit): about 180 s -> 111 s, no check removed.
+  "No uploads" checks first wait until uploads in progress end (`settle`), then watch 6 s (was 12) and name what was uploaded.
+- Found while doing that: each new device uploads its first weekly backup (kind `b`) 8 s after it starts (`autoBackup` in
+  sync.js). The old check missed it only by its timing. "No uploads" now counts the changes feed (f/d/p/a); a new check says
+  each device makes exactly one backup.
+- Read by eye: all of v97/v98 `server/worker.js`, the user manager in sync.js, the v98 editor changes. The user manager is
+  owner-only and the internal `app_config` / `app_usage` objects cannot be reached from outside (keys must be digits).
+  Saving still happens on switching notebooks (`destroy()` does `commitText` + `flush`).
+- An earlier failure "one finger held opens the menu" was the tab being out of sight; it passes.
 
-## Tested
-- `tests/check.cmd --quick`: **52 passed, 0 failed**.
-- `tests/after-publish.cmd`: **ALL GOOD** (`website inkleaf-v98`, Cloudflare build `success`, sync server answers `yes`).
-- Visible Chrome test on `http://localhost:8089/?profile=switchtest`: `Settings (v98)`, 6 tab switches between two multi-page notebooks with persistent notes, **0 console errors, 0 failed network requests**.
-
-## Not tested
-- Full `tests/check.cmd` in the owner's Chrome (`spawn(chrome.exe)` from this background runner could not open a tab: `the check tab did not open in Chrome`; `tests/check.cmd --quick` passed 52/52).
-- Real PDF file import via `chrome_devtools/upload_file` (blocked by MCP workspace-root check on local paths; multi-page PDF asset deduplication verified via `tests/check.mjs` and code review).
-- Cloudflare Dashboard (`https://dash.cloudflare.com/`) SQLite row-read/billing metrics (login page required).
-- Real iPad / real multi-user PDF switching on live **v98**.
+## Open questions (asked, not answered)
+1. **Removing an allowed user** (Settings > Allowed users, v97) does not sign them out: their devices keep syncing; only new
+   sign-ins are refused. Offered: removing also ends their sessions. (Same for addresses taken out of Cloudflare ALLOWED.)
+2. **Folder dots** (from v96): a folder without a chosen colour gets one by its sidebar position but is red elsewhere.
+   Offered: one fixed colour per folder from its id (`folderColorOf` in library.js), chosen colours kept.
+3. Offered: run the faster check on an old copy (v93, `INKLEAF_ROOT`) to prove it still catches the old upload loop.
 
 ## What the owner must do
-1. Reload Inkleaf twice on iPad, phone, and other devices until Settings shows **v98**, and test switching between open PDF notebooks on the iPad.
-2. Open Settings once on any friend accounts so they register in the cumulative usage tracker.
-3. Optional: if you still want Cloudflare Dashboard's internal SQLite row-read charts checked, sign into `https://dash.cloudflare.com/` in Chrome and ask.
+1. Reload Inkleaf twice on every device (friends too) until Settings shows **v98**; try switching between open PDF notebooks
+   on the iPad.
+2. Friends: open Settings once so they appear in the usage count.
+3. Answer the questions above. Problems go into the "Temp" notebook.
+
+## Not tested
+- The real iPad and phone; signed-in sync on the real account; the Cloudflare dashboard's own usage charts (needs sign-in).
+
+## Seen, not changed (from 2026-11-25, still true)
+- Opening a notebook changes its "Last edited" date and its place in that sort order.
+- Two real changes to one notebook at once: the later one wins for name, folder and bin.
+- In portrait a sliver of the editor's tool bar shows right of the "..." button.
+
+Pictures: AgentTools\shots (`v93_*` to `v96_*`).

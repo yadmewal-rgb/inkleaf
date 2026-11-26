@@ -12,7 +12,7 @@ import { ESLint } from 'eslint';
 import globals from 'globals';
 import postcss from 'postcss';
 import { Miniflare } from 'miniflare';
-import { ownChrome, INJECT, sleep, waited } from './lib.mjs';
+import { ownChrome, INJECT, sleep, pause, waited } from './lib.mjs';
 
 const here = path.dirname(new URL(import.meta.url).pathname.replace(/^\/(\w:)/, '$1'));
 const ROOT = path.resolve(process.env.INKLEAF_ROOT || path.join(here, '..'));
@@ -60,6 +60,13 @@ const tstep = async (part, name, fn) => {
   mark();
   await step(name, fn);
   parts.push({ name, ms: Date.now() - t0, wait: waited() - w0 });
+};
+// Goes on as soon as fn() gives a truthy value (asked every 150 ms, for at most about `max` ms) and returns the last
+// value; a check after it still decides. Used instead of fixed waits, so the check takes only as long as the app needs.
+const until = async (fn, max = 8000) => {
+  let v;
+  for (let t = 0; t < max; t += 150) { v = await fn().catch(() => undefined); if (v) return v; await pause(150); }
+  return v;
 };
 const fresh = () => Math.random().toString(36).slice(2, 8); // a new test library every time, whatever older tabs still do
 
@@ -243,6 +250,8 @@ if (!process.argv.includes('--quick') && (want('library') || want('writing') || 
   const key = (k, o = '') => c.ev(`document.activeElement?.blur();for(const t of ['keydown','keyup'])document.body.dispatchEvent(new KeyboardEvent(t,{key:'${k}',${o}bubbles:true}));await new Promise(r=>setTimeout(r,250));`);
   const pops = () => c.ev(`return document.querySelectorAll('.pop').length`);
   const noPops = `document.querySelectorAll('.pop').forEach(p=>p.remove());`;
+  const edReady = `const q=document.querySelector('.pageind');return !!(document.querySelector('.vp')&&q&&q.textContent.trim())`; // a notebook is open
+  const edGone = `return !document.querySelector('.vp')`;
   if (want('library')) await section('library', async () => {
     c.errors.length = 0;
     const clear = `for(const k of ['hw','geminiModel','sidebarCollapsed'])localStorage.removeItem('inkleaf.'+k);`;
@@ -293,9 +302,16 @@ if (!process.argv.includes('--quick') && (want('library') || want('writing') || 
     await c.go(`${WEB}/?profile=check${fresh()}`);
     noErrors('the library opens');
     const id = await c.ev(`${E.D}const d=await D.createDoc({title:'Check'});return d.id`);
-    const open = async () => { await c.ev(`location.hash='#/d/${id}'`); await sleep(1700); };
-    const reopen = async () => { await c.ev(noPops + `location.hash='#/'`); await sleep(1300); await open(); };
-    const items = async () => { await sleep(700); return c.ev(`${E.D}return (await D.db.byDoc('${id}'))[0].items`); };
+    const open = async (q = '') => { await c.ev(`location.hash='#/d/${id}${q}'`); await until(() => c.ev(edReady)); await sleep(400); };
+    const closed = async () => { await until(() => c.ev(edGone), 6000); await sleep(200); }; // the editor is gone once it has saved
+    const reopen = async () => { await c.ev(noPops + `location.hash='#/'`); await closed(); await open(); };
+    // The page's items; with want(items), as soon as they are what is expected (saving takes a moment).
+    const items = async want => {
+      const get = () => c.ev(`${E.D}return (await D.db.byDoc('${id}'))[0].items`);
+      if (!want) { await sleep(700); return get(); }
+      return (await until(async () => { const v = await get(); return want(v) && v; }, 4000)) || get();
+    };
+    const count = n => v => v.length === n;
     await open();
     noErrors('a notebook opens');
     for (const [k, want] of Object.entries({ h: 'Highlighter', e: 'Eraser', l: 'Select', s: 'Shapes', t: 'Text', a: 'Tape', k: 'Laser', p: 'Pen' })) {
@@ -303,30 +319,30 @@ if (!process.argv.includes('--quick') && (want('library') || want('writing') || 
       const on = await c.ev(`return (document.querySelector('.toolset .tool.on')||{}).title||''`);
       ok(`key ${k.toUpperCase()} chooses ${want}`, on.startsWith(want), on);
     }
-    await draw([[300, 300], [360, 270], [420, 320], [480, 280]], 'pen'); ok('the pen draws', (await items()).length === 1);
-    await key('h'); await draw([[300, 380], [600, 380]], 'pen'); ok('the highlighter draws', (await items()).length === 2);
-    await key('s'); await draw([[300, 430], [450, 520]], 'pen'); ok('shapes draw', (await items()).length === 3);
-    await key('a'); await draw([[520, 430], [700, 430]], 'pen'); ok('tape draws', (await items()).length === 4);
-    await key('e'); await draw([[380, 250], [380, 340]], 'pen'); ok('the eraser erases', (await items()).length === 3);
-    await key('z', 'ctrlKey:true,'); ok('undo', (await items()).length === 4);
-    await key('y', 'ctrlKey:true,'); ok('redo', (await items()).length === 3);
+    await draw([[300, 300], [360, 270], [420, 320], [480, 280]], 'pen'); ok('the pen draws', (await items(count(1))).length === 1);
+    await key('h'); await draw([[300, 380], [600, 380]], 'pen'); ok('the highlighter draws', (await items(count(2))).length === 2);
+    await key('s'); await draw([[300, 430], [450, 520]], 'pen'); ok('shapes draw', (await items(count(3))).length === 3);
+    await key('a'); await draw([[520, 430], [700, 430]], 'pen'); ok('tape draws', (await items(count(4))).length === 4);
+    await key('e'); await draw([[380, 250], [380, 340]], 'pen'); ok('the eraser erases', (await items(count(3))).length === 3);
+    await key('z', 'ctrlKey:true,'); ok('undo', (await items(count(4))).length === 4);
+    await key('y', 'ctrlKey:true,'); ok('redo', (await items(count(3))).length === 3);
     await key('z', 'ctrlKey:true,');
     noErrors('drawing');
     await sleep(500); // (pen input just now would make the next touches count as a palm)
     await key('l'); await draw([[270, 240], [400, 235], [510, 240], [515, 300], [510, 345], [400, 350], [270, 345], [268, 300], [270, 242]]);
     ok('the lasso selects', await c.ev(`return !document.querySelector('.selbar').hidden`));
     await c.ev(`[...document.querySelectorAll('.selbar .ic')].find(x=>x.title==='Colour').click();await new Promise(r=>setTimeout(r,300));const s=document.querySelectorAll('.pop .sw');s[1].click();return s.length`);
-    const recoloured = await items();
+    const recoloured = await items(v => v.some(i => i.t === 's' && i.c === '#e03131'));
     ok('selected writing changes colour', recoloured.some(i => i.t === 's' && i.c === '#e03131'), recoloured.map(i => i.t + i.c));
     noErrors('pop-ups');
-    const n0 = (await items()).length;
+    const n0 = (await items(() => true)).length; // the recolouring above is saved already
     await c.ev(`document.activeElement?.blur();window.focus();await navigator.clipboard.writeText('OLD TEXT')`);
-    const ctrl = async k => { await key(k, 'ctrlKey:true,'); await sleep(900); };
-    await ctrl('c'); await ctrl('v');
-    let now = await items();
+    const ctrl = async (k, ms = 0) => { await key(k, 'ctrlKey:true,'); if (ms) await sleep(ms); };
+    await ctrl('c', 500); await ctrl('v');
+    let now = await items(v => v.length === n0 + 1);
     ok('copied writing is what gets pasted', now.length === n0 + 1 && !now.some(i => i.t === 'tx'), now.map(i => i.t));
     await c.ev(`await navigator.clipboard.writeText('NEW TEXT')`); await ctrl('v');
-    now = await items();
+    now = await items(v => v.some(i => i.s === 'NEW TEXT'));
     ok('text from another app pastes', now.some(i => i.s === 'NEW TEXT'));
     ok('everything has a place in the stack', now.every(i => i.z !== undefined));
     await key('p');
@@ -366,9 +382,9 @@ if (!process.argv.includes('--quick') && (want('library') || want('writing') || 
     // side by side pages, and turning the iPad
     await reopen();
     await c.ev(`${E.D}const d=await D.db.get('docs','${id}');for(let i=0;i<3;i++){const p=D.newPage(d.id,{w:d.w,h:d.h});await D.db.put('pages',p);d.pages.push(p.id);}d.modified=Date.now();await D.db.put('docs',d)`);
-    await c.ev(`location.hash='#/'`); await sleep(1300);
+    await c.ev(`location.hash='#/'`); await closed();
     await c.ev(`${E.D}const d=await D.db.get('docs','${id}');const p=(await D.db.byDoc('${id}')).filter(x=>!d.pages.includes(x.id));return p.length`);
-    await c.ev(`location.hash='#/d/${id}?p=2'`); await sleep(1700);
+    await open('?p=2');
     await c.ev(more + `const m=[...document.querySelectorAll('.pop .mi')].find(b=>/^Pages: down/.test(b.textContent.trim()));m.click()`); await sleep(900);
     const where = () => c.ev(`await new Promise(r=>requestAnimationFrame(()=>requestAnimationFrame(r)));const n=document.querySelector('.pageind').textContent.trim();const vr=document.querySelector('.vp').getBoundingClientRect();const pg=[...document.querySelectorAll('.world > *')].map(e=>e.getBoundingClientRect()).filter(r=>r.width>50&&r.height>50);const mid=vr.left+vr.width/2;const off=Math.min(...pg.map(r=>Math.abs(r.left+r.width/2-mid)));return {n,off:Math.round(off)}`);
     const a = await where();
@@ -379,7 +395,7 @@ if (!process.argv.includes('--quick') && (want('library') || want('writing') || 
     await c.size(1194, 834);
     noErrors('screen sizes');
     // nothing left behind
-    const left = await c.ev(`const u=await import('/js/util.js');location.hash='#/';await new Promise(r=>setTimeout(r,1000));const real=u.bus.on;let n=0;u.bus.on=(...x)=>{n++;const off=real.apply(u.bus,x);let z=false;return()=>{if(!z){z=true;n--;}return off();};};for(let i=0;i<3;i++){location.hash='#/d/${id}';await new Promise(r=>setTimeout(r,900));location.hash='#/x'+i;await new Promise(r=>setTimeout(r,900));}const a=n;location.hash='#/d/${id}';await new Promise(r=>setTimeout(r,900));location.hash='#/y';await new Promise(r=>setTimeout(r,900));u.bus.on=real;return n-a`);
+    const left = await c.ev(`const u=await import('/js/util.js');const W=async f=>{for(let t=0;t<6000&&!f();t+=50)await new Promise(r=>setTimeout(r,50));await new Promise(r=>setTimeout(r,250));};const on=()=>{${edReady}},off=()=>{${edGone}};location.hash='#/';await W(off);const real=u.bus.on;let n=0;u.bus.on=(...x)=>{n++;const off=real.apply(u.bus,x);let z=false;return()=>{if(!z){z=true;n--;}return off();};};for(let i=0;i<3;i++){location.hash='#/d/${id}';await W(on);location.hash='#/x'+i;await W(off);}const a=n;location.hash='#/d/${id}';await W(on);location.hash='#/y';await W(off);u.bus.on=real;return n-a`);
     ok('opening notebooks leaves nothing behind', left === 0, `${left} listeners per visit`);
     const assetReads = await c.ev(`${E.D}const S=await import('/js/sync.js'),U=await import('/js/util.js');
       if(!window.PDFLib)await new Promise((r,j)=>{const s=document.createElement('script');s.src='/vendor/pdf-lib.min.js';s.onload=r;s.onerror=j;document.head.append(s);});
@@ -411,8 +427,8 @@ if (!process.argv.includes('--quick') && (want('library') || want('writing') || 
   });
 
   if (API && want('devices')) await section('two devices', async () => {
-    console.log('   ...two devices (about a minute)');
-    c.log('Two devices (about a minute)', 'h');
+    console.log('   ...two devices (under a minute)');
+    c.log('Two devices (under a minute)', 'h');
     c.errors.length = 0;
     const me = '5' + Date.now(), run = fresh(); // a new account and new devices
     const s1 = await auth(me, 'owner'), s2 = await auth(me, 'owner'), guest = await auth('6' + Date.now(), 'friend');
@@ -421,34 +437,59 @@ if (!process.argv.includes('--quick') && (want('library') || want('writing') || 
     const seed = (p, s) => c.ev(`const o=indexedDB.open('inkleaf-${p}',1);await new Promise((r,j)=>{o.onupgradeneeded=()=>{const d=o.result;for(const n of ['folders','docs','assets'])d.createObjectStore(n,{keyPath:'id'});d.createObjectStore('pages',{keyPath:'id'}).createIndex('docId','docId');d.createObjectStore('meta',{keyPath:'k'});};o.onsuccess=r;o.onerror=j;});const t=o.result.transaction('meta','readwrite');t.objectStore('meta').put({k:'cloud',v:${JSON.stringify(s)}});t.objectStore('meta').put({k:'cloudServer',v:'${API}'});await new Promise(r=>t.oncomplete=r);o.result.close();`);
     await seed('da' + run, s1); await seed('db' + run, s2); await seed('dg' + run, guest);
     await c.ev(`document.body.innerHTML='<iframe id=a style="width:49%;height:760px"></iframe><iframe id=b style="width:49%;height:760px"></iframe>';a.src='/?profile=da${run}';b.src='/?profile=db${run}';`);
-    await sleep(4000);
     const on = (f, x) => c.ev(`const w=document.getElementById('${f}').contentWindow;return await w.eval(${JSON.stringify(`(async()=>{${x}})()`)});`);
+    const libOn = f => on(f, `return !!document.querySelector('.lib-head')`).catch(() => false);
+    await until(async () => await libOn('a') && await libOn('b'), 15000); await sleep(1500); // both apps are up and signed in
     const doc = (f, id) => on(f, `${E.D}return JSON.stringify((await D.db.get('docs','${id}'))||null)`).then(JSON.parse);
     const seq = async () => (await js(await call(s1.token, '/me'))).seq;
-    const quiet = async (name, s = 12) => { const x = await seq(); await sleep(s * 1000); const n = (await seq()) - x; ok(name, n === 0, `${n} uploads in ${s} s`); };
+    // Until the server has had no upload for 1.5 s (at most 12 s): what was still being sent has arrived.
+    const settle = async () => { let last = await seq(), same = 0; for (let t = 0; t < 12000 && same < 3; t += 500) { await pause(500); const n = await seq(); same = n === last ? same + 1 : 0; last = n; } };
+    // Then not one upload for s seconds. (The endless upload of v93 made about 7 a second.)
+    // Notebooks, pages, folders and files uploaded since seq x. (Weekly backups are not in this list: each device
+    // makes its first one 8 s after it starts, which is no endless upload; they have their own check at the end.)
+    const feedSince = async x => (await js(await call(s1.token, '/changes?since=' + x))).items || [];
+    // To name them when a quiet check fails: kind, which record, and its time stamps.
+    const what = async list => {
+      const out = [];
+      for (const it of list.slice(0, 6)) {
+        let o = {};
+        try { const b = await call(s1.token, `/blob/${it.k}/${it.id}/0`); const buf = Buffer.from(await b.arrayBuffer()); o = JSON.parse((it.gz ? zlib.gunzipSync(buf) : buf).toString()); } catch {}
+        const name = names[it.id] || it.id.slice(0, 8);
+        out.push(`${it.k} ${name}${o.title ? ' "' + o.title + '"' : ''} modified=${o.modified || '-'} editedAt=${o.editedAt || '-'} lastOpened=${o.lastOpened || '-'} items=${Array.isArray(o.items) ? o.items.length : '-'}`);
+      }
+      return out.join(' | ');
+    };
+    const names = {};
+    const quiet = async (name, s = 6) => { await settle(); const x = await seq(); await sleep(s * 1000); const up = await feedSince(x); ok(name, !up.length, up.length ? `${up.length} uploads in ${s} s: ${await what(up)}` : ''); };
+    const edOn = (f, yes = true) => until(() => on(f, `return ${yes ? '' : '!'}document.querySelector('.vp')`), 8000);
     const ids = JSON.parse(await on('a', `${E.D}const f=await D.createFolder('Polity');const r=[f.id];for(const t of ['One','Two','Three','Four']){const d=await D.createDoc({title:t});for(let i=0;i<3;i++){const p=D.newPage(d.id,{w:d.w,h:d.h});await D.db.put('pages',p);d.pages.push(p.id);}d.modified=Date.now();await D.db.put('docs',d);r.push(d.id);}return JSON.stringify(r)`));
     const [fold, one, two, three, four] = ids;
-    await sleep(6000);
+    Object.assign(names, { [fold]: 'folder Polity', [one]: 'One', [two]: 'Two', [three]: 'Three', [four]: 'Four' });
+    await until(async () => (await doc('b', four))?.pages.length === 4, 15000);
     ok('new notebooks reach the other device', (await doc('b', four))?.pages.length === 4);
     await quiet('no uploads while nobody does anything');
     for (const f of ['a', 'b']) await on(f, `location.hash='#/d/${one}'`);
-    await sleep(4000);
+    await edOn('a'); await edOn('b');
     await quiet('no uploads while both have the same notebook open');
     await on('a', `const v=document.querySelector('.vp'),q=v.getBoundingClientRect();const P=(t,x,y)=>v.dispatchEvent(new PointerEvent(t,{pointerId:5,pointerType:'mouse',clientX:q.left+x,clientY:q.top+y,button:0,buttons:t==='pointerup'?0:1,bubbles:true}));P('pointerdown',200,200);for(let i=0;i<20;i++){P('pointermove',200+i*6,200+Math.sin(i)*15);await new Promise(r=>setTimeout(r,15));}P('pointerup',320,205);`);
-    await sleep(4000);
-    ok('writing reaches the other device', (await on('b', `${E.D}return (await D.db.byDoc('${one}')).reduce((n,p)=>n+p.items.length,0)`)) === 1);
+    const inkOnB = () => on('b', `${E.D}return (await D.db.byDoc('${one}')).reduce((n,p)=>n+p.items.length,0)`);
+    await until(async () => await inkOnB() === 1, 12000);
+    ok('writing reaches the other device', await inkOnB() === 1);
     // binned on A while open on B
-    await on('b', `location.hash='#/d/${four}'`); await sleep(2500);
-    await on('a', `location.hash='#/';${E.D}await D.trashDoc(await D.db.get('docs','${four}'))`); await sleep(6000);
+    await on('b', `location.hash='#/d/${four}'`); await edOn('b'); await sleep(800);
+    await on('a', `location.hash='#/';${E.D}await D.trashDoc(await D.db.get('docs','${four}'))`);
+    await until(async () => !!(await doc('b', four)).trashed, 12000);
+    await settle(); await sleep(1500); // time for device B to undo it, if it wrongly would
     ok('a notebook binned elsewhere stays in the bin, though open here', !!(await doc('a', four)).trashed && !!(await doc('b', four)).trashed);
     // B offline, only reading
     await on('b', `location.hash='#/';const S=await import('/js/sync.js');S._setHttp(()=>Promise.reject(new TypeError('offline')));S._setSocket(()=>({close(){},send(){},readyState:3}));`); await sleep(1200);
     await on('a', `${E.D}const g=i=>D.db.get('docs',i),t=Date.now();await D.db.put('docs',{...(await g('${one}')),title:'RENAMED',modified:t});await D.db.put('docs',{...(await g('${two}')),folderId:'${fold}',modified:t});await D.db.put('docs',{...(await g('${three}')),trashed:t,modified:t});`);
-    await sleep(2500);
-    for (const id of [one, two, three]) { await on('b', `location.hash='#/d/${id}'`); await sleep(1400); await on('b', `for(let i=0;i<2;i++){document.body.dispatchEvent(new KeyboardEvent('keydown',{key:'PageDown',bubbles:true}));await new Promise(r=>setTimeout(r,600));}`); await sleep(1100); }
-    await on('b', `location.hash='#/'`); await sleep(1400);
+    await settle(); // device A has sent its changes
+    for (const id of [one, two, three]) { await on('b', `location.hash='#/d/${id}'`); await edOn('b'); await sleep(300); await on('b', `for(let i=0;i<2;i++){document.body.dispatchEvent(new KeyboardEvent('keydown',{key:'PageDown',bubbles:true}));await new Promise(r=>setTimeout(r,600));}`); await sleep(1100); }
+    await on('b', `location.hash='#/'`); await edOn('b', false); await sleep(300);
     await on('b', `const S=await import('/js/sync.js');S._setHttp((u,o)=>fetch(u,o));S._setSocket(u=>new WebSocket(u));await S.initSync();`); await sleep(2500);
-    await on('b', `await (await import('/js/sync.js')).syncNow(false)`); await sleep(5000);
+    await on('b', `await (await import('/js/sync.js')).syncNow(false)`);
+    await settle(); await sleep(1500); // all sent, and time for an undo to arrive, if one wrongly would
     for (const f of ['a', 'b']) {
       const [x, y, z] = [await doc(f, one), await doc(f, two), await doc(f, three)], who = f === 'a' ? 'device A' : 'device B';
       ok(`reading elsewhere does not undo a rename (${who})`, x.title === 'RENAMED', x.title);
@@ -456,10 +497,13 @@ if (!process.argv.includes('--quick') && (want('library') || want('writing') || 
       ok(`reading elsewhere does not undo the bin (${who})`, !!z.trashed);
       ok(`the reading place still travels (${who})`, x.lastPage === 3, x.lastPage);
     }
-    await quiet('no uploads afterwards', 8);
+    await quiet('no uploads afterwards');
+    const nb = ((await js(await call(s1.token, '/list/b'))).items || []).length;
+    ok('each device makes its first backup once, not more', nb === 2, `${nb} backups from 2 devices`);
     // a view-only guest
     const sh = await js(await call(s1.token, '/share/' + one, { method: 'POST', body: JSON.stringify({ allowedEmails: 'friend@test.local' }) }));
-    await c.ev(`b.src='/?profile=dg${run}#/live/${sh.shareId}'`); await sleep(5000);
+    await c.ev(`b.src='/?profile=dg${run}#/live/${sh.shareId}'`);
+    await until(() => on('b', `return !!document.querySelector('.vp') && document.querySelector('.ro')!==null`).catch(() => false), 12000);
     ok('a view-only guest sees the notebook, read-only', await on('b', `return !!document.querySelector('.vp') && document.querySelector('.ro')!==null`));
     await on('b', `const x=[...document.querySelectorAll('button')].find(q=>/Read-only/.test(q.title));if(x)x.click();await new Promise(r=>setTimeout(r,300));`);
     ok('and cannot switch writing on', await on('b', `return document.querySelector('.ro')!==null`));

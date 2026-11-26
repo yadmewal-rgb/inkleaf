@@ -23,8 +23,9 @@ function setHidden(on) {
 // waited() = milliseconds spent in fixed waits so far (for the time report at the end of the check).
 let sleptMs = 0;
 export const waited = () => sleptMs;
-export const sleep = async ms => {
-  sleptMs += ms;
+export const sleep = async ms => { sleptMs += ms; await pause(ms); };
+// The same wait, not counted as fixed waiting: for "wait until it is ready" loops.
+export const pause = async ms => {
   for (let left = ms; left > 0 && !tab.closed;) {
     const t = Date.now();
     await new Promise(r => setTimeout(r, Math.min(100, left)));

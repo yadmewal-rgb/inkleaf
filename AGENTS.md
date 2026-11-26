@@ -37,7 +37,8 @@ raise the version in BOTH `sw.js` (CACHE) and `js/sync.js` (APP_VER, shown in Se
   refresh token, secret GOOGLE_SECRET); secret ALLOWED = allowed e-mails (set in the Cloudflare dashboard, never in
   the repo). PDFs under 500 MB (`BIG` in sync.js) on Cloudflare, bigger ones in the owner's Google Drive (app folder), and every PDF
   also copied to a visible "Inkleaf" Drive folder. Quota: owner 2000 MB, friends 500 MB.
-  Friends need: e-mail in ALLOWED.
+  Friends need: e-mail in ALLOWED, or added by the owner in Settings > Allowed users (v97; stored in the server's
+  `app_config` Durable Object). Removing someone there stops new sign-ins only: their signed-in devices keep working.
 
 ## This PC
 - Node 24 is installed (`C:\Program Files\nodejs`); no Python or Flutter. Git is `C:\Program Files\Git\cmd\git.exe` (may not be on PATH). Commits use the
@@ -46,7 +47,9 @@ raise the version in BOTH `sw.js` (CACHE) and `js/sync.js` (APP_VER, shown in Se
 - **The owner wants testing in their own Chrome, as a normal tab, never in a separate Chrome window.** `tests/check.cmd`
   does that: it opens a tab "Inkleaf check" (own local address, pretend clipboard, no reach to the real library) that must
   stay in front, with the Chrome window not covered; it pauses when it is not, and gives up after 10 minutes. Ask the
-  owner before starting it: it takes over their Chrome for about 3 minutes.
+  owner before starting it: it takes over their Chrome for about 2 minutes. `--only=code,server,library,writing,devices`
+  runs single parts (not enough before a push); the end shows a time report (each part, slowest checks, fixed waiting).
+  Waits are "until ready" (`until`, `settle`), not fixed: keep it that way when adding checks.
 - **Before every push run `tests/check.cmd`** and push only if it
   says "ready to publish". **After every push run `tests/after-publish.cmd`**: a release is done only when it says ALL
   GOOD (the Cloudflare server failed to build for five days in Nov 2026 and nobody noticed). First run installs its
