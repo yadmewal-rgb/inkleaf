@@ -360,7 +360,9 @@ if (!process.argv.includes('--quick')) {
     const left = await c.ev(`const u=await import('/js/util.js');location.hash='#/';await new Promise(r=>setTimeout(r,1000));const real=u.bus.on;let n=0;u.bus.on=(...x)=>{n++;const off=real.apply(u.bus,x);let z=false;return()=>{if(!z){z=true;n--;}return off();};};for(let i=0;i<3;i++){location.hash='#/d/${id}';await new Promise(r=>setTimeout(r,900));location.hash='#/x'+i;await new Promise(r=>setTimeout(r,900));}const a=n;location.hash='#/d/${id}';await new Promise(r=>setTimeout(r,900));location.hash='#/y';await new Promise(r=>setTimeout(r,900));u.bus.on=real;return n-a`);
     ok('opening notebooks leaves nothing behind', left === 0, `${left} listeners per visit`);
     const assetReads = await c.ev(`${E.D}const S=await import('/js/sync.js'),U=await import('/js/util.js');
-      await D.db.put('assets',{id:'shared_pdf_test',mime:'application/pdf',name:'s.pdf',data:new Uint8Array(32).buffer,modified:Date.now()},true);
+      if(!window.PDFLib)await new Promise((r,j)=>{const s=document.createElement('script');s.src='/vendor/pdf-lib.min.js';s.onload=r;s.onerror=j;document.head.append(s);});
+      const pd=await PDFLib.PDFDocument.create();for(let i=0;i<39;i++)pd.addPage([300,400]);const pdfBytes=await pd.save();
+      await D.db.put('assets',{id:'shared_pdf_test',mime:'application/pdf',name:'s.pdf',data:pdfBytes.buffer.slice(pdfBytes.byteOffset,pdfBytes.byteOffset+pdfBytes.byteLength),modified:Date.now()},true);
       const makeBig=async t=>{const d=await D.createDoc({title:t});const ps=[];for(let i=0;i<39;i++){const p=D.newPage(d.id,{w:d.w,h:d.h,pdf:{a:'shared_pdf_test',i}});ps.push(p);d.pages.push(p.id);}await D.db.putMany('pages',ps);d.thumb='data:image/gif;base64,R0lGODlhAQABAAAAACw=';d.modified=Date.now();await D.db.put('docs',d);return d.id;};
       const d1=await makeBig('PDF A'),d2=await makeBig('PDF B');
       const realGet=D.db.get;let reads=0;D.db.get=(s,k)=>{if(s==='assets'&&k==='shared_pdf_test')reads++;return realGet(s,k);};
@@ -375,7 +377,8 @@ if (!process.argv.includes('--quick')) {
       D.db.get=realGet;
       const cfU=S.updateCfUsageFromServer(10,100000,true,10,[{me:true,label:'You',cfCalls:9}]);
       return {reads,clickedTab,okCf:cfU.users[0].cfCalls>=cfU.calls&&cfU.totalCalls>=cfU.users[0].cfCalls};`);
-    ok('switching multi-page PDF tabs avoids repeated asset reads', assetReads.clickedTab && assetReads.reads <= 1 && assetReads.okCf, assetReads);
+    // At most one read by the sync (readyAssets) and one by the PDF renderer (pdfDoc), whatever the page count and tab switches.
+    ok('switching multi-page PDF tabs avoids repeated asset reads', assetReads.clickedTab && assetReads.reads <= 2 && assetReads.okCf, assetReads);
     await c.ev(`(await import('/js/sync.js')).openSettings()`); await sleep(700);
     ok('Settings opens', await c.ev(`return !!document.querySelector('dialog')`));
     ok('Settings shows the top account card', await c.ev(`return !!document.querySelector('dialog .account-card')`));
