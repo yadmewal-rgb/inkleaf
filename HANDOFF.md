@@ -1,12 +1,29 @@
 # Handoff
 
-**Written:** 2026-11-26, about 20:30, by Claude Code. **Next:** Claude Code or agy.
-**State:** nothing half-done. The app is unchanged since v98; today's commits are tests and notes only, kept on this PC (not
-pushed: they go up with the next release, so no extra build).
+**Written:** 2026-11-26, about 20:25, by Claude Code. **Next:** Claude Code or agy.
+**State:** nothing half-done. **v99** is live. Only this note is newer (on this PC, goes up with the next release).
 
 ## Live now
-- App **v98** (`055440f`, by agy) on GitHub Pages; sync server from the same commit; `tests/after-publish.cmd` ALL GOOD (agy).
-- **Full `tests/check.cmd` on v98 in the owner's own Chrome: 144 passed, 0 failed, 111 s** (agy could only run `--quick`).
+- App **v99** (`9d0c3d1`) on GitHub Pages and the sync server from the same commit. `tests/check.cmd` in the owner's Chrome:
+  **150 passed, 0 failed** (112 s); `tests/after-publish.cmd`: **ALL GOOD** (Cloudflare build success).
+
+## v99 (owner: "1 make it , 2 color the whole folder not only dot , 3 okay", then "1", "and 2 also and go")
+- **Removing a user signs them out.** Settings > Allowed users > Remove: `revokeAll()` on their Durable Object deletes every
+  session and closes their own live connections (guests of their share links are left alone); notes stay. `app_config`
+  learns address -> account (`email_subs`) at sign-in and on each check. Safety net `allowedNow()`: every signed-in request,
+  live connection and private-link guest is checked at most every 5 minutes (ALLOWED secret read at once), so people taken
+  out of Cloudflare ALLOWED, or never mapped, go too. No answer = allowed: a failed question never signs anybody out.
+  Checks: at once, old key refused, never-allowed refused, allowed people stay. They fail on the v98 server (proved).
+- **Folder colours.** `folderColorOf(id)` = chosen colour, else from the folder's id (no list position any more). The whole
+  folder takes it: tinted cover with a filled folder sign on folder cards (corner dot gone), coloured folder signs in the
+  sidebar and on notebook cards, coloured folders in the chooser (`.fc-*`, `--fc` in app.css). Some automatic colours changed
+  once. Chosen colours are still per device (localStorage `inkleaf.folderColors`, not synced). Pictures:
+  AgentToolsshots99_before_* / v99_after_* (taken in a hidden Chrome with its own empty profile; testing was in the owner's).
+- **Proof:** the faster check on v93's app (with today's server) fails 10 two-device checks (uploads while both open, undone
+  rename/move/bin). It still catches the old bugs.
+
+## Earlier today
+- App **v98** (`055440f`, by agy). Full `tests/check.cmd` on it in the owner's Chrome: 144 passed (agy could only run `--quick`).
 
 ## Owner's words on 2026-11-26 (to Claude Code)
 1. "inkleaf" -> read the handoff; 2. "check handoff" -> agy had made v97 + v98 meanwhile; 3. "yes agy is closed, go" (full
@@ -28,18 +45,14 @@ check + read v97/v98); 4. "check only failed and which take more time than requi
   Saving still happens on switching notebooks (`destroy()` does `commitText` + `flush`).
 - An earlier failure "one finger held opens the menu" was the tab being out of sight; it passes.
 
-## Open questions (asked, not answered)
-1. **Removing an allowed user** (Settings > Allowed users, v97) does not sign them out: their devices keep syncing; only new
-   sign-ins are refused. Offered: removing also ends their sessions. (Same for addresses taken out of Cloudflare ALLOWED.)
-2. **Folder dots** (from v96): a folder without a chosen colour gets one by its sidebar position but is red elsewhere.
-   Offered: one fixed colour per folder from its id (`folderColorOf` in library.js), chosen colours kept.
-3. Offered: run the faster check on an old copy (v93, `INKLEAF_ROOT`) to prove it still catches the old upload loop.
+## Open questions
+- None asked. Possible next: sync chosen folder colours between devices (now per device).
 
 ## What the owner must do
-1. Reload Inkleaf twice on every device (friends too) until Settings shows **v98**; try switching between open PDF notebooks
-   on the iPad.
+1. Reload Inkleaf twice on every device (friends too) until Settings shows **v99**; try switching between open PDF notebooks
+   on the iPad, and look at the coloured folders.
 2. Friends: open Settings once so they appear in the usage count.
-3. Answer the questions above. Problems go into the "Temp" notebook.
+3. Problems go into the "Temp" notebook.
 
 ## Not tested
 - The real iPad and phone; signed-in sync on the real account; the Cloudflare dashboard's own usage charts (needs sign-in).

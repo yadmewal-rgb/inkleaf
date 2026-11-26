@@ -38,7 +38,8 @@ raise the version in BOTH `sw.js` (CACHE) and `js/sync.js` (APP_VER, shown in Se
   the repo). PDFs under 500 MB (`BIG` in sync.js) on Cloudflare, bigger ones in the owner's Google Drive (app folder), and every PDF
   also copied to a visible "Inkleaf" Drive folder. Quota: owner 2000 MB, friends 500 MB.
   Friends need: e-mail in ALLOWED, or added by the owner in Settings > Allowed users (v97; stored in the server's
-  `app_config` Durable Object). Removing someone there stops new sign-ins only: their signed-in devices keep working.
+  `app_config` Durable Object). Removing someone signs out all their devices at once (v99, `revokeAll`); `allowedNow`
+  checks everyone at most every 5 min, and a check without an answer must never sign anybody out.
 
 ## This PC
 - Node 24 is installed (`C:\Program Files\nodejs`); no Python or Flutter. Git is `C:\Program Files\Git\cmd\git.exe` (may not be on PATH). Commits use the
@@ -75,6 +76,8 @@ raise the version in BOTH `sw.js` (CACHE) and `js/sync.js` (APP_VER, shown in Se
 - Layers and hold-to-erase were REMOVED at the owner's request; don't bring them back.
 - Library (owner's drawing, 2026-11-25): while the sidebar is open, the name and the sidebar button are ONLY in the sidebar
   (the button sits where the X was); the top bar shows them only while the sidebar is closed. Don't bring the copy back.
+- Folders (owner, 2026-11-26): one colour per folder everywhere (`folderColorOf(id)`, never by list position), and the
+  WHOLE folder is coloured (cover and folder signs), not a dot. Don't bring the dots back.
 - Apple Pencil double-tap/squeeze are not available to web apps (pressure, tilt, hover are).
 - Screenshots for chat: Always capture and resize website/desktop screenshots at full 1000px width with high DPI (`shots.ps1 ... -Width 1000` or `--force-device-scale-factor=1.5`) so all menus, text, and labels are crisp and easy to read.
 - Pomodoro & Clock Widget specifications (owner chosen):
