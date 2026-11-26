@@ -159,7 +159,7 @@ if (want('server') || want('devices')) await tstep('', 'the server starts', asyn
   mf = new Miniflare({
     modules: [{ type: 'ESModule', path: 'entry.mjs', contents: ENTRY }, { type: 'ESModule', path: 'worker.js', contents: read('server/worker.js') }],
     compatibilityDate: '2025-09-01', durableObjects: { USER: { className: 'User', useSQLite: true } },
-    bindings: { ORIGINS: WEB, QUOTA_MB: '500', OWNER_QUOTA_MB: '2000', ALLOWED: 'owner@test.local,friend@test.local' }, host: '127.0.0.1', port: 0
+    bindings: { ORIGINS: WEB, QUOTA_MB: '500', OWNER_QUOTA_MB: '2000', ALLOWED: 'owner@test.local,friend@test.local,other@test.local' }, host: '127.0.0.1', port: 0
   });
   API = (await mf.ready).toString().replace(/\/$/, '').replace('127.0.0.1', 'localhost');
   ok('the server starts', true);
@@ -169,7 +169,7 @@ const auth = async (sub, who) => js(await fetch(`${API}/test-auth?sub=${sub}&ema
 const call = (t, p, o = {}) => fetch(API + p, { ...o, headers: { ...(t ? { Authorization: 'Bearer ' + t } : {}), ...(o.headers || {}) } });
 const socket = (p, first) => { const s = new WebSocket(API.replace('http', 'ws') + p); s.got = []; s.onopen = () => { if (first) s.send(JSON.stringify(first)); }; s.onmessage = e => s.got.push(JSON.parse(e.data)); s.onerror = () => {}; return s; };
 if (API && want('server')) await tstep('server', 'server tests', async () => {
-  const own = await auth('22222', 'owner'), fr = await auth('33333', 'friend'), st = await auth('44444', 'stranger');
+  const own = await auth('22222', 'owner'), fr = await auth('33333', 'friend'), st = await auth('44444', 'other'); // st: allowed, but not on the share's list
   const put = (k, id, o, info) => call(own.token, `/blob/${k}/${id}?size=10&base=0&gz=1${info ? '&info=' + encodeURIComponent(JSON.stringify(info)) : ''}`, { method: 'PUT', body: zlib.gzipSync(JSON.stringify(o)) });
   const ws = socket('/ws?u=22222', { token: own.token });
   await sleep(900);
@@ -233,6 +233,19 @@ if (API && want('server')) await tstep('server', 'server tests', async () => {
     && (await js(await call(own.token, '/me'))).friends.includes('extra@test.local')
     && (await call(own.token, '/admin/users', { method: 'DELETE', body: JSON.stringify({ email: 'extra@test.local' }) })).status === 200
     && !(await js(await call(own.token, '/me'))).friends.includes('extra@test.local'));
+  // Removing someone signs out their devices (v99): at once, and someone never allowed is refused too.
+  await call(own.token, '/admin/users', { method: 'POST', body: JSON.stringify({ email: 'extra@test.local' }) });
+  const ex = await auth('77777', 'extra');
+  const exWs = socket('/ws?u=77777', { token: ex.token });
+  await sleep(600);
+  const exIn = (await call(ex.token, '/me')).status === 200 && !!exWs.got[0]?.hello;
+  const del = await js(await call(own.token, '/admin/users', { method: 'DELETE', body: JSON.stringify({ email: 'extra@test.local' }) }));
+  await sleep(300);
+  ok('removing a user signs out their devices at once', exIn && del.signedOut === true && (await call(ex.token, '/me')).status === 401 && exWs.readyState === 3, { exIn, signedOut: del.signedOut, ws: exWs.readyState });
+  ok('the old device key of a removed user stays refused', (await call(ex.token, '/changes?since=0')).status === 401);
+  const nope = await auth('88888', 'nobody');
+  ok('someone not allowed at all is signed out on first use', (await call(nope.token, '/me')).status === 401 && (await call(nope.token, '/me')).status === 401);
+  ok('allowed people stay signed in', (await call(fr.token, '/me')).status === 200 && (await call(own.token, '/me')).status === 200);
   await call(st.token, '/me'); await call(st.token, '/signout', { method: 'POST' });
   ok('signing out works at once', (await call(st.token, '/me')).status === 401);
   ws.close(); g.close();
@@ -293,6 +306,15 @@ if (!process.argv.includes('--quick') && (want('library') || want('writing') || 
     ok('opening subfolder shows rotating sync sign on syncing notebook', await c.ev(`const b=document.querySelector('[data-sync-doc="${syncIds.d1}"] .item-sync-badge');return !!b && !b.hidden`));
     await c.ev(`(await import('/js/sync.js'))._setSyncTargets([],[]);await new Promise(r=>setTimeout(r,100));location.hash='#/'`); await sleep(300);
     ok('syncing signs hide when sync stops', await c.ev(`return [...document.querySelectorAll('.item-sync-badge')].every(e=>e.hidden)`));
+    // Folder colours (v99): one colour per folder everywhere, and the whole folder takes it, not only a dot.
+    const colours = await c.ev(`${E.D}for(const n of ['Polity','History','Economy'])await D.createFolder(n);
+      location.hash='#/x';await new Promise(r=>setTimeout(r,200));location.hash='#/';
+      for(let t=0;t<40&&document.querySelectorAll('.card-folder').length<4;t++)await new Promise(r=>setTimeout(r,100));
+      const fc=e=>(e&&[...e.classList].find(x=>x.startsWith('fc-')))||'';
+      return [...document.querySelectorAll('.card-folder')].map(card=>{const id=card.dataset.syncFolder,svg=card.querySelector('.cover > span:first-child > svg');
+        return {card:fc(card.querySelector('.cover')),side:fc(document.querySelector('.side-btn[data-sync-folder="'+id+'"] .folder-ic')),fill:svg?getComputedStyle(svg).fill:'',dots:card.querySelectorAll('.folder-dot').length};});`);
+    ok('a folder has the same colour in the sidebar and on its card', colours.length === 4 && colours.every(x => x.card && x.card === x.side), colours);
+    ok('the whole folder is coloured, not only a dot', colours.length === 4 && colours.every(x => x.fill && x.fill !== 'none' && !x.dots), colours);
     noErrors('the library top bar');
     await c.ev(clear);
   });

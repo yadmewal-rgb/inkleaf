@@ -856,6 +856,60 @@ p {
 .dot-yellow { background: #f59e0b; box-shadow: 0 0 6px rgba(245, 158, 11, 0.4); }
 .dot-purple { background: #a855f7; box-shadow: 0 0 6px rgba(168, 85, 247, 0.4); }
 
+/* The whole folder takes its colour (owner's wish, 2026-11-26): the cover of a folder card, the folder sign in the
+   sidebar and on notebook cards, and the colour chooser. --fc is the folder's colour. */
+.fc-red { --fc: #e05260; }
+.fc-blue { --fc: #3b82f6; }
+.fc-green { --fc: #10b981; }
+.fc-yellow { --fc: #f59e0b; }
+.fc-purple { --fc: #a855f7; }
+.cover.folder[class*="fc-"] {
+  background: color-mix(in srgb, var(--fc) 15%, transparent);
+  color: var(--fc);
+}
+.cover.folder[class*="fc-"] > span:first-child > svg,
+.folder-ic svg,
+.folder-swatch svg {
+  fill: color-mix(in srgb, var(--fc) 38%, transparent);
+  stroke: var(--fc);
+}
+.folder-ic {
+  display: inline-flex;
+  flex-shrink: 0;
+  color: var(--fc);
+}
+.folder-ic svg {
+  width: 17px;
+  height: 17px;
+  stroke-width: 1.8;
+}
+.folder-tag .folder-ic svg {
+  width: 13px;
+  height: 13px;
+}
+.folder-swatch {
+  width: 50px;
+  height: 50px;
+  padding: 0;
+  border-radius: 12px;
+  border: 2px solid transparent;
+  background: color-mix(in srgb, var(--fc) 15%, transparent);
+  color: var(--fc);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+}
+.folder-swatch svg {
+  width: 30px;
+  height: 30px;
+  stroke-width: 1.6;
+}
+.folder-swatch.on {
+  border-color: var(--fc);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--fc) 30%, transparent);
+}
+
 /* Main Area in Studio Layout */
 .lib-main {
   flex: 1;

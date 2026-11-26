@@ -181,7 +181,42 @@ export class User extends DurableObject {
   }
 
   // Who holds this device key? '' unless the key really is one of this person's signed-in devices.
-  async emailFor(token) { return (await this.session(token)) ? (this.kvGet('email') || '') : ''; }
+  async emailFor(token) {
+    if (!(await this.session(token))) return '';
+    if (!(await this.allowedNow())) { this.revokeAll(); return ''; }
+    return this.kvGet('email') || '';
+  }
+
+  // Is this person still allowed to use the service? The ALLOWED secret is read at once; people added in Settings are
+  // asked of the app_config object, at most every 5 minutes. On any doubt (no answer) the answer is yes: a failed
+  // question must never sign anybody out. Asking also tells app_config which account belongs to which address, so
+  // removing someone in Settings can sign them out at once (revokeAll).
+  async allowedNow() {
+    const email = String(this.kvGet('email') || '').toLowerCase();
+    if (!email || envAllowedList(this.env).includes(email)) return true;
+    if (this._allowedOk && Date.now() - this._allowedOk < 300e3) return true;
+    let r = null;
+    try {
+      const cfg = this.env.USER.get(this.env.USER.idFromName('app_config'));
+      const res = await cfg.fetch(new Request('http://internal/config/check', { method: 'POST', body: JSON.stringify({ email, sub: this.kvGet('sub') || '' }) }));
+      if (res.ok) r = await res.json();
+    } catch { /* no answer */ }
+    if (!r || r.allowed !== false) { this._allowedOk = Date.now(); return true; }
+    return false;
+  }
+
+  // Sign out every device of this person (they are no longer allowed). Their notes stay; guests of their share
+  // links are left alone.
+  revokeAll() {
+    this.sql.exec('DELETE FROM sessions');
+    if (this._sessCache) this._sessCache.clear();
+    this._allowedOk = 0;
+    for (const ws of this.ctx.getWebSockets()) {
+      const a = ws.deserializeAttachment() || {};
+      if (!a.guest) { try { ws.close(4001, 'signed out'); } catch { /* closing */ } }
+    }
+    return true;
+  }
 
   kvGet(k) {
     if (this._kvCache && this._kvCache.has(k)) return this._kvCache.get(k);
@@ -212,6 +247,8 @@ export class User extends DurableObject {
     if (refreshToken) { this.kvSet('grt', refreshToken); this.gat = null; }
     this.sql.exec('INSERT INTO sessions (h, created, seen, label) VALUES (?, ?, ?, ?)', await sha256(secret), now, now, label || '');
     this.ctx.waitUntil(this.syncGlobalUsage(true).catch(() => {}));
+    this._allowedOk = 0;
+    this.ctx.waitUntil(this.allowedNow().catch(() => {}));
     return { secret, drive: !!this.kvGet('grt') };
   }
 
@@ -388,6 +425,19 @@ export class User extends DurableObject {
     const url = new URL(req.url), p = url.pathname.split('/').filter(Boolean);
 
     // Internal config routes for dynamic allowed users
+    if (p[0] === 'config' && p[1] === 'check' && req.method === 'POST') {
+      const b = await req.json().catch(() => ({}));
+      const email = String(b.email || '').trim().toLowerCase(), sub = String(b.sub || '');
+      let extra = [];
+      try { const parsed = JSON.parse(this.kvGet('extra_allowed') || '[]'); extra = Array.isArray(parsed) ? parsed : []; } catch {}
+      const allowed = !!email && (envAllowedList(this.env).includes(email) || extra.includes(email));
+      if (allowed && /^\d{5,40}$/.test(sub)) {
+        let subs = {};
+        try { const o = JSON.parse(this.kvGet('email_subs') || '{}'); if (o && typeof o === 'object') subs = o; } catch {}
+        if (subs[email] !== sub) { subs[email] = sub; this.kvSet('email_subs', JSON.stringify(subs)); }
+      }
+      return json({ allowed });
+    }
     if (p[0] === 'config' && p[1] === 'allowed') {
       const loadExtra = () => {
         if (this._extraAllowed) return this._extraAllowed;
@@ -398,6 +448,7 @@ export class User extends DurableObject {
         return this._extraAllowed;
       };
       if (req.method === 'GET') return json({ extra: loadExtra() });
+      const subsOf = () => { try { const o = JSON.parse(this.kvGet('email_subs') || '{}'); return o && typeof o === 'object' ? o : {}; } catch { return {}; } };
       if (req.method === 'POST') {
         const b = await req.json().catch(() => ({}));
         const email = String(b.email || '').trim().toLowerCase();
@@ -415,7 +466,9 @@ export class User extends DurableObject {
         const cur = loadExtra().filter(e => e !== email);
         this._extraAllowed = cur;
         this.kvSet('extra_allowed', JSON.stringify(cur));
-        return json({ extra: cur });
+        const subs = subsOf(), sub = subs[email] || '';
+        if (sub) { delete subs[email]; this.kvSet('email_subs', JSON.stringify(subs)); }
+        return json({ extra: cur, sub });
       }
     }
 
@@ -667,6 +720,7 @@ export class User extends DurableObject {
     const token = ((req.headers.get('Authorization') || '').match(/^Bearer\s+(\S+)$/) || [])[1];
     const sess = await this.session(token);
     if (!sess) return json({ error: 'signin' }, 401);
+    if (!(await this.allowedNow())) { this.revokeAll(); return json({ error: 'signin' }, 401); }
 
     const tokenSub = (token || '').split('.')[0] || '';
     if (tokenSub && !this.kvGet('sub')) this.kvSet('sub', tokenSub);
@@ -1132,7 +1186,12 @@ Return ONLY the valid JSON array without commentary or code fences.`;
           method: 'DELETE', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ email })
         }));
         const j = await r.json().catch(() => ({}));
-        return json({ ok: true, owner, envUsers: envAllowedList(this.env), extraUsers: j.extra || [] });
+        // Their devices are signed out now. (If their account is not known yet, the 5-minute check does it.)
+        let signedOut = false;
+        if (/^\d{5,40}$/.test(String(j.sub || ''))) {
+          try { signedOut = !!(await this.env.USER.get(this.env.USER.idFromName(j.sub)).revokeAll()); } catch { /* the 5-minute check */ }
+        }
+        return json({ ok: true, owner, envUsers: envAllowedList(this.env), extraUsers: j.extra || [], signedOut });
       }
     }
 
@@ -1216,7 +1275,8 @@ Return ONLY the valid JSON array without commentary or code fences.`;
     if (!m) return;
     const a = ws.deserializeAttachment() || {};
     if (!a.ok) {
-      const h = m.token ? await this.session(m.token) : null;
+      let h = m.token ? await this.session(m.token) : null;
+      if (h && !(await this.allowedNow())) { this.revokeAll(); h = null; }
       if (h) {
         ws.serializeAttachment({ ok: true, h });
         ws.send(JSON.stringify({ hello: true, s: this.seq() }));

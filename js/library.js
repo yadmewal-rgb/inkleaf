@@ -63,11 +63,17 @@ export function setFolderColor(folderId, colorKey) {
   else delete map[folderId];
   lsSet('inkleaf.folderColors', JSON.stringify(map));
 }
-export function folderColorOf(folderId, index = 0) {
+// Every folder has one colour, the same everywhere: the chosen one, or else one worked out from its id (never from
+// where it sits in a list, which made one folder blue in the sidebar and red on its card).
+export function folderColorOf(folderId) {
   const map = getFolderColors();
   if (folderId && map[folderId] && FOLDER_COLORS[map[folderId]]) return map[folderId];
-  return COLOR_KEYS[Math.abs(index) % COLOR_KEYS.length];
+  let n = 0;
+  for (const ch of String(folderId || '')) n = (n * 31 + ch.charCodeAt(0)) >>> 0;
+  return COLOR_KEYS[n % COLOR_KEYS.length];
 }
+// A small folder sign in the folder's colour (sidebar, folder name on notebook cards).
+const folderIcon = c => h('span', { class: 'folder-ic fc-' + c, html: I.folder });
 
 export function getPinnedDocs() {
   try { return new Set(JSON.parse(lsGet('inkleaf.pinnedDocs', '[]'))); } catch { return new Set(); }
@@ -992,8 +998,9 @@ export async function mountLibrary(root, folderId, opts = {}) {
             title: 'Folder color: ' + f.name,
             body: h('div', { style: 'display: flex; gap: 14px; justify-content: center; padding: 18px 8px;' },
               COLOR_KEYS.map(c => h('button', {
-                class: 'folder-dot dot-' + c,
-                style: 'width: 32px; height: 32px; cursor: pointer; border-radius: 50%; border: ' + (curColor === c ? '3px solid var(--ink)' : '2px solid transparent') + ';',
+                class: 'folder-swatch fc-' + c + (curColor === c ? ' on' : ''),
+                type: 'button',
+                html: I.folder,
                 title: FOLDER_COLORS[c].label,
                 onclick: () => {
                   setFolderColor(f.id, c);
@@ -1278,11 +1285,11 @@ export async function mountLibrary(root, folderId, opts = {}) {
       location.hash = '#/bin';
     });
 
-    const folderBtns = F.map((f, i) => {
-      const c = folderColorOf(f.id, i);
+    const folderBtns = F.map(f => {
+      const c = folderColorOf(f.id);
       const count = D.filter(d => d.folderId === f.id).length;
       const isCur = !bin && folderId === f.id;
-      const dot = h('span', { class: 'folder-dot dot-' + c });
+      const dot = folderIcon(c);
       const syncingNow = syncTargets().folders.has(f.id);
 
       const btn = h('button', {
@@ -1455,7 +1462,7 @@ export async function mountLibrary(root, folderId, opts = {}) {
     if (folderObj && (query || filter !== 'all')) {
       const fColor = folderColorOf(folderObj.id);
       subParts.push(h('span', { class: 'folder-tag', title: 'Folder: ' + folderObj.name },
-        h('span', { class: 'folder-dot dot-' + fColor, style: 'margin-right: 4px;' }),
+        folderIcon(fColor),
         folderObj.name));
       subParts.push(h('span', { class: 'sub-sep' }, '·'));
     }
@@ -1771,9 +1778,8 @@ export async function mountLibrary(root, folderId, opts = {}) {
       const syncingNow = syncTargets().folders.has(f.id);
 
       const fCard = h('div', { class: 'card card-folder', 'data-sync-folder': f.id, onclick: () => { location.hash = '#/f/' + f.id; } },
-        h('div', { class: 'cover folder' },
+        h('div', { class: 'cover folder fc-' + fColor },
           h('span', { html: I.folder }),
-          h('span', { class: 'folder-dot dot-' + fColor, style: 'position: absolute; top: 10px; right: 10px; width: 11px; height: 11px;' }),
           isFolderShared ? h('span', { class: 'shared-mark-badge', title: 'Shared folder', html: I.users }) : null,
           h('span', { class: 'item-sync-badge', title: 'Syncing...', hidden: !syncingNow, html: I.sync })
         ),
