@@ -18,7 +18,7 @@
   folder takes it: tinted cover with a filled folder sign on folder cards (corner dot gone), coloured folder signs in the
   sidebar and on notebook cards, coloured folders in the chooser (`.fc-*`, `--fc` in app.css). Some automatic colours changed
   once. Chosen colours are still per device (localStorage `inkleaf.folderColors`, not synced). Pictures:
-  AgentToolsshots99_before_* / v99_after_* (taken in a hidden Chrome with its own empty profile; testing was in the owner's).
+  AgentTools/shots/v99_before_* and v99_after_* (taken in a hidden Chrome with its own empty profile; testing was in the owner's).
 - **Proof:** the faster check on v93's app (with today's server) fails 10 two-device checks (uploads while both open, undone
   rename/move/bin). It still catches the old bugs.
 
