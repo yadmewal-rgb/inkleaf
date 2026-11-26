@@ -315,6 +315,18 @@ if (!process.argv.includes('--quick') && (want('library') || want('writing') || 
         return {card:fc(card.querySelector('.cover')),side:fc(document.querySelector('.side-btn[data-sync-folder="'+id+'"] .folder-ic')),fill:svg?getComputedStyle(svg).fill:'',dots:card.querySelectorAll('.folder-dot').length};});`);
     ok('a folder has the same colour in the sidebar and on its card', colours.length === 4 && colours.every(x => x.card && x.card === x.side), colours);
     ok('the whole folder is coloured, not only a dot', colours.length === 4 && colours.every(x => x.fill && x.fill !== 'none' && !x.dots), colours);
+    // v100: a chosen colour is kept in the folder record (so it syncs), and colours chosen before move into it once.
+    const moved = await c.ev(`${E.D}const L=await import('/js/library.js');const fs=(await D.db.all('folders')).filter(f=>!f.deleted);
+      await L.setFolderColor(fs[0],'purple');
+      localStorage.setItem('inkleaf.folderColors',JSON.stringify({[fs[1].id]:'yellow'}));
+      location.hash='#/x';await new Promise(r=>setTimeout(r,200));location.hash='#/';
+      for(let t=0;t<40&&localStorage.getItem('inkleaf.folderColors')!==null;t++)await new Promise(r=>setTimeout(r,100));
+      await new Promise(r=>setTimeout(r,300));
+      const a=await D.db.get('folders',fs[0].id),b=await D.db.get('folders',fs[1].id);
+      const side=id=>{const e=document.querySelector('.side-btn[data-sync-folder="'+id+'"] .folder-ic');return e?[...e.classList].find(x=>x.startsWith('fc-')):'';};
+      return {a:a.color,b:b.color,left:localStorage.getItem('inkleaf.folderColors'),sideA:side(a.id),sideB:side(b.id)};`);
+    ok('a chosen folder colour is kept in the folder itself', moved.a === 'purple' && moved.sideA === 'fc-purple', moved);
+    ok('colours chosen before v100 are moved into the folders', moved.b === 'yellow' && moved.sideB === 'fc-yellow' && moved.left === null, moved);
     noErrors('the library top bar');
     await c.ev(clear);
   });
@@ -497,6 +509,11 @@ if (!process.argv.includes('--quick') && (want('library') || want('writing') || 
     const inkOnB = () => on('b', `${E.D}return (await D.db.byDoc('${one}')).reduce((n,p)=>n+p.items.length,0)`);
     await until(async () => await inkOnB() === 1, 12000);
     ok('writing reaches the other device', await inkOnB() === 1);
+    // a folder colour chosen on A shows on B (v100)
+    await on('a', `${E.D}const L=await import('/js/library.js');await L.setFolderColor(await D.db.get('folders','${fold}'),'green');`);
+    const colourOnB = () => on('b', `${E.D}return (await D.db.get('folders','${fold}'))?.color||''`);
+    await until(async () => await colourOnB() === 'green', 12000);
+    ok('a folder colour chosen on one device shows on the other', await colourOnB() === 'green', await colourOnB());
     // binned on A while open on B
     await on('b', `location.hash='#/d/${four}'`); await edOn('b'); await sleep(800);
     await on('a', `location.hash='#/';${E.D}await D.trashDoc(await D.db.get('docs','${four}'))`);

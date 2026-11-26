@@ -54,22 +54,36 @@ export const FOLDER_COLORS = {
 };
 export const COLOR_KEYS = ['red', 'blue', 'green', 'yellow', 'purple'];
 
-export function getFolderColors() {
-  try { return JSON.parse(lsGet('inkleaf.folderColors', '{}')) || {}; } catch { return {}; }
+// A chosen colour is kept in the folder record itself (`color`), so it syncs with the folder like its name (v100).
+// Choosing one is a real change: it sets `modified`, and the later choice wins between devices.
+export async function setFolderColor(folder, colorKey) {
+  const cur = await db.get('folders', folder.id);
+  if (!cur || (cur.color || null) === (colorKey || null)) return;
+  const next = { ...cur, modified: Date.now() };
+  if (colorKey) next.color = colorKey; else delete next.color;
+  await db.put('folders', next);
 }
-export function setFolderColor(folderId, colorKey) {
-  const map = getFolderColors();
-  if (colorKey) map[folderId] = colorKey;
-  else delete map[folderId];
-  lsSet('inkleaf.folderColors', JSON.stringify(map));
+// Up to v99 a chosen colour stayed on one device (localStorage). Moved into the folders when the library opens;
+// a colour that already came from another device is kept.
+async function moveLocalFolderColors() {
+  if (lsGet('inkleaf.folderColors', null) === null) return; // nothing left to move (the usual case: one cheap read)
+  let map = {};
+  try { map = JSON.parse(lsGet('inkleaf.folderColors', '{}')) || {}; } catch { /* unreadable: nothing to move */ }
+  const ids = Object.keys(map).filter(id => FOLDER_COLORS[map[id]]);
+  const forget = () => { try { localStorage.removeItem('inkleaf.folderColors'); } catch { /* private mode */ } };
+  if (!ids.length) { forget(); return; }
+  for (const id of ids) {
+    const f = await db.get('folders', id);
+    if (f && !f.deleted && !f.color) await setFolderColor(f, map[id]);
+  }
+  forget();
 }
-// Every folder has one colour, the same everywhere: the chosen one, or else one worked out from its id (never from
-// where it sits in a list, which made one folder blue in the sidebar and red on its card).
-export function folderColorOf(folderId) {
-  const map = getFolderColors();
-  if (folderId && map[folderId] && FOLDER_COLORS[map[folderId]]) return map[folderId];
+// Every folder has one colour, the same everywhere and on every device: the chosen one, or else one worked out from
+// its id (never from where it sits in a list, which made one folder blue in the sidebar and red on its card).
+export function folderColorOf(folder) {
+  if (folder && FOLDER_COLORS[folder.color]) return folder.color;
   let n = 0;
-  for (const ch of String(folderId || '')) n = (n * 31 + ch.charCodeAt(0)) >>> 0;
+  for (const ch of String((folder && folder.id) || '')) n = (n * 31 + ch.charCodeAt(0)) >>> 0;
   return COLOR_KEYS[n % COLOR_KEYS.length];
 }
 // A small folder sign in the folder's colour (sidebar, folder name on notebook cards).
@@ -496,6 +510,7 @@ async function searchPages(q, docs, isStale) {
 
 export async function mountLibrary(root, folderId, opts = {}) {
   const bin = !!opts.bin;
+  await moveLocalFolderColors().catch(() => {});
   let query = '', filter = lsGet('inkleaf.filter', 'all'), sort = lsGet('inkleaf.sort', 'edited'), searchTok = 0;
   let viewMode = lsGet('inkleaf.viewMode', 'grid'), viewDensity = lsGet('inkleaf.viewDensity', 'comfortable');
   let activeSharedFolder = null;
@@ -989,7 +1004,7 @@ export async function mountLibrary(root, folderId, opts = {}) {
 
   function folderMenu(anchor, f) {
     const isFolderShared = mySharedFolders.has(f.id);
-    const curColor = folderColorOf(f.id);
+    const curColor = folderColorOf(f);
     popMenu(anchor, [
       {
         label: 'Folder color', icon: I.palette, onClick: () => {
@@ -1002,9 +1017,9 @@ export async function mountLibrary(root, folderId, opts = {}) {
                 type: 'button',
                 html: I.folder,
                 title: FOLDER_COLORS[c].label,
-                onclick: () => {
-                  setFolderColor(f.id, c);
+                onclick: async () => {
                   m.close();
+                  await setFolderColor(f, c);
                   render();
                   toast(`Color updated for "${f.name}"`);
                 }
@@ -1286,7 +1301,7 @@ export async function mountLibrary(root, folderId, opts = {}) {
     });
 
     const folderBtns = F.map(f => {
-      const c = folderColorOf(f.id);
+      const c = folderColorOf(f);
       const count = D.filter(d => d.folderId === f.id).length;
       const isCur = !bin && folderId === f.id;
       const dot = folderIcon(c);
@@ -1460,7 +1475,7 @@ export async function mountLibrary(root, folderId, opts = {}) {
 
     const subParts = [];
     if (folderObj && (query || filter !== 'all')) {
-      const fColor = folderColorOf(folderObj.id);
+      const fColor = folderColorOf(folderObj);
       subParts.push(h('span', { class: 'folder-tag', title: 'Folder: ' + folderObj.name },
         folderIcon(fColor),
         folderObj.name));
@@ -1774,7 +1789,7 @@ export async function mountLibrary(root, folderId, opts = {}) {
     for (const f of fs) {
       const isFolderShared = mySharedFolders.has(f.id) || D.some(d => d.folderId === f.id && (d.shared || myShares.has(d.id)));
       const count = D.filter(d => d.folderId === f.id).length + F.filter(x => x.parentId === f.id).length;
-      const fColor = folderColorOf(f.id);
+      const fColor = folderColorOf(f);
       const syncingNow = syncTargets().folders.has(f.id);
 
       const fCard = h('div', { class: 'card card-folder', 'data-sync-folder': f.id, onclick: () => { location.hash = '#/f/' + f.id; } },

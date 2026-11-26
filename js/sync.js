@@ -16,7 +16,7 @@ import { I } from './icons.js';
 import { hwOn, setHwOn, status as hwStatus, setCloudOcr, setDirectOcrReport, getHwUsage, setHwLimit, getHwModel, setHwModel, getHwModelConfig, getActiveHwModel, MODEL_CASCADE, formatModelName, updateHwUsageFromServer } from './hwsearch.js';
 export { updateHwUsageFromServer };
 
-export const APP_VER = 'v99';
+export const APP_VER = 'v100';
 const SERVER = 'https://inkleaf-sync.yadmewal.workers.dev';
 // drive.appdata: Inkleaf's hidden app folder (files it syncs); drive.file: only files Inkleaf itself creates, used
 // for the visible "Inkleaf" folder holding copies of the PDFs under their real names.
@@ -1100,16 +1100,27 @@ async function tick() {
 let writeSeq = 0, pushedSeq = 0;
 // Pages saved here since the last push. null = not known (just started, or a push failed): check every page.
 let savedPages = null;
+// Folders saved here since the last push. While a notebook is open only it is pushed, so a folder change (a colour, a
+// folder made from the editor) waited until it closed; these go up with it now.
+const savedFolders = new Set();
 
 function pushNow() {
-  const ids = [...openDocs], seq = writeSeq, only = savedPages;
+  const ids = [...openDocs], seq = writeSeq, only = savedPages, folders = [...savedFolders];
   savedPages = new Set();
+  savedFolders.clear();
   return run(async () => {
     if (!ids.length) return fullPass();
+    for (const id of folders) {
+      const f = await db.get('folders', id), s = st['f_' + id];
+      if (f && (!s || s.lm !== f.modified)) await pushRecord('f', f);
+    }
     for (const id of ids) await pushDoc(id, only);
     return false;
   }, false)
-    .then(ok => { if (ok) pushedSeq = Math.max(pushedSeq, seq); else savedPages = null; });
+    .then(ok => {
+      if (ok) pushedSeq = Math.max(pushedSeq, seq);
+      else { savedPages = null; for (const id of folders) savedFolders.add(id); }
+    });
 }
 
 // A full pass also sends everything saved before it started, so those saves no longer count as waiting.
@@ -1155,6 +1166,7 @@ export async function initSync() {
       if (w && w.s === 'docs' && docFolderMap) for (const id of w.ids || []) staleDocMeta.add(id);
       if (w && w.s === 'folders' && folderParentMap) for (const id of w.ids || []) staleFolderMeta.add(id);
       if (savedPages && w && w.s === 'pages') for (const id of w.ids) savedPages.add(id);
+      if (w && w.s === 'folders') for (const id of w.ids || []) savedFolders.add(id);
       if (session && !off) {
         if (w && Array.isArray(w.docIds)) for (const id of w.docIds) pendingDocs.add(id);
         if (w && Array.isArray(w.folderIds)) for (const id of w.folderIds) pendingFolders.add(id);
