@@ -13,10 +13,10 @@ import { db, assetIdsOf } from './db.js';
 import { h, uid, bus, loadScript, downloadBlob, bufToB64, b64ToBuf, editedAt } from './util.js';
 import { modal, toast, confirmBox, busy } from './ui.js';
 import { I } from './icons.js';
-import { hwOn, setHwOn, status as hwStatus, setCloudOcr, getHwUsage, setHwLimit, getHwModel, setHwModel, getHwModelConfig, getActiveHwModel, MODEL_CASCADE, formatModelName, updateHwUsageFromServer } from './hwsearch.js';
+import { hwOn, setHwOn, status as hwStatus, setCloudOcr, setDirectOcrReport, getHwUsage, setHwLimit, getHwModel, setHwModel, getHwModelConfig, getActiveHwModel, MODEL_CASCADE, formatModelName, updateHwUsageFromServer } from './hwsearch.js';
 export { updateHwUsageFromServer };
 
-export const APP_VER = 'v96';
+export const APP_VER = 'v97';
 const SERVER = 'https://inkleaf-sync.yadmewal.workers.dev';
 // drive.appdata: Inkleaf's hidden app folder (files it syncs); drive.file: only files Inkleaf itself creates, used
 // for the visible "Inkleaf" folder holding copies of the PDFs under their real names.
@@ -46,6 +46,7 @@ let chain = Promise.resolve();
 let status = { state: 'off', text: 'Sync is not set up' };
 
 export const syncStatus = () => status;
+export const isSignedIn = () => !!session;
 
 // What the sync has done lately, for the health line in Settings: when a change last went out, when the service was
 // last checked, and anything waiting or failing.
@@ -60,6 +61,86 @@ function setStatus(state, text) {
   if (status.state === state && status.text === text) return;
   status = { state, text };
   bus.emit('sync-status', status);
+  scheduleTargetsUpdate();
+}
+
+// Per-notebook and per-folder sync indicator state (OneDrive-style).
+const inFlightDocs = new Set(), inFlightFolders = new Set();
+const pendingDocs = new Set(), pendingFolders = new Set();
+const assetDocs = new Map(); // assetId -> Set<docId>
+let curTargets = { docs: new Set(), folders: new Set() };
+let targetsRunning = false, targetsAgain = false;
+
+export const syncTargets = () => curTargets;
+export const _setSyncTargets = (docs = [], folders = []) => {
+  curTargets = { docs: new Set(docs), folders: new Set(folders) };
+  bus.emit('sync-targets', curTargets);
+};
+
+const sameSet = (a, b) => a.size === b.size && [...a].every(x => b.has(x));
+
+function scheduleTargetsUpdate() {
+  if (targetsRunning) { targetsAgain = true; return; }
+  targetsRunning = true;
+  Promise.resolve().then(refreshSyncTargets).finally(() => {
+    targetsRunning = false;
+    if (targetsAgain) { targetsAgain = false; scheduleTargetsUpdate(); }
+  });
+}
+
+async function refreshSyncTargets() {
+  const active = status.state === 'syncing' || assetActive > 0 || assetQ.length > 0 || inFlightDocs.size > 0 || inFlightFolders.size > 0;
+  const docs = new Set();
+  const folders = new Set();
+  if (active) {
+    for (const id of inFlightDocs) docs.add(id);
+    for (const id of pendingDocs) docs.add(id);
+    for (const id of inFlightFolders) folders.add(id);
+    for (const id of pendingFolders) folders.add(id);
+    const qAssetIds = [...assetBusy, ...assetQ.map(([id]) => id)];
+    if (qAssetIds.length) {
+      if (qAssetIds.some(aid => !assetDocs.has(aid))) {
+        const pages = await db.all('pages').catch(() => []);
+        for (const p of pages) {
+          if (p.deleted || !p.docId) continue;
+          for (const aid of assetIdsOf([p])) {
+            if (!assetDocs.has(aid)) assetDocs.set(aid, new Set());
+            assetDocs.get(aid).add(p.docId);
+          }
+        }
+      }
+      for (const aid of qAssetIds) {
+        const set = assetDocs.get(aid);
+        if (set) for (const did of set) docs.add(did);
+      }
+    }
+    if (docs.size || folders.size) {
+      const [allDocs, allFolders] = await Promise.all([db.all('docs').catch(() => []), db.all('folders').catch(() => [])]);
+      const docMap = new Map(allDocs.map(d => [d.id, d]));
+      const folderMap = new Map(allFolders.map(f => [f.id, f]));
+      const addAncestors = startFid => {
+        const seen = new Set();
+        let fid = startFid;
+        while (fid && !seen.has(fid) && folderMap.has(fid)) {
+          seen.add(fid);
+          folders.add(fid);
+          fid = folderMap.get(fid).parentId;
+        }
+      };
+      for (const did of docs) {
+        const d = docMap.get(did);
+        if (d && d.folderId) addAncestors(d.folderId);
+      }
+      for (const fid of [...folders]) {
+        const f = folderMap.get(fid);
+        if (f && f.parentId) addAncestors(f.parentId);
+      }
+    }
+  }
+  if (!sameSet(curTargets.docs, docs) || !sameSet(curTargets.folders, folders)) {
+    curTargets = { docs, folders };
+    bus.emit('sync-targets', curTargets);
+  }
 }
 
 // One sync operation at a time.
@@ -200,11 +281,29 @@ async function visibleCopy(a) {
   }
 }
 
-async function signOut() {
+export async function signOut() {
   const s = session;
   session = null;
   closeLive();
+  clearTimeout(loopT);
+  clearTimeout(pushT);
+  clearTimeout(pullT);
+  gTok = null; driveOn = null; visibleOk = null; visFolder = null;
+  cachedSharedItems = null; cachedMyShares = null;
+  lastSharedFetch = 0; lastMySharesFetch = 0;
+  inFlightDocs.clear(); inFlightFolders.clear();
+  pendingDocs.clear(); pendingFolders.clear();
+  st = {}; cursor = 0;
   await db.setMeta('cloud', null);
+  await db.setMeta('cloudState', {});
+  await db.setMeta('cloudCursor', 0);
+  await db.setMeta('shared_items', []);
+  await db.setMeta('my_shares', []);
+  await db.setMeta('my_shared_folders', []);
+  await db.setMeta('lastSync', 0);
+  setStatus('signin', 'Signed out. Tap to sign in with Google and start live sync.');
+  scheduleTargetsUpdate();
+  bus.emit('synced');
   if (s) http(server + '/signout', { method: 'POST', headers: { Authorization: 'Bearer ' + s.token } }).catch(() => {});
 }
 
@@ -215,19 +314,30 @@ export function getCfUsage() {
     const raw = localStorage.getItem('inkleaf.cfUsage');
     if (raw) {
       const parsed = JSON.parse(raw);
-      if (parsed.date === today) return parsed;
+      if (parsed.date === today) {
+        if (typeof parsed.totalCalls !== 'number') parsed.totalCalls = parsed.calls || 0;
+        return parsed;
+      }
     }
   } catch {}
-  const fresh = { date: today, calls: 0, limit: 100000, monthlyLimit: 1000000 };
+  const fresh = { date: today, calls: 0, totalCalls: 0, limit: 100000, monthlyLimit: 1000000, users: null };
   try { localStorage.setItem('inkleaf.cfUsage', JSON.stringify(fresh)); } catch {}
   return fresh;
 }
 
-export function updateCfUsageFromServer(serverCalls, serverLimit, merged = true) {
+export function updateCfUsageFromServer(serverCalls, serverLimit, merged = true, serverTotal = null, serverUsers = null) {
   const usage = getCfUsage();
   let changed = false;
   if (typeof serverCalls === 'number' && serverCalls >= (usage.calls || 0)) {
     usage.calls = serverCalls;
+    changed = true;
+  }
+  if (typeof serverTotal === 'number' && serverTotal >= (usage.totalCalls || 0)) {
+    usage.totalCalls = serverTotal;
+    changed = true;
+  }
+  if (Array.isArray(serverUsers)) {
+    usage.users = serverUsers.map(x => ({ me: !!x.me, label: x.label, cfCalls: Number(x.cfCalls) || 0 }));
     changed = true;
   }
   if (typeof serverLimit === 'number' && serverLimit > 0) {
@@ -248,6 +358,11 @@ export function updateCfUsageFromServer(serverCalls, serverLimit, merged = true)
 export function recordCfCall(endpoint = '') {
   const usage = getCfUsage();
   usage.calls = (usage.calls || 0) + 1;
+  usage.totalCalls = Math.max(usage.totalCalls || 0, (usage.calls || 1) - 1) + 1;
+  if (Array.isArray(usage.users)) {
+    const me = usage.users.find(x => x.me);
+    if (me) me.cfCalls = Math.max(me.cfCalls || 0, usage.calls);
+  }
   usage.lastCall = Date.now();
   usage.lastEndpoint = endpoint;
   try {
@@ -262,9 +377,11 @@ export async function call(path, opts = {}) {
   recordCfCall(path);
   const r = await http(server + path, { ...opts, headers: { Authorization: 'Bearer ' + session.token, ...(opts.headers || {}) } });
   const cfH = r.headers.get('x-cf-calls-today');
+  const cfTotH = r.headers.get('x-cf-total-today');
   const ocrH = r.headers.get('x-ocr-calls-today');
-  if (cfH) updateCfUsageFromServer(Number(cfH), 100000, true);
-  if (ocrH) updateHwUsageFromServer(Number(ocrH), 1500);
+  const ocrTotH = r.headers.get('x-ocr-total-today');
+  if (cfH || cfTotH) updateCfUsageFromServer(cfH ? Number(cfH) : null, 100000, true, cfTotH ? Number(cfTotH) : null);
+  if (ocrH || ocrTotH) updateHwUsageFromServer(ocrH ? Number(ocrH) : null, 1500, ocrTotH ? Number(ocrTotH) : null);
   if (r.status === 401) {
     session = null;
     closeLive();
@@ -311,6 +428,9 @@ export async function syncOcr(imageB64, n = 1, model = 'gemini-3.8-flash') {
   }
 }
 setCloudOcr(syncOcr);
+setDirectOcrReport(() => {
+  if (session && !off && navigator.onLine) call('/usage-ocr', { method: 'POST' }).catch(() => {});
+});
 
 // ---------------------------------------------------------------- blobs on the service
 const canZip = typeof CompressionStream === 'function' && typeof DecompressionStream === 'function';
@@ -452,34 +572,46 @@ async function merge(kind, L, R) {
 // and the merged record is sent instead.
 async function pushRecord(kind, rec) {
   const name = kind + '_' + rec.id, store = STORES[kind];
-  for (let tries = 0; tries < 4; tries++) {
-    const s = st[name];
-    try {
-      const { bytes, gz } = await encode(rec);
-      const info = (kind === 'p' && rec.docId) ? JSON.stringify({ docId: rec.docId }) : undefined;
-      const j = await putBlob(kind, rec.id, bytes, { base: s ? s.s : 0, gz, info });
-      st[name] = { lm: rec.modified, s: j.s };
-      health.sent = Date.now();
-      return;
-    } catch (e) {
-      if (e.conflict === undefined) throw e;
-      const item = { k: kind, id: rec.id, s: e.conflict, parts: 0 };
-      const meta = (await (await call(`/changes?since=${e.conflict - 1}&limit=1`)).json()).items.find(x => x.k === kind && x.id === rec.id);
-      if (!meta) { st[name] = { lm: -1, s: e.conflict }; continue; } // changed again meanwhile: just retry
-      Object.assign(item, meta);
-      const R = await decode(await getBlob(item), item.gz);
-      const L = (await db.get(store, rec.id)) || rec;
-      const m = await merge(kind, L, R);
-      if (m !== L) {
-        if (!await db.putIf(store, m, L.modified)) { st[name] = { lm: -1, s: item.s }; rec = (await db.get(store, rec.id)) || rec; continue; }
-        bus.emit('remote-record', { kind, rec: m });
+  const targetDoc = kind === 'd' ? rec.id : kind === 'p' ? rec.docId : null;
+  const targetFolder = kind === 'f' ? rec.id : null;
+  if (targetDoc) { inFlightDocs.add(targetDoc); scheduleTargetsUpdate(); }
+  if (targetFolder) { inFlightFolders.add(targetFolder); scheduleTargetsUpdate(); }
+  try {
+    for (let tries = 0; tries < 4; tries++) {
+      const s = st[name];
+      try {
+        const { bytes, gz } = await encode(rec);
+        const info = (kind === 'p' && rec.docId) ? JSON.stringify({ docId: rec.docId }) : undefined;
+        const j = await putBlob(kind, rec.id, bytes, { base: s ? s.s : 0, gz, info });
+        st[name] = { lm: rec.modified, s: j.s };
+        if (kind === 'd') pendingDocs.delete(rec.id);
+        if (kind === 'f') pendingFolders.delete(rec.id);
+        health.sent = Date.now();
+        return;
+      } catch (e) {
+        if (e.conflict === undefined) throw e;
+        const item = { k: kind, id: rec.id, s: e.conflict, parts: 0 };
+        const meta = (await (await call(`/changes?since=${e.conflict - 1}&limit=1`)).json()).items.find(x => x.k === kind && x.id === rec.id);
+        if (!meta) { st[name] = { lm: -1, s: e.conflict }; continue; } // changed again meanwhile: just retry
+        Object.assign(item, meta);
+        const R = await decode(await getBlob(item), item.gz);
+        const L = (await db.get(store, rec.id)) || rec;
+        const m = await merge(kind, L, R);
+        if (m !== L) {
+          if (!await db.putIf(store, m, L.modified)) { st[name] = { lm: -1, s: item.s }; rec = (await db.get(store, rec.id)) || rec; continue; }
+          bus.emit('remote-record', { kind, rec: m });
+        }
+        if (m === R) { st[name] = { lm: R.modified, s: item.s }; return; } // theirs already had everything
+        st[name] = { lm: -1, s: item.s };
+        rec = m;
       }
-      if (m === R) { st[name] = { lm: R.modified, s: item.s }; return; } // theirs already had everything
-      st[name] = { lm: -1, s: item.s };
-      rec = m;
     }
+    throw new Error('This record keeps changing on another device; it will be sent on the next round.');
+  } finally {
+    if (targetDoc) inFlightDocs.delete(targetDoc);
+    if (targetFolder) inFlightFolders.delete(targetFolder);
+    scheduleTargetsUpdate();
   }
-  throw new Error('This record keeps changing on another device; it will be sent on the next round.');
 }
 
 // Where a file is kept: under 500 MB on the sync service (fast edge CDN to fetch on every device),
@@ -566,9 +698,12 @@ async function pullAsset(id, item) {
 
 // Files the pages here use but this device does not have yet (they arrive by Drive, not in the change feed).
 async function fetchMissingFiles(pages, priority = false) {
-  for (const id of assetIdsOf(pages.filter(p => !p.deleted))) {
-    const a = await db.get('assets', id);
-    if (!a || (!a.data && !a.deleted)) queueAsset(id, 'pull', priority);
+  for (const p of pages) {
+    if (p.deleted) continue;
+    for (const id of assetIdsOf([p])) {
+      const a = await db.get('assets', id);
+      if (!a || (!a.data && !a.deleted)) queueAsset(id, 'pull', priority, p.docId);
+    }
   }
 }
 
@@ -587,7 +722,11 @@ function setIdle() {
 
 // job: 'up' to upload a local file, or the feed entry to download.
 // priority: true jumps to the very front of the queue (e.g. for open notebook or folder)
-function queueAsset(id, job, priority = false) {
+function queueAsset(id, job, priority = false, docId = null) {
+  if (docId) {
+    if (!assetDocs.has(id)) assetDocs.set(id, new Set());
+    assetDocs.get(id).add(docId);
+  }
   const r = assetRetry.get(id);
   if (r && r.at > Date.now()) return;
   const existingIdx = assetQ.findIndex(([qid]) => qid === id);
@@ -596,13 +735,15 @@ function queueAsset(id, job, priority = false) {
       const item = assetQ.splice(existingIdx, 1)[0];
       assetQ.unshift(item);
     }
+    scheduleTargetsUpdate();
     return;
   }
-  if (assetBusy.has(id)) return;
+  if (assetBusy.has(id)) { scheduleTargetsUpdate(); return; }
   assetBusy.add(id);
   if (priority) assetQ.unshift([id, job]);
   else assetQ.push([id, job]);
   pumpAssets();
+  scheduleTargetsUpdate();
 }
 
 function pumpAssets() {
@@ -620,6 +761,7 @@ function pumpAssets() {
         assetActive--;
         pumpAssets();
         if (!assetActive && !assetQ.length && status.state === 'syncing') setIdle();
+        scheduleTargetsUpdate();
       });
   }
   if (assetActive && status.state === 'ok') setIdle();
@@ -633,23 +775,37 @@ function retryAssets() {
 async function applyRemote(item) {
   const kind = item.k, name = kind + '_' + item.id, store = STORES[kind], s = st[name];
   if (s && s.s === item.s) return false; // already in step with this version
-  let R = null;
-  try { R = await decode(await getBlob(item), item.gz); } catch (e) { if (e.signin || e.status || e.name === 'TypeError') throw e; }
-  if (!R || R.id !== item.id) { st[name] = { lm: -1, s: item.s }; console.warn('Skipped an unreadable record', name); return false; }
-  const L = await db.get(store, item.id);
-  const m = L ? await merge(kind, L, R) : R;
-  if (m === L) { // ours already contains everything theirs has
-    st[name] = { lm: L.modified === R.modified ? L.modified : -1, s: item.s };
-    if (L.modified !== R.modified) await pushRecord(kind, L);
-    return false;
+  let targetDoc = kind === 'd' ? item.id : null;
+  const targetFolder = kind === 'f' ? item.id : null;
+  if (kind === 'p' && item.info) {
+    try { targetDoc = JSON.parse(item.info).docId || null; } catch {}
   }
-  // Only store it if the local record did not change while we were downloading; otherwise retry next round.
-  if (!await db.putIf(store, m, L ? L.modified : undefined)) return false;
-  st[name] = { lm: m === R ? R.modified : -1, s: item.s };
-  if (m !== R) await pushRecord(kind, m);
-  bus.emit('remote-record', { kind, rec: m });
-  if (kind === 'p') fetchMissingFiles([m]).catch(() => {});
-  return true;
+  if (targetDoc) { inFlightDocs.add(targetDoc); scheduleTargetsUpdate(); }
+  if (targetFolder) { inFlightFolders.add(targetFolder); scheduleTargetsUpdate(); }
+  try {
+    let R = null;
+    try { R = await decode(await getBlob(item), item.gz); } catch (e) { if (e.signin || e.status || e.name === 'TypeError') throw e; }
+    if (!R || R.id !== item.id) { st[name] = { lm: -1, s: item.s }; console.warn('Skipped an unreadable record', name); return false; }
+    if (kind === 'p' && !targetDoc && R.docId) { targetDoc = R.docId; inFlightDocs.add(targetDoc); scheduleTargetsUpdate(); }
+    const L = await db.get(store, item.id);
+    const m = L ? await merge(kind, L, R) : R;
+    if (m === L) { // ours already contains everything theirs has
+      st[name] = { lm: L.modified === R.modified ? L.modified : -1, s: item.s };
+      if (L.modified !== R.modified) await pushRecord(kind, L);
+      return false;
+    }
+    // Only store it if the local record did not change while we were downloading; otherwise retry next round.
+    if (!await db.putIf(store, m, L ? L.modified : undefined)) return false;
+    st[name] = { lm: m === R ? R.modified : -1, s: item.s };
+    if (m !== R) await pushRecord(kind, m);
+    bus.emit('remote-record', { kind, rec: m });
+    if (kind === 'p') fetchMissingFiles([m]).catch(() => {});
+    return true;
+  } finally {
+    if (targetDoc) inFlightDocs.delete(targetDoc);
+    if (targetFolder) inFlightFolders.delete(targetFolder);
+    scheduleTargetsUpdate();
+  }
 }
 
 async function pool(n, items, fn) {
@@ -723,25 +879,33 @@ async function fullPass() {
 // Upload what changed in one notebook (the one being written in). only = ids of the pages saved since the last
 // push; reading just those back, not the whole notebook, keeps writing smooth in long notebooks.
 export async function pushDoc(docId, only) {
-  const pages = only
-    ? (await Promise.all([...only].map(id => db.get('pages', id)))).filter(p => p && p.docId === docId)
-    : await db.byDoc(docId);
-  for (const p of pages) {
-    if (p.deleted) continue;
-    if (p.pdf && !st['a_' + p.pdf.a]) queueAsset(p.pdf.a, 'up');
-    if (p.bg && !st['a_' + p.bg.a]) queueAsset(p.bg.a, 'up');
-    for (const it of p.items || []) if (it.t === 'im' && !st['a_' + it.a]) queueAsset(it.a, 'up');
+  inFlightDocs.add(docId);
+  scheduleTargetsUpdate();
+  try {
+    const pages = only
+      ? (await Promise.all([...only].map(id => db.get('pages', id)))).filter(p => p && p.docId === docId)
+      : await db.byDoc(docId);
+    for (const p of pages) {
+      if (p.deleted) continue;
+      if (p.pdf && !st['a_' + p.pdf.a]) queueAsset(p.pdf.a, 'up', false, docId);
+      if (p.bg && !st['a_' + p.bg.a]) queueAsset(p.bg.a, 'up', false, docId);
+      for (const it of p.items || []) if (it.t === 'im' && !st['a_' + it.a]) queueAsset(it.a, 'up', false, docId);
+    }
+    for (const p of pages) {
+      const s = st['p_' + p.id];
+      if (!s || s.lm !== p.modified) await pushRecord('p', p);
+    }
+    const doc = await db.get('docs', docId);
+    if (doc) {
+      const s = st['d_' + doc.id];
+      if (!s || s.lm !== doc.modified) await pushRecord('d', doc);
+    }
+    saveState();
+  } finally {
+    inFlightDocs.delete(docId);
+    pendingDocs.delete(docId);
+    scheduleTargetsUpdate();
   }
-  for (const p of pages) {
-    const s = st['p_' + p.id];
-    if (!s || s.lm !== p.modified) await pushRecord('p', p);
-  }
-  const doc = await db.get('docs', docId);
-  if (doc) {
-    const s = st['d_' + doc.id];
-    if (!s || s.lm !== doc.modified) await pushRecord('d', doc);
-  }
-  saveState();
 }
 
 // ---------------------------------------------------------------- live connection
@@ -800,6 +964,10 @@ let syncFailCount = 0;
 
 function fail(e, interactive) {
   syncFailCount++;
+  inFlightDocs.clear();
+  inFlightFolders.clear();
+  pendingDocs.clear();
+  pendingFolders.clear();
   if (!e.signin && e.name !== 'TypeError' && navigator.onLine) health.err = { t: Date.now(), msg: e.message };
   if (e.signin) { setStatus('signin', 'Sync paused. Tap to sign in again.'); return; }
   if (e.name === 'TypeError' || !navigator.onLine) { // the request never reached the service
@@ -817,7 +985,12 @@ function run(fn, interactive) {
       setStatus('syncing', 'Syncing...');
       const changed = await fn();
       db.setMeta('lastSync', Date.now()).catch(() => {});
+      if (!assetActive && !assetQ.length) {
+        pendingDocs.clear();
+        pendingFolders.clear();
+      }
       setIdle();
+      scheduleTargetsUpdate();
       if (changed) bus.emit('synced');
       return true;
     } catch (e) {
@@ -909,7 +1082,11 @@ export async function initSync() {
     bus.on('db-write', w => {                                                     // something was saved locally
       writeSeq++;
       if (savedPages && w && w.s === 'pages') for (const id of w.ids) savedPages.add(id);
-      if (session && !off) pushSoon();
+      if (session && !off) {
+        if (w && Array.isArray(w.docIds)) for (const id of w.docIds) pendingDocs.add(id);
+        if (w && Array.isArray(w.folderIds)) for (const id of w.folderIds) pendingFolders.add(id);
+        pushSoon();
+      }
     });
     bus.on('editor-open', async id => {
       openDocs.add(id);
@@ -1997,6 +2174,14 @@ export async function importBackup(file) {
 }
 
 // ---------------------------------------------------------------- settings dialog
+function renderUserUsagePills(users, getVal, fmtVal) {
+  if (!Array.isArray(users) || !users.length) return null;
+  return h('div', { class: 'usage-users' },
+    users.map(u => h('span', { class: 'usage-user-pill' + (u.me ? ' me' : '') },
+      u.label + ': ', h('b', null, fmtVal(getVal(u)))))
+  );
+}
+
 export async function openSettings() {
   const cfg = (await db.getMeta('sync')) || {};
   const last = await db.getMeta('lastSync');
@@ -2010,6 +2195,40 @@ export async function openSettings() {
       await initSync();
     }
   };
+  const doSignOut = async () => {
+    if (!await confirmBox('Sign out', 'Sign this device out of sync? Notes stay on this device and on your other devices.', 'Sign out')) return false;
+    await signOut();
+    await initSync();
+    return true;
+  };
+  const accountCard = h('div', { class: 'account-card' });
+  const drawAccount = () => {
+    const signed = !!session;
+    const statusText = signed
+      ? `Signed in as ${session.email}` + (cfg.off ? ' (sync paused)' : '')
+      : cfg.off ? 'Sync is turned off on this device.' : 'Not signed in to live sync yet.';
+    accountCard.replaceChildren(
+      h('div', { class: 'account-meta' },
+        h('b', { style: 'font-size: 13.5px;' }, signed ? session.email : 'Sync account'),
+        h('span', { class: 'bk-sub' }, statusText)
+      ),
+      h('div', { class: 'row', style: 'gap: 8px; flex-shrink: 0;' },
+        signed ? h('button', {
+          class: 'btn sm primary', type: 'button',
+          onclick: async () => { await turnOn(); m.close(); syncNow(true); }
+        }, 'Sync now') : h('button', {
+          class: 'btn sm primary', type: 'button',
+          onclick: async () => { await turnOn(); m.close(); syncNow(true); }
+        }, 'Sign in with Google'),
+        signed ? h('button', {
+          class: 'btn sm danger', type: 'button',
+          onclick: async () => { if (await doSignOut()) m.close(); }
+        }, 'Sign out') : null
+      )
+    );
+  };
+  drawAccount();
+
   // The devices signed in to this account, with a way to sign any of them out (e.g. a lost phone, or an old
   // sign-in left over on this device).
   const devicesEl = h('div', { class: 'devices' });
@@ -2024,7 +2243,11 @@ export async function openSettings() {
         h('div', { class: 'dev-meta' },
           h('span', null, d.label, d.current ? h('span', { class: 'dev-me' }, ' · this device') : ''),
           h('span', { class: 'bk-sub' }, `Signed in ${when(d.created)} · last used ${Date.now() - d.seen < 3600e3 ? 'within the hour' : when(d.seen)}`)),
-        d.current ? null : h('button', {
+        d.current ? h('button', {
+          class: 'btn sm', type: 'button', onclick: async () => {
+            if (await doSignOut()) m.close();
+          }
+        }, 'Sign out') : h('button', {
           class: 'btn sm', type: 'button', onclick: async e => {
             if (!await confirmBox('Sign out a device', `Sign out "${d.label}" (signed in ${when(d.created)})? It stops syncing until someone signs in on it again. Notes already on it stay there.`, 'Sign out')) return;
             const btn = e.target; btn.disabled = true;
@@ -2059,26 +2282,27 @@ export async function openSettings() {
   drawHealth();
   const healthT = setInterval(() => { if (!healthEl.isConnected) { clearInterval(healthT); return; } drawHealth(); }, 2000);
 
-  // Cloudflare sync request usage
+  // Cloudflare sync request usage (cumulative across all users)
   const cfUsageBox = h('div', { class: 'field', style: 'margin: 8px 0 12px; padding: 10px 12px; background: var(--surface-2); border-radius: 8px;' });
   const drawCfUsage = () => {
     const cf = getCfUsage();
-    const calls = cf.calls || 0;
+    const totalCalls = Math.max(cf.totalCalls || 0, cf.calls || 0);
     const limit = cf.limit || 100000;
-    const pct = Math.min(100, Math.round((calls / limit) * 100));
+    const pct = Math.min(100, Math.round((totalCalls / limit) * 100));
     const lastErrMsg = health.err?.msg || '';
     const isQuotaExceeded = lastErrMsg.includes('free tier daily limit') || lastErrMsg.includes('Exceeded allowed rows read');
 
     const kids = [
       h('div', { class: 'row', style: 'align-items: center; justify-content: space-between; margin-bottom: 4px;' },
-        h('b', { style: 'font-size: 13px;' }, 'Cloudflare Sync Requests (All devices):'),
-        h('span', { class: 'bk-sub' }, `${calls.toLocaleString()} / ${limit.toLocaleString()} requests today`)
+        h('b', { style: 'font-size: 13px;' }, 'Cloudflare Sync Requests (All users):'),
+        h('span', { class: 'bk-sub' }, `${totalCalls.toLocaleString()} / ${limit.toLocaleString()} requests today`)
       ),
       h('div', { class: 'usage-bar', style: 'margin: 6px 0;' },
         h('div', { class: 'usage-fill' + (pct > 80 || isQuotaExceeded ? ' warn' : ''), style: { width: Math.max(pct, isQuotaExceeded ? 100 : 1) + '%' } })
       ),
+      renderUserUsagePills(cf.users, u => u.cfCalls, n => n.toLocaleString()),
       h('div', { class: 'bk-sub', style: 'font-size: 11.5px; color: var(--muted); margin-top: 4px;' },
-        'Merged across iPad, laptop & web · Free tier: 100,000 req/day · Resets daily at 00:00 UTC'
+        'Cumulative across all users & devices · Free tier: 100,000 req/day · Resets daily at 00:00 UTC'
       ),
       isQuotaExceeded ? h('div', { style: 'margin-top: 8px; padding: 6px 10px; background: rgba(224, 49, 49, 0.12); border-left: 3px solid #e03131; border-radius: 4px; font-size: 12px; color: #ff6b6b; line-height: 1.4;' },
         '⚠️ Cloudflare daily row-read budget reached. Your writing and changes are saved 100% safely on this device and will automatically sync once the quota resets at midnight UTC.'
@@ -2088,26 +2312,103 @@ export async function openSettings() {
   };
   drawCfUsage();
   const offCfUsage = bus.on('cf-usage', () => drawCfUsage());
-  // How much of this person's share of the sync service is used, and where PDFs and pictures are kept.
+
+  // Owner-only user manager (add/remove allowed emails without opening Cloudflare)
+  const allowedUsersBox = h('div', { class: 'allowed-users', hidden: true });
+  async function drawAllowedUsers() {
+    try {
+      const r = await call('/admin/users');
+      if (!r.ok) { allowedUsersBox.hidden = true; return; }
+      const data = await r.json();
+      const envSet = new Set(data.envUsers || []);
+      const all = [...new Set([...(data.envUsers || []), ...(data.extraUsers || [])])];
+      const inp = h('input', {
+        type: 'email', class: 'inp sm', placeholder: "Friend's Gmail address (e.g. friend@gmail.com)",
+        style: 'flex: 1;'
+      });
+      const addUser = async () => {
+        const email = inp.value.trim().toLowerCase();
+        if (!email || !email.includes('@')) { toast('Please enter a valid email address.'); inp.focus(); return; }
+        const res = await call('/admin/users', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ email })
+        });
+        const body = await res.json().catch(() => ({}));
+        if (!res.ok) { toast(body.message || 'Could not add user'); return; }
+        toast(`Added ${email}. They can sign in now.`);
+        drawAllowedUsers();
+      };
+      inp.addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); addUser(); } });
+      allowedUsersBox.replaceChildren(
+        h('b', { class: 'dev-title' }, `Allowed users (${all.length})`),
+        h('p', { class: 'modal-text small', style: 'margin-bottom: 8px;' }, 'Add or remove friends who can sign in to this sync server without opening Cloudflare.'),
+        h('div', { class: 'row', style: 'gap: 8px; margin-bottom: 10px;' },
+          inp,
+          h('button', { class: 'btn sm primary', type: 'button', onclick: addUser }, 'Add user')
+        ),
+        ...all.map(email => {
+          const isOwnerEmail = email === data.owner;
+          const inCloudflare = envSet.has(email);
+          return h('div', { class: 'allowed-row' },
+            h('span', { class: 'allowed-email' }, email),
+            h('span', { class: 'allowed-tag' }, isOwnerEmail ? 'Owner' : inCloudflare ? 'Cloudflare' : 'Added here'),
+            !inCloudflare ? h('button', {
+              class: 'btn sm', type: 'button',
+              onclick: async () => {
+                if (!await confirmBox('Remove user', `Stop allowing ${email} to sign in?`, 'Remove', true)) return;
+                const res = await call('/admin/users', {
+                  method: 'DELETE', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ email })
+                });
+                if (res.ok) { toast(`Removed ${email}`); drawAllowedUsers(); }
+              }
+            }, 'Remove') : null
+          );
+        })
+      );
+      allowedUsersBox.hidden = false;
+    } catch {
+      allowedUsersBox.hidden = true;
+    }
+  }
+
+  // How much of Cloudflare's total 5 GB storage and this person's share is used, plus Google Drive status.
   const usage = h('div', { class: 'usage', hidden: true });
   if (session && !cfg.off && navigator.onLine) {
     call('/me').then(r => r.json()).then(j => {
-      if (j.cfCallsToday != null) updateCfUsageFromServer(j.cfCallsToday, j.cfLimit, true);
-      if (j.ocrCallsToday != null) updateHwUsageFromServer(j.ocrCallsToday, j.ocrLimit);
-      const fmt = b => (b >= 1048576 ? Math.round(b / 1048576) + ' MB' : Math.max(1, Math.round(b / 1024)) + ' KB'); // in MB, as the shares are set
-      const quota = Number(j.quota) || 500 * 1048576, used = Number(j.bytes) || 0, pct = Math.min(100, used / quota * 100);
+      if (j.cfCallsToday != null || j.cfTotalToday != null) {
+        updateCfUsageFromServer(j.cfCallsToday, j.cfLimit, true, j.cfTotalToday, j.usageUsers);
+      }
+      if (j.ocrCallsToday != null || j.ocrTotalToday != null) {
+        updateHwUsageFromServer(j.ocrCallsToday, j.ocrLimit, j.ocrTotalToday, j.usageUsers);
+      }
+      if (j.isOwner) drawAllowedUsers();
+      const fmt = b => (b >= 1073741824 ? (b / 1073741824).toFixed(2) + ' GB' : b >= 1048576 ? Math.round(b / 1048576) + ' MB' : Math.max(0, Math.round(b / 1024)) + ' KB');
+      const quota = Number(j.quota) || 500 * 1048576, used = Number(j.bytes) || 0;
+      const totalAll = Number(j.totalBytesAll) || used;
+      const cfLimit = Number(j.cfStorageLimit) || 5 * 1024 * 1048576;
+      const totalPct = Math.min(100, totalAll / cfLimit * 100);
+      const myPct = Math.min(100, used / quota * 100);
       usage.replaceChildren(
-        h('div', { class: 'usage-text' }, `Space used on the sync service: ${fmt(used)} of ${fmt(quota)} (${pct < 1 ? pct.toFixed(1) : Math.round(pct)}%)`,
-          ''),
-        h('div', { class: 'usage-bar' }, h('div', { class: 'usage-fill' + (pct > 85 ? ' warn' : ''), style: { width: Math.max(pct, 0.5) + '%' } })),
+        h('div', { class: 'field', style: 'margin: 8px 0 10px; padding: 10px 12px; background: var(--surface-2); border-radius: 8px;' },
+          h('div', { class: 'row', style: 'align-items: center; justify-content: space-between; margin-bottom: 4px;' },
+            h('b', { style: 'font-size: 13px;' }, 'Cloudflare Storage (All users):'),
+            h('span', { class: 'bk-sub' }, `${fmt(totalAll)} / ${fmt(cfLimit)} (${totalPct < 1 ? totalPct.toFixed(1) : Math.round(totalPct)}%)`)
+          ),
+          h('div', { class: 'usage-bar', style: 'margin: 6px 0;' },
+            h('div', { class: 'usage-fill' + (totalPct > 85 ? ' warn' : ''), style: { width: Math.max(totalPct, 0.5) + '%' } })
+          ),
+          renderUserUsagePills(j.usageUsers, u => u.bytes, fmt),
+          h('div', { class: 'bk-sub', style: 'font-size: 11.5px; color: var(--muted); margin-top: 4px;' },
+            `Your share cap: ${fmt(used)} of ${fmt(quota)} (${myPct < 1 ? myPct.toFixed(1) : Math.round(myPct)}%) · Free plan total: 5 GB`
+          )
+        ),
         j.drive
           ? h('div', null,
-            h('p', { class: 'modal-text small' }, 'PDFs and pictures are kept in your own Google Drive, and a full copy of every notebook goes there once a day. The sync service only holds your writing. Your PDFs also appear under their own names in the "Inkleaf" folder of your Drive.'),
-            visibleOk === false ? h('p', { class: 'modal-text small' }, 'To put the PDFs in the visible Inkleaf folder, Google needs one more permission:', ' ', h('button', { class: 'btn sm', type: 'button', onclick: async () => { m.close(); try { await signIn(); toast('Done. PDFs are copied to the Inkleaf folder in your Drive.', 3500); syncNow(false); } catch (e) { fail(e, true); } } }, 'Link Google Drive again')) : '')
+            h('p', { class: 'modal-text small' }, 'Large files (500 MB+) and daily full backups are stored in your Google Drive. Smaller PDFs and writing sync through Cloudflare for quick access.'),
+            visibleOk === false ? h('p', { class: 'modal-text small' }, 'To put PDFs in the visible Inkleaf folder, Google needs one more permission:', ' ', h('button', { class: 'btn sm', type: 'button', onclick: async () => { m.close(); try { await signIn(); toast('Done. PDFs are copied to the Inkleaf folder in your Drive.', 3500); syncNow(false); } catch (e) { fail(e, true); } } }, 'Link Google Drive again')) : '')
           : h('div', null,
-            h('p', { class: 'modal-text small' }, 'Your Google Drive is not linked yet, so PDFs and pictures are kept on the sync service. Sign in again to keep them (and a daily full copy) in your Google Drive instead.'),
+            h('p', { class: 'modal-text small' }, 'Your Google Drive is not linked yet, so files stay on the sync service. Sign in again to keep large files and a daily full copy in your Google Drive.'),
             h('button', { class: 'btn sm', type: 'button', onclick: async () => { m.close(); try { await signIn(); toast('Google Drive linked. Files move there in the background.', 3500); syncNow(false); } catch (e) { fail(e, true); } } }, 'Link Google Drive')),
-        pct > 85 ? h('p', { class: 'modal-text small' }, 'Nearly full. Removing notebooks you no longer need (and emptying the bin) frees space.') : '');
+        totalPct > 85 || myPct > 85 ? h('p', { class: 'modal-text small' }, 'Nearly full. Removing notebooks you no longer need (and emptying the bin) frees space.') : '');
       usage.hidden = false;
     }).catch(() => {});
   }
@@ -2127,8 +2428,9 @@ export async function openSettings() {
       : st.state === 'working' ? `Reading handwriting with ${activeName} (${st.left} left)...`
       : `Ready. Active model: ${activeName} (${curPref === 'auto' ? 'Auto best tier' : 'Custom locked'}) with offline sync.`;
     const gemKey = localStorage.getItem('inkleaf.geminiKey') || '';
-    const usage = getHwUsage();
-    const pct = Math.min(100, Math.round(((usage.calls || 0) / (usage.limit || 1500)) * 100));
+    const hw = getHwUsage();
+    const totalHw = Math.max(hw.totalCalls || 0, hw.calls || 0);
+    const pct = Math.min(100, Math.round((totalHw / (hw.limit || 1500)) * 100));
 
     const keyInp = h('input', {
       type: 'password', class: 'inp sm', placeholder: 'Optional Gemini API Key (or leave blank for Cloudflare)', value: gemKey,
@@ -2168,7 +2470,7 @@ export async function openSettings() {
 
     const limitInp = h('input', {
       type: 'number', class: 'inp sm', min: '10', max: '10000', step: '50',
-      value: String(usage.limit || 1500),
+      value: String(hw.limit || 1500),
       style: 'width: 85px; text-align: center;',
       onchange: e => {
         setHwLimit(parseInt(e.target.value, 10));
@@ -2178,14 +2480,15 @@ export async function openSettings() {
 
     const usageCard = h('div', { class: 'field', style: 'margin-top: 10px; padding: 10px 12px; background: var(--surface-2); border-radius: 8px;' },
       h('div', { class: 'row', style: 'align-items: center; justify-content: space-between; margin-bottom: 4px;' },
-        h('b', { style: 'font-size: 13px;' }, 'Daily AI Request Usage (All devices):'),
-        h('span', { class: 'bk-sub' }, `${usage.calls || 0} / ${usage.limit || 1500} requests`)
+        h('b', { style: 'font-size: 13px;' }, 'Daily AI Request Usage (All users):'),
+        h('span', { class: 'bk-sub' }, `${totalHw.toLocaleString()} / ${(hw.limit || 1500).toLocaleString()} requests`)
       ),
       h('div', { class: 'usage-bar', style: 'margin: 6px 0;' },
         h('div', { class: 'usage-fill' + (pct > 85 ? ' warn' : ''), style: { width: Math.max(pct, 1) + '%' } })
       ),
+      renderUserUsagePills(hw.users, u => u.ocrCalls, n => n.toLocaleString()),
       h('div', { class: 'row', style: 'align-items: center; justify-content: space-between; font-size: 12px; color: var(--muted); margin-top: 4px;' },
-        h('span', null, `Merged across iPad, laptop & web · ${usage.pages || 0} pages transcribed today`),
+        h('span', null, `Cumulative across all users · ${hw.pages || 0} pages read here today`),
         h('div', { class: 'row', style: 'align-items: center; gap: 6px;' },
           h('span', null, 'Daily limit:'),
           limitInp
@@ -2237,7 +2540,7 @@ export async function openSettings() {
     body: h('div', null,
       h('div', {
         class: 'row',
-        style: 'align-items: center; justify-content: space-between; padding: 10px 14px; background: var(--surface-2); border-radius: 10px; margin-bottom: 16px;'
+        style: 'align-items: center; justify-content: space-between; padding: 10px 14px; background: var(--surface-2); border-radius: 10px; margin-bottom: 12px;'
       },
         h('div', null,
           h('div', { style: 'font-weight: 600; font-size: 14.5px;' }, 'Inkleaf ' + APP_VER),
@@ -2256,6 +2559,7 @@ export async function openSettings() {
           }
         }, 'Check for updates')
       ),
+      accountCard,
       h('h3', null, 'Handwriting search'),
       h('p', { class: 'modal-text' },
         'Search your handwritten notes as you type. Uses fast Cloud AI (Gemini Flash) with 1 call per page when online, and syncs search index across devices.'),
@@ -2265,22 +2569,15 @@ export async function openSettings() {
         'Notes are always kept on this device, so they open instantly and work offline. With sync on, every change is also ',
         'sent to Inkleaf\'s own sync service (on Cloudflare) and appears on your other devices within a second or two.'),
       h('p', { class: 'modal-text small' }, who),
-      usage, cfUsageBox, healthEl, devicesEl,
+      usage, cfUsageBox, allowedUsersBox, healthEl, devicesEl,
       h('div', { class: 'row' },
         h('button', {
           class: 'btn primary', type: 'button',
           onclick: async () => { await turnOn(); m.close(); syncNow(true); }
         }, session && !cfg.off ? 'Sync now' : 'Sign in with Google'),
-        session && !cfg.off ? h('button', {
+        session ? h('button', {
           class: 'btn', type: 'button',
-          onclick: async () => {
-            if (!await confirmBox('Sign out', 'Sign this device out of sync? Notes stay on this device and on your other devices.', 'Sign out')) return;
-            await signOut();
-            await db.setMeta('cloudState', {});
-            await db.setMeta('cloudCursor', 0);
-            await initSync();
-            m.close();
-          }
+          onclick: async () => { if (await doSignOut()) m.close(); }
         }, 'Sign out') : null),
       h('p', { class: 'modal-text small' }, last ? 'Last synced ' + new Date(last).toLocaleString() : 'Not synced yet on this device.'),
       h('h3', null, 'Backup file'),

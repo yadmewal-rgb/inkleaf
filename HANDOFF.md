@@ -1,97 +1,49 @@
 # Handoff
 
-**Written:** 2026-11-25, about 12:45, by Claude Code. **Next:** Claude Code or agy.
-**State:** nothing half-done in the code. Working tree clean. The newest commits on this PC are notes only (not pushed; they
-go up with the next release). Nothing is waiting to be published.
+**Written:** 2026-11-26, about 18:15, by agy (Antigravity). **Next:** agy or Claude Code.
+**State:** v97 changes are committed locally only (**NOT pushed**). `tests/check.cmd --quick` passed **51 / 51** (all JS/CSS/version checks and Miniflare sync server tests). Browser UI checks (`tests/check.cmd`) and screenshots are waiting because Chrome could not open a visible tab from this session.
 
 ## Live now
-- App **v96** (commit 6b5cb82) on GitHub Pages. Sync server: the v94 code (243f512), unchanged since; Cloudflare build green.
-- `tests/after-publish.cmd` after v96: ALL GOOD. `tests/check.cmd` on v96 in the owner's own Chrome: 131 passed, 0 failed.
+- App **v96** (commit 6b5cb82) on GitHub Pages. Sync server: **v94** (243f512), unchanged. Nothing new has been published yet.
 
-## Owner's words on 2026-11-25, in order
-1. "take handoff from agy"
-2. "yes verify and also each line of code so that no conflicting commands are there" -> v94; "ok" (publish)
-3. "do you want to suggest anything ?" -> five suggestions; "... why ?, go for 1,2,4" -> v95; "okay" (publish)
-4. "open chrome in same chrome , not in separate"; asked hidden or own Chrome: "In your own Chrome:"; "go"
-5. A picture from the iPad with a red drawing (library, sidebar open); "is this solved ?" -> v96; "go" (check and publish)
-6. "save it all to handoff"
+## Owner's words on 2026-11-26, in order
+1. Six items:
+   1. While rotating the syncing sign, show exactly which notebook or folder is syncing (folder in main menu, exact file/subfolder when opened), like OneDrive.
+   2. How to add users without going to Cloudflare.
+   3. How to get more than 5 GB space for total?
+   4. There is no option of sign out.
+   5. Show cumulative usage of limit in Gemini and Cloudflare, mention others as "Other user", show every user's usage without showing names or subdividing their usage.
+   6. When any user shares any file, it first uploads from that user and then shares — is it the only way? It is time-consuming.
+2. `/plan /grill-me /teamwork /boost /swarm /learn /generative_ui` (skipped the follow-up mode choice).
+3. `go and keep 'How to get more than 5 GB total space:' unchanged`
+4. `go`
 
-## What the owner must do
-1. Reload Inkleaf twice on every device (friends too); Settings must show **v96**. A device still on v94 or older can undo a
-   rename made elsewhere; two devices on v93 or older keep uploading to each other.
-2. Look at v96 on the iPad, held upright with the sidebar open; tap Journal and Sync (the search box used to cover them).
-3. Write on the iPad and see it on the laptop: signed-in sync on the real account was never tested by an agent.
-4. Answer the open question below. Problems go into the "Temp" notebook.
+## Done locally (v97, tested with `tests/check.cmd --quick`: 51 passed, 0 failed)
+- **OneDrive-style per-folder & per-notebook syncing signs** (`js/sync.js`, `js/library.js`, `js/db.js`, `css/app.css`):
+  - `db-write` emits `docIds` / `folderIds`; `sync.js` tracks active records, pending writes, and queued/active assets (`assetDocs`) and resolves ancestor folders all the way to the root (`syncTargets()`, `bus` event `'sync-targets'`, `_setSyncTargets` test helper).
+  - `library.js` shows `.item-sync-badge` on folder cards, notebook cards, Jump Back In cards, and `.side-sync-item` on sidebar folder rows.
+- **In-app Allowed Users for owner without Cloudflare** (`server/worker.js`, `js/sync.js`):
+  - `app_config` Durable Object stores `extra_allowed`; `allowedEmail` & `GET /me` merge `env.ALLOWED` + `extra_allowed`.
+  - Owner-only routes `GET/POST/DELETE /admin/users` (enforces first email in `ALLOWED`; `403` for everyone else; `/config` blocked `404` externally).
+  - Settings shows an **Allowed users** box to the owner account only.
+- **Prominent Sign out** (`js/sync.js`, `js/library.js`, `js/icons.js`, `js/app.js`):
+  - Added top **Account** card in Settings with **Sign out**, **Sign out** button on `"this device"` in Signed-in devices, sidebar footer `I.logOut` button, and **Sign out** on the `FORBIDDEN` screen (`js/app.js`). `signOut()` clears cached share metadata too (`shared_items`, `my_shares`, `my_shared_folders`, `cloudState`, `cloudCursor`).
+- **Cumulative usage across all users (anonymous)** (`server/worker.js`, `js/sync.js`, `js/hwsearch.js`):
+  - `app_usage` Durable Object aggregates daily `cfCalls`, `ocrCalls`, and stored `bytes` across users (`/usage` blocked `404` externally; internal DO calls excluded from `trackUsage` to avoid loops).
+  - `GET /me` returns `cfTotalToday`, `ocrTotalToday`, `totalBytesAll`, `cfStorageLimit` (5 GB), and `usageUsers` (`You`, `Other user` / `Other user 1`, `Other user 2`...) with zero emails/names or sub-breakdowns.
+  - Direct browser Gemini calls report via `POST /usage-ocr`, and `/ai/outline` counts toward Gemini usage too.
+  - Custom `inkleaf.hwLimit` is no longer overwritten by server headers.
+- **Storage unchanged:** 500 MB `BIG` threshold and `QUOTA_MB` / `OWNER_QUOTA_MB` left untouched per owner's request.
+- **Version bumped:** `v97` in `sw.js` and `js/sync.js`. Automated tests added in `tests/check.mjs`.
 
-## Open question (asked, not answered)
-**Folder dots:** a folder without a chosen colour gets one by its position in the sidebar, but is always red in the list, on
-cards and in the colour chooser ("Understand UPSC" was blue and red in the owner's picture). Offered: one fixed colour per
-folder used everywhere, chosen colours left alone; some automatic dots would change. How: `folderColorOf` in library.js gets
-an index in one place only; take the default from the folder's id instead and drop the index. Chosen colours are kept in
-localStorage `inkleaf.folderColors`, so they stay on that device (not synced).
+## Half-done / blocked right now
+- **Chrome browser verification & screenshots (`tests/check.cmd`):** Failed 4 browser checks (`the check tab did not open in Chrome`). From this session (`SessionId=4`), `shots.ps1 -Screen` hit `CopyFromScreen: The handle is invalid` (blank screen), `Get-Process` showed zero processes with `MainWindowTitle`, and Chrome DevTools MCP failed (`DevToolsActivePort` missing / remote debugging off).
 
 ## Next step
-Wait for the owner's view of v96. If they say yes to the folder dots: v97 (raise the version in sw.js AND sync.js, add a check,
-ask before running `tests/check.cmd`, push only after "go", then `tests/after-publish.cmd`).
+1. Once the laptop desktop is unlocked with Chrome visible on screen (or `chrome://inspect/#remote-debugging` enabled), run `tests/check.cmd` in the owner's Chrome and verify all checks pass (including the new OneDrive sync badge and Settings checks in `tests/check.mjs`).
+2. Take crisp 1000px screenshots via `shots.ps1` showing the folder -> subfolder -> notebook sync signs and the updated Settings dialog, verify them visually, and show them in chat.
+3. Only after `tests/check.cmd` prints `ready to publish` and the owner confirms, push `main` and run `tests/after-publish.cmd`.
 
-## Done on 2026-11-25
-**v94 (243f512): conflicting commands.** v93 was exactly v87 apart from version numbers.
-- Endless upload loop: `mergeDoc` (since v76) always returned a new copy; two devices made 135 uploads in 20 s with nobody
-  touching anything, now 0. Extra `pushDoc` calls in the editor removed (saving already tells sync).
-- The server had not deployed since 20 Nov (`newSize` declared twice in worker.js; live was 4992a62, v60). Fixing only that
-  would have broken live sync (the WebSocket answer was rewrapped); both fixed. Also: the e-mail limit of private share links
-  could be got round with a made-up key, and it showed an e-mail address; share links whose secret has "_" failed (11 of 40
-  test links); sharing more than 100 pages failed; signing out took 10 minutes in the undeployed code; guests could send ink
-  to other notebooks; the app could not read the usage headers.
-  Old share links are protected too now; making new ones is only needed to switch the old ones off.
-- Every pop-up threw an error on closing (`opts` in ui.js, since v76): the selection's colour, the spell-check buttons and
-  "Add New Preset" did nothing.
-- Edited pen colours and tip sizes were lost on reopening. One pop-up per long press. No hold menu from a resting palm or two
-  fingers. "View-only" sharing no longer turns the owner's own editor read-only, and really holds for guests.
-- Copy and paste: the latest copy wins. **Side effect (tell the owner if they ask):** copying ink puts the text "Copied in
-  Inkleaf (paste it inside Inkleaf)" (`CLIP_MARK`) on the device's clipboard, so pasting in another app gives that text.
-- Pasted text takes the chosen text colour and has a place in the stack; `db` imported in app.js; listeners cleaned up; a file
-  shared to Inkleaf survives an update (sw.js); the pages panel is no longer told to sit left and right.
-
-**v95 (8fa1431): suggestions 1, 2 and 4.**
-- Reading never undoes a change: proved first on v94 (a device that only read pages while offline undid a rename, a move and
-  a "move to bin" on both devices). `editedAt` / `touchDoc` in util.js; `mergeDoc` goes by the last REAL change. A notebook
-  binned elsewhere while open here stays in the bin (`docGone`).
-- `tests/` (see below). Thin ring on the tip-size dots. Turning the screen in side-by-side mode keeps the page centred.
-
-**v96 (6b5cb82): the owner's drawing.** Sidebar open: the top bar no longer repeats the sidebar button, logo and name, and the
-sidebar button is where the X was (same button in the phone drawer). Sidebar closed: the top bar has them. At 820 px wide the
-search box had about 80 px left, so the AI label lay on the name and the box covered Journal and Sync; nothing overlaps now at
-the 8 widths tested (375 to 1366). Where the box is too narrow for the label (phones around 375 px) the label is hidden. Both
-headers are 61 px high (from 641 px width up).
-
-## The checks (`tests/`)
-- `check.cmd` (3 minutes; `--quick` = code and server only): code, styles, versions, a local copy of the sync server
-  (Miniflare), then the app in a tab "Inkleaf check" of the owner's own Chrome (http://localhost:8099, own test library,
-  pretend clipboard; cleans up before and after). It must stay in front and uncovered; it pauses otherwise, gives up after
-  10 minutes, and runs a part that failed while out of sight once more. **Ask the owner before starting it.**
-- `INKLEAF_ROOT=<folder> node check.mjs` checks another copy. It finds 9 failures in v94 and 31 in v93; the "library" part
-  fails 6 times on v95.
-- For its own debugging Claude ran a throwaway copy in a hidden browser (no window; not in the project) and told the owner.
-- The first run in the owner's Chrome failed 4 checks because an earlier run that was cut off had left test data; fixed.
-
-## Not tested, not read
-- The real iPad and phone; signed-in sync on the real account; the spell-check buttons; in the More menu: print, export, send
-  a copy, page as a picture, full screen, a second notebook beside, delete.
-- Every line of JS, CSS and server code goes through the checker. Read by eye: worker.js, ui.js, app.js, editor-consts.js, the
-  input, tool bar, paste and sync parts of editor.js / sync.js, the top bar and sidebar of library.js. Not read by eye: render,
-  export, goodnotes, pdftools, hwsearch (most), spellcheck, the rest of library.js and editor.js.
-
-## Seen, not changed (ask the owner first)
-- Opening a notebook changes its "Last edited" date and its place in that sort order (since v76: they show `modified`, which
-  opening stamps). `rd.e` is no replacement, because writing does not set it.
-- Two REAL changes to one notebook at the same time (a rename on one device, adding a page on another): the later one wins
-  for the name, folder and bin.
-- In portrait a sliver of the editor's tool bar shows to the right of the "..." button.
-- A few unused variables (harmless): in editor.js, sync.js, hwsearch.js, spellcheck.js, pdftools.js, sw.js.
-
-## Suggested, not chosen
-- A quiet week without new AI features or a new toolbar: the owner asked why, was told, and has not said yes or no.
-- Testing once that a weekly backup can be restored (with a test notebook, never the real notes).
-
-Pictures: AgentTools\shots, `v93_*` to `v96_*` (for example `v95_lib_upright_open` = before, `v96_lib_upright_open` = after).
+## What the owner must do (plus open items from earlier)
+1. To run the Chrome browser test: keep the Windows screen unlocked with Google Chrome open and visible, or turn on `chrome://inspect/#remote-debugging` in Chrome, then tell the agent **"go"**.
+2. Still open from `v96` handoff: answer on fixed **folder dots** colour (`folderColorOf`), check `v96` on iPad portrait, test real signed-in iPad sync.

@@ -183,7 +183,23 @@ if (API) await step('server tests', async () => {
   ok('big files arrive in pieces', (await call(own.token, '/commit/a/big1?size=2000', { method: 'POST', body: JSON.stringify({ up: 'up1', parts: 2 }) })).status === 200);
   ok('files can be deleted', (await call(own.token, '/blob/a/big1', { method: 'DELETE' })).status === 200);
   const me = await call(own.token, '/me', { headers: { Origin: WEB } });
-  ok('the app can read the usage count', /X-CF-Calls/i.test(me.headers.get('access-control-expose-headers') || '') && !!me.headers.get('x-cf-calls-today'));
+  const meBody = await js(me);
+  ok('the app can read the usage count', /X-CF-Calls/i.test(me.headers.get('access-control-expose-headers') || '') && !!me.headers.get('x-cf-calls-today') && !!me.headers.get('x-cf-total-today'));
+  ok('cumulative usage hides names and shows other users',
+    Array.isArray(meBody.usageUsers)
+    && meBody.usageUsers.some(u => u.label === 'You' && u.me)
+    && meBody.usageUsers.some(u => /^Other user/.test(u.label) && !u.me)
+    && !/test\.local/i.test(JSON.stringify(meBody.usageUsers))
+    && meBody.cfTotalToday >= meBody.cfCallsToday,
+    meBody.usageUsers);
+  ok('direct OCR report increments cumulative Gemini usage', (await call(own.token, '/usage-ocr', { method: 'POST' })).status === 200 && (await js(await call(own.token, '/me'))).ocrTotalToday >= 1);
+  ok('internal config and usage routes stay blocked outside', (await call('22222.fake', '/config/allowed')).status === 404 && (await call('22222.fake', '/usage/summary')).status === 404);
+  ok('only owner can manage allowed users in-app',
+    (await call(fr.token, '/admin/users')).status === 403
+    && (await call(own.token, '/admin/users', { method: 'POST', body: JSON.stringify({ email: 'extra@test.local' }) })).status === 200
+    && (await js(await call(own.token, '/me'))).friends.includes('extra@test.local')
+    && (await call(own.token, '/admin/users', { method: 'DELETE', body: JSON.stringify({ email: 'extra@test.local' }) })).status === 200
+    && !(await js(await call(own.token, '/me'))).friends.includes('extra@test.local'));
   await call(st.token, '/me'); await call(st.token, '/signout', { method: 'POST' });
   ok('signing out works at once', (await call(st.token, '/me')).status === 401);
   ws.close(); g.close();
@@ -232,6 +248,16 @@ if (!process.argv.includes('--quick')) {
     ok('phone: the button opens the drawer', await c.ev(`return document.querySelector('.lib-sidebar').classList.contains('mobile-open')`));
     await press('.side-head button');
     ok('phone: the drawer button closes it', await c.ev(`return !document.querySelector('.lib-sidebar').classList.contains('mobile-open')`));
+    // OneDrive-style per-folder and per-notebook syncing indicators
+    await c.size(1194, 834);
+    const syncIds = await c.ev(`${E.D}const S=await import('/js/sync.js'),U=await import('/js/util.js');const f1=await D.createFolder('SyncTop');const f2=await D.createFolder('SyncSub',f1.id);const d1=await D.createDoc({title:'SyncNote',folderId:f2.id});U.bus.emit('synced');await new Promise(r=>setTimeout(r,300));S._setSyncTargets([d1.id],[f2.id,f1.id]);await new Promise(r=>setTimeout(r,150));return {f1:f1.id,f2:f2.id,d1:d1.id}`);
+    ok('main menu shows rotating sync sign on syncing folder', await c.ev(`const b=document.querySelector('[data-sync-folder="${syncIds.f1}"] .item-sync-badge');return !!b && !b.hidden`));
+    await c.ev(`location.hash='#/f/${syncIds.f1}'`); await sleep(400);
+    ok('opening folder shows rotating sync sign on syncing subfolder', await c.ev(`const b=document.querySelector('[data-sync-folder="${syncIds.f2}"] .item-sync-badge');return !!b && !b.hidden`));
+    await c.ev(`location.hash='#/f/${syncIds.f2}'`); await sleep(400);
+    ok('opening subfolder shows rotating sync sign on syncing notebook', await c.ev(`const b=document.querySelector('[data-sync-doc="${syncIds.d1}"] .item-sync-badge');return !!b && !b.hidden`));
+    await c.ev(`(await import('/js/sync.js'))._setSyncTargets([],[]);await new Promise(r=>setTimeout(r,100));location.hash='#/'`); await sleep(300);
+    ok('syncing signs hide when sync stops', await c.ev(`return [...document.querySelectorAll('.item-sync-badge')].every(e=>e.hidden)`));
     noErrors('the library top bar');
     await c.ev(clear);
   });
@@ -331,6 +357,10 @@ if (!process.argv.includes('--quick')) {
     ok('opening notebooks leaves nothing behind', left === 0, `${left} listeners per visit`);
     await c.ev(`(await import('/js/sync.js')).openSettings()`); await sleep(700);
     ok('Settings opens', await c.ev(`return !!document.querySelector('dialog')`));
+    ok('Settings shows the top account card', await c.ev(`return !!document.querySelector('dialog .account-card')`));
+    await c.ev(`document.querySelector('dialog .modal-head .ic')?.click();await new Promise(r=>setTimeout(r,200));${E.D}const S=await import('/js/sync.js');await D.db.setMeta('cloud',{token:'111.fake',email:'owner@test.local'});S._setHttp(async()=>new Response('{"items":[]}',{status:200,headers:{'Content-Type':'application/json'}}));await S.initSync();await S.openSettings();`); await sleep(500);
+    ok('Settings shows Sign out prominently when signed in', await c.ev(`return [...document.querySelectorAll('dialog .account-card button')].some(b=>b.textContent.trim()==='Sign out')`));
+    await c.ev(`document.querySelector('dialog .modal-head .ic')?.click();await (await import('/js/sync.js')).signOut();`);
     noErrors('Settings');
   });
 

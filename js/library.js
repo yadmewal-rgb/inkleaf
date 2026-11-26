@@ -11,7 +11,7 @@ import { importGoodnotes } from './goodnotes.js';
 import { pdfPagesText } from './pdftools.js';
 import { exportFlow } from './export.js';
 import { renderPageTo } from './render.js';
-import { openSettings, syncNow, syncStatus, shareNotebook, shareFolder, stopLiveShare, importBackup, fetchSharedWithMe, fetchLiveDoc, fetchMyShares } from './sync.js';
+import { openSettings, syncNow, syncStatus, syncTargets, isSignedIn, signOut, initSync, shareNotebook, shareFolder, stopLiveShare, importBackup, fetchSharedWithMe, fetchLiveDoc, fetchMyShares } from './sync.js';
 import { pageIndex, matchIndex, hwOn, getActiveHwModel, formatModelName } from './hwsearch.js';
 
 const SIZE_OPTS = [{ v: 'a4', label: 'A4 portrait' }, { v: 'a4l', label: 'A4 landscape' }, { v: 'letter', label: 'Letter' }];
@@ -1283,14 +1283,17 @@ export async function mountLibrary(root, folderId, opts = {}) {
       const count = D.filter(d => d.folderId === f.id).length;
       const isCur = !bin && folderId === f.id;
       const dot = h('span', { class: 'folder-dot dot-' + c });
+      const syncingNow = syncTargets().folders.has(f.id);
 
       const btn = h('button', {
         class: 'side-btn' + (isCur ? ' active' : ''),
         type: 'button',
+        'data-sync-folder': f.id,
         onclick: () => { closeDrawer(); location.hash = '#/f/' + f.id; }
       },
         dot,
         h('span', { class: 'side-label' }, f.name),
+        h('span', { class: 'side-sync-item', title: 'Syncing...', hidden: !syncingNow, html: I.sync }),
         h('span', { class: 'side-badge' }, String(count))
       );
 
@@ -1348,15 +1351,30 @@ export async function mountLibrary(root, folderId, opts = {}) {
         onclick: () => syncNow(true)
       },
         h('span', { class: 'side-sync-dot' }),
-        h('span', null, curSync.state === 'syncing' ? 'Syncing...' : 'Synced')
+        h('span', null, curSync.state === 'syncing' ? 'Syncing...' : curSync.state === 'signin' ? 'Sign in' : 'Synced')
       ),
-      h('button', {
-        class: 'ic sm',
-        type: 'button',
-        title: 'Settings',
-        html: I.settings,
-        onclick: () => openSettings()
-      })
+      h('div', { class: 'row', style: 'gap: 2px; flex-shrink: 0;' },
+        h('button', {
+          class: 'ic sm side-signout-btn',
+          type: 'button',
+          title: 'Sign out',
+          hidden: !isSignedIn(),
+          html: I.logOut,
+          onclick: async () => {
+            if (!await confirmBox('Sign out', 'Sign this device out of sync? Notes stay on this device and on your other devices.', 'Sign out')) return;
+            await signOut();
+            await initSync();
+            render();
+          }
+        }),
+        h('button', {
+          class: 'ic sm',
+          type: 'button',
+          title: 'Settings',
+          html: I.settings,
+          onclick: () => openSettings()
+        })
+      )
     );
 
     fill(sidebar, sideHead, sideScroll, sideFoot);
@@ -1393,11 +1411,16 @@ export async function mountLibrary(root, folderId, opts = {}) {
             h('span', { class: 'jump-fallback-rule' })
           );
       const subText = totalPages > 1 ? `Page ${pNum} of ${totalPages}` : '1 page';
+      const syncingNow = syncTargets().docs.has(d.id);
       const card = h('div', {
         class: 'jump-card',
+        'data-sync-doc': d.id,
         onclick: () => { location.hash = `#/d/${d.id}?p=${pNum}`; }
       },
-        h('div', { class: 'jump-thumb', style: { '--cover': d.cover || COVERS[0] } }, thumb),
+        h('div', { class: 'jump-thumb', style: { '--cover': d.cover || COVERS[0] } },
+          thumb,
+          h('span', { class: 'item-sync-badge', title: 'Syncing...', hidden: !syncingNow, html: I.sync })
+        ),
         h('div', { class: 'jump-info' },
           h('div', { class: 'jump-name' }, d.title || 'Untitled notebook'),
           h('div', { class: 'jump-sub' }, subText),
@@ -1442,8 +1465,10 @@ export async function mountLibrary(root, folderId, opts = {}) {
       subParts.push(h('span', { class: 'sub-pages' }, pageStr));
     }
 
+    const syncingNow = syncTargets().docs.has(d.id);
     const card = h('div', {
       class: 'card' + (isSelected ? ' selected' : ''),
+      'data-sync-doc': d.id,
       onclick: () => {
         if (selectMode) {
           if (selectedDocIds.has(d.id)) selectedDocIds.delete(d.id);
@@ -1459,6 +1484,7 @@ export async function mountLibrary(root, folderId, opts = {}) {
         d.thumb ? h('img', { src: d.thumb, alt: '', draggable: false }) : h('div', { class: 'cover-blank' }),
         isShared ? h('span', { class: 'shared-mark-badge', title: 'Shared notebook', html: I.users }) : null,
         d.fav ? h('span', { class: 'fav-badge', html: I.starOn }) : null,
+        h('span', { class: 'item-sync-badge', title: 'Syncing...', hidden: !syncingNow, html: I.sync }),
         isPinned ? h('div', { class: 'pin-badge', title: 'Pinned to top', html: I.bookmark }) : null,
         selectMode ? h('div', { class: 'check-circle' + (isSelected ? ' checked' : ''), html: isSelected ? I.check : '' }) : null
       ),
@@ -1742,12 +1768,14 @@ export async function mountLibrary(root, folderId, opts = {}) {
       const isFolderShared = mySharedFolders.has(f.id) || D.some(d => d.folderId === f.id && (d.shared || myShares.has(d.id)));
       const count = D.filter(d => d.folderId === f.id).length + F.filter(x => x.parentId === f.id).length;
       const fColor = folderColorOf(f.id);
+      const syncingNow = syncTargets().folders.has(f.id);
 
-      const fCard = h('div', { class: 'card card-folder', onclick: () => { location.hash = '#/f/' + f.id; } },
+      const fCard = h('div', { class: 'card card-folder', 'data-sync-folder': f.id, onclick: () => { location.hash = '#/f/' + f.id; } },
         h('div', { class: 'cover folder' },
           h('span', { html: I.folder }),
           h('span', { class: 'folder-dot dot-' + fColor, style: 'position: absolute; top: 10px; right: 10px; width: 11px; height: 11px;' }),
-          isFolderShared ? h('span', { class: 'shared-mark-badge', title: 'Shared folder', html: I.users }) : null
+          isFolderShared ? h('span', { class: 'shared-mark-badge', title: 'Shared folder', html: I.users }) : null,
+          h('span', { class: 'item-sync-badge', title: 'Syncing...', hidden: !syncingNow, html: I.sync })
         ),
         h('div', { class: 'meta' },
           h('div', { class: 'name' },
@@ -1907,6 +1935,28 @@ export async function mountLibrary(root, folderId, opts = {}) {
     syncBtn.classList.toggle('spin', s.state === 'syncing');
     syncBtn.classList.toggle('warn', s.state === 'error' || s.state === 'signin');
     syncBtn.title = s.text;
+    const footStatus = sidebar.querySelector('.side-sync-status');
+    if (footStatus) {
+      footStatus.classList.toggle('spin', s.state === 'syncing');
+      footStatus.classList.toggle('warn', s.state === 'error' || s.state === 'signin');
+      footStatus.title = s.text;
+      const lbl = footStatus.querySelector('span:last-child');
+      if (lbl) lbl.textContent = s.state === 'syncing' ? 'Syncing...' : s.state === 'signin' ? 'Sign in' : 'Synced';
+    }
+    const so = sidebar.querySelector('.side-signout-btn');
+    if (so) so.hidden = !isSignedIn();
+  }
+
+  function updateSyncMarks(t = syncTargets()) {
+    for (const node of el.querySelectorAll('[data-sync-doc]')) {
+      const on = t.docs.has(node.dataset.syncDoc);
+      const b = node.querySelector('.item-sync-badge');
+      if (b) b.hidden = !on;
+    }
+    for (const node of el.querySelectorAll('[data-sync-folder]')) {
+      const on = t.folders.has(node.dataset.syncFolder);
+      for (const b of node.querySelectorAll('.item-sync-badge, .side-sync-item')) b.hidden = !on;
+    }
   }
 
   // Dropping a PDF (or a notebook file) anywhere on the library imports it.
@@ -1922,11 +1972,12 @@ export async function mountLibrary(root, folderId, opts = {}) {
     if (await promptImportPdf(f, folderId)) render();
   });
 
-  const offs = [bus.on('synced', render), bus.on('sync-status', showSync), ...badgeOffs];
+  const offs = [bus.on('synced', render), bus.on('sync-status', showSync), bus.on('sync-targets', updateSyncMarks), ...badgeOffs];
   showSync(syncStatus());
   purgeTrash(false).catch(e => console.warn('Bin clean-up failed', e));
   bus.emit('folder-open', folderId);
   await render();
+  updateSyncMarks();
 
   return {
     destroy() {

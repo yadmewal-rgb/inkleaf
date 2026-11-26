@@ -4737,3 +4737,153 @@ body.split-dragging canvas {
   margin-left: 0;
   text-align: left;
 }
+
+/* OneDrive-style per-folder & per-notebook syncing indicator */
+.item-sync-badge {
+  position: absolute;
+  bottom: 6px;
+  right: 6px;
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--surface);
+  color: var(--accent);
+  border: 1px solid var(--line);
+  box-shadow: 0 1px 4px rgba(0, 0, 0, .24);
+  pointer-events: none;
+  z-index: 3;
+}
+
+.item-sync-badge svg,
+.cover.folder .item-sync-badge svg {
+  width: 14px;
+  height: 14px;
+  stroke-width: 2.2;
+  animation: spin 1s linear infinite;
+}
+
+.jump-thumb .item-sync-badge {
+  bottom: 3px;
+  right: 3px;
+  width: 18px;
+  height: 18px;
+}
+
+.jump-thumb .item-sync-badge svg {
+  width: 11px;
+  height: 11px;
+}
+
+.grid.list-view .cover .item-sync-badge {
+  bottom: 2px;
+  right: 2px;
+  width: 18px;
+  height: 18px;
+}
+
+.grid.list-view .cover .item-sync-badge svg,
+.grid.list-view.compact .cover.folder .item-sync-badge svg {
+  width: 11px;
+  height: 11px;
+  stroke-width: 2.2;
+}
+
+.side-sync-item {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--accent);
+  flex-shrink: 0;
+}
+
+.side-sync-item svg {
+  width: 13px;
+  height: 13px;
+  stroke-width: 2.2;
+  animation: spin 1s linear infinite;
+}
+
+/* Settings: account card, cumulative usage pills, and owner user manager */
+.account-card {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+  padding: 10px 14px;
+  background: var(--surface-2);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  margin-bottom: 14px;
+}
+
+.account-meta {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  flex: 1;
+}
+
+.account-meta .bk-sub {
+  margin-left: 0;
+  text-align: left;
+}
+
+.usage-users {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 6px 0 4px;
+}
+
+.usage-user-pill {
+  font-size: 11.5px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  color: var(--muted);
+}
+
+.usage-user-pill.me {
+  color: var(--accent);
+  border-color: var(--accent-soft);
+  background: var(--accent-soft);
+}
+
+.allowed-users {
+  margin: 10px 0 14px;
+  padding: 10px 12px;
+  background: var(--surface-2);
+  border-radius: 8px;
+}
+
+.allowed-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 0;
+  border-top: 1px solid var(--line);
+  font-size: 13px;
+}
+
+.allowed-email {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.allowed-tag {
+  font-size: 11px;
+  padding: 1px 7px;
+  border-radius: 999px;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  color: var(--muted);
+  flex-shrink: 0;
+}

@@ -84,9 +84,21 @@ export const db = {
   byDoc: docId => withDb(d => req(d.transaction('pages').objectStore('pages').index('docId').getAll(docId))),
   // Saving announces "db-write" so sync can upload the change. Sync's own writes pass silent = true.
   // It names the records written, so sync can upload just those.
-  put: (s, v, silent) => write(s, os => { os.put(v); }).then(() => { if (!silent && s !== 'meta') bus.emit('db-write', { s, ids: [v.id] }); }),
+  put: (s, v, silent) => write(s, os => { os.put(v); }).then(() => {
+    if (!silent && s !== 'meta') {
+      const docIds = s === 'docs' ? [v.id] : s === 'pages' && v.docId ? [v.docId] : undefined;
+      const folderIds = s === 'folders' ? [v.id] : undefined;
+      bus.emit('db-write', { s, ids: [v.id], docIds, folderIds });
+    }
+  }),
   putMany: (s, arr, silent) => (arr.length
-    ? write(s, os => { for (const v of arr) os.put(v); }).then(() => { if (!silent && s !== 'meta') bus.emit('db-write', { s, ids: arr.map(v => v.id) }); })
+    ? write(s, os => { for (const v of arr) os.put(v); }).then(() => {
+      if (!silent && s !== 'meta') {
+        const docIds = s === 'docs' ? arr.map(v => v.id) : s === 'pages' ? [...new Set(arr.map(v => v.docId).filter(Boolean))] : undefined;
+        const folderIds = s === 'folders' ? arr.map(v => v.id) : undefined;
+        bus.emit('db-write', { s, ids: arr.map(v => v.id), docIds, folderIds });
+      }
+    })
     : Promise.resolve()),
   // Store rec only if the saved copy still has the expected "modified" stamp (undefined = must not exist yet).
   putIf: (s, rec, expectModified) => {

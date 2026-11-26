@@ -1,6 +1,6 @@
 import { mountLibrary, promptImportPdf } from './library.js';
 import { mountEditor } from './editor.js';
-import { initSync, openSettings, fetchLiveDoc, openLiveGuestSocket, closeLiveGuestSocket, signIn } from './sync.js';
+import { initSync, openSettings, fetchLiveDoc, openLiveGuestSocket, closeLiveGuestSocket, signIn, signOut } from './sync.js';
 import { toast } from './ui.js';
 import { db } from './db.js';
 import { h } from './util.js';
@@ -124,11 +124,18 @@ async function route() {
                 try {
                   await signIn();
                   route();
-                } catch (err) {
-                  toast('Sign in failed: ' + err.message);
-                }
+              } catch (err) {
+                toast('Sign in failed: ' + err.message);
               }
-            }, 'Sign in with another account'),
+            }
+          }, 'Sign in with another account'),
+            h('button', {
+              class: 'btn sm',
+              onclick: async () => {
+                await signOut();
+                route();
+              }
+            }, 'Sign out'),
             h('a', { class: 'btn sm primary', href: '#/' }, 'Go to Inkleaf')
           )
         ));

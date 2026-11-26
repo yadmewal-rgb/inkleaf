@@ -21,10 +21,11 @@ export function getHwUsage() {
   try { u = JSON.parse(localStorage.getItem(USAGE_KEY) || '{}'); } catch {}
   const limit = Number(localStorage.getItem('inkleaf.hwLimit')) || DEFAULT_LIMIT;
   if (!u || u.date !== tk) {
-    u = { date: tk, calls: 0, pages: 0, limit };
+    u = { date: tk, calls: 0, totalCalls: 0, pages: 0, limit, users: null };
     try { localStorage.setItem(USAGE_KEY, JSON.stringify(u)); } catch {}
   } else {
     u.limit = limit;
+    if (typeof u.totalCalls !== 'number') u.totalCalls = u.calls || 0;
   }
   return u;
 }
@@ -37,7 +38,12 @@ export function canMakeHwCall() {
 export function recordHwCall(pages = 1) {
   const u = getHwUsage();
   u.calls = (u.calls || 0) + 1;
+  u.totalCalls = Math.max(u.totalCalls || 0, (u.calls || 1) - 1) + 1;
   u.pages = (u.pages || 0) + pages;
+  if (Array.isArray(u.users)) {
+    const me = u.users.find(x => x.me);
+    if (me) me.ocrCalls = Math.max(me.ocrCalls || 0, u.calls);
+  }
   try { localStorage.setItem(USAGE_KEY, JSON.stringify(u)); } catch {}
   bus.emit('hw-usage', u);
   return u;
@@ -52,14 +58,22 @@ export function setHwLimit(n) {
   bus.emit('hw-usage', u);
 }
 
-export function updateHwUsageFromServer(serverCalls, serverLimit) {
+export function updateHwUsageFromServer(serverCalls, serverLimit, serverTotal = null, serverUsers = null) {
   const u = getHwUsage();
   let changed = false;
   if (typeof serverCalls === 'number' && serverCalls >= (u.calls || 0)) {
     u.calls = serverCalls;
     changed = true;
   }
-  if (typeof serverLimit === 'number' && serverLimit > 0) {
+  if (typeof serverTotal === 'number' && serverTotal >= (u.totalCalls || 0)) {
+    u.totalCalls = serverTotal;
+    changed = true;
+  }
+  if (Array.isArray(serverUsers)) {
+    u.users = serverUsers.map(x => ({ me: !!x.me, label: x.label, ocrCalls: Number(x.ocrCalls) || 0 }));
+    changed = true;
+  }
+  if (!localStorage.getItem('inkleaf.hwLimit') && typeof serverLimit === 'number' && serverLimit > 0 && u.limit !== serverLimit) {
     u.limit = serverLimit;
     changed = true;
   }
@@ -173,6 +187,8 @@ export const status = { state: hwOn() ? 'idle' : 'off', done: 0, left: 0, err: '
 
 let cloudOcrFn = null;
 export const setCloudOcr = fn => { cloudOcrFn = fn; };
+let directOcrReportFn = null;
+export const setDirectOcrReport = fn => { directOcrReportFn = fn; };
 
 function imgToBase64(img) {
   if (!img) return '';
@@ -284,6 +300,7 @@ async function readBatch(runs) {
   const directKey = localStorage.getItem('inkleaf.geminiKey');
 
   let resultStrings = null;
+  let usedDirect = false;
 
   if (typeof navigator !== 'undefined' && navigator.onLine) {
     // ---------------------------------------------------------------------------------
@@ -303,6 +320,7 @@ async function readBatch(runs) {
                 const arr = JSON.parse(clean);
                 if (Array.isArray(arr) && arr.length > 0) {
                   resultStrings = runs.map((_, idx) => String(arr[idx] || '').trim());
+                  usedDirect = true;
                   break; // Successful transcription with current model!
                 }
               } catch {}
@@ -360,6 +378,7 @@ async function readBatch(runs) {
   // If successful with either Gemini direct or Cloudflare worker
   if (resultStrings) {
     recordHwCall(1);
+    if (usedDirect && directOcrReportFn) directOcrReportFn();
     return resultStrings;
   }
 
@@ -393,6 +412,7 @@ async function read(img) {
                 const txt = (j?.candidates?.[0]?.content?.parts?.[0]?.text || '').trim();
                 if (txt) {
                   recordHwCall(0);
+                  if (directOcrReportFn) directOcrReportFn();
                   return txt;
                 }
               }

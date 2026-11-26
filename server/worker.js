@@ -25,7 +25,7 @@ function corsHeaders(req, env) {
     'Access-Control-Allow-Origin': origin,
     'Access-Control-Allow-Headers': 'Authorization, Content-Type',
     'Access-Control-Allow-Methods': 'GET, PUT, POST, DELETE, OPTIONS',
-    'Access-Control-Expose-Headers': 'X-Seq, X-Parts, X-Gz, X-CF-Calls-Today, X-OCR-Calls-Today',
+    'Access-Control-Expose-Headers': 'X-Seq, X-Parts, X-Gz, X-CF-Calls-Today, X-OCR-Calls-Today, X-CF-Total-Today, X-OCR-Total-Today',
     'Access-Control-Max-Age': '86400',
     Vary: 'Origin'
   };
@@ -59,7 +59,34 @@ async function googleUser(accessToken, env) {
   return { sub: String(t.sub), email: String(t.email).toLowerCase() };
 }
 
-const allowedEmail = (email, env) => (env.ALLOWED || '').split(',').map(s => s.trim().toLowerCase()).filter(Boolean).includes(email);
+const envAllowedList = env => (env.ALLOWED || '').split(',').map(s => s.trim().toLowerCase()).filter(Boolean);
+const ownerEmailOf = env => envAllowedList(env)[0] || '';
+
+async function getExtraAllowed(env) {
+  try {
+    const cfg = env.USER.get(env.USER.idFromName('app_config'));
+    const r = await cfg.fetch(new Request('http://internal/config/allowed'));
+    if (r.ok) {
+      const j = await r.json();
+      return Array.isArray(j.extra) ? j.extra : [];
+    }
+  } catch {}
+  return [];
+}
+
+async function allAllowedEmails(env) {
+  const base = envAllowedList(env);
+  const extra = await getExtraAllowed(env);
+  return [...new Set([...base, ...extra])];
+}
+
+async function allowedEmail(email, env) {
+  const e = String(email || '').trim().toLowerCase();
+  if (!e) return false;
+  if (envAllowedList(env).includes(e)) return true;
+  const extra = await getExtraAllowed(env);
+  return extra.includes(e);
+}
 
 export default {
   async fetch(req, env) {
@@ -86,14 +113,14 @@ export default {
         if (!at) return withCors(json({ error: 'no-token' }, 400), cors);
         const who = await googleUser(at, env);
         if (!who) return withCors(json({ error: 'google-rejected' }, 401), cors);
-        if (!allowedEmail(who.email, env)) return withCors(json({ error: 'not-allowed', email: who.email }, 403), cors);
+        if (!await allowedEmail(who.email, env)) return withCors(json({ error: 'not-allowed', email: who.email }, 403), cors);
         const stub = env.USER.get(env.USER.idFromName(who.sub));
         const r = await stub.newSession(who.email, String(label || '').slice(0, 80), rt, who.sub);
         return withCors(json({ token: who.sub + '.' + r.secret, email: who.email, drive: r.drive }), cors);
       }
 
       // Only the service itself (one Durable Object asking another) may use these.
-      if (/^\/+(registry|internal)(\/|$)/.test(url.pathname)) return withCors(json({ error: 'not-found' }, 404), cors);
+      if (/^\/+(registry|internal|config|usage)(\/|$)/.test(url.pathname)) return withCors(json({ error: 'not-found' }, 404), cors);
 
       // Guest access to a shared notebook via share link: /live/:shareId/...
       if (url.pathname.startsWith('/live/')) {
@@ -184,6 +211,7 @@ export class User extends DurableObject {
     if (sub) this.kvSet('sub', sub);
     if (refreshToken) { this.kvSet('grt', refreshToken); this.gat = null; }
     this.sql.exec('INSERT INTO sessions (h, created, seen, label) VALUES (?, ?, ?, ?)', await sha256(secret), now, now, label || '');
+    this.ctx.waitUntil(this.syncGlobalUsage(true).catch(() => {}));
     return { secret, drive: !!this.kvGet('grt') };
   }
 
@@ -220,7 +248,7 @@ export class User extends DurableObject {
   // Each person's share of the service: QUOTA_MB, except the owner (the first address in ALLOWED), who gets
   // OWNER_QUOTA_MB. The owner's address stays in the ALLOWED secret, never in the code.
   quota() {
-    const owner = (this.env.ALLOWED || '').split(',')[0].trim().toLowerCase();
+    const owner = ownerEmailOf(this.env);
     const mine = owner && owner === String(this.kvGet('email') || '').toLowerCase();
     return (Number(mine ? this.env.OWNER_QUOTA_MB : this.env.QUOTA_MB) || Number(this.env.QUOTA_MB) || 500) * 1048576;
   }
@@ -274,7 +302,7 @@ export class User extends DurableObject {
         this._dailyUsage.ocrCalls = (this._dailyUsage.ocrCalls || 0) + ocrCount;
       }
       this._usageUnsaved = (this._usageUnsaved || 0) + 1;
-      if (this._usageUnsaved >= 10) {
+      if (this._usageUnsaved >= 10 || isOcr) {
         this._usageUnsaved = 0;
         this.kvSet('usage_' + today, JSON.stringify(this._dailyUsage));
       }
@@ -285,20 +313,63 @@ export class User extends DurableObject {
   usageHeaders() {
     const today = new Date().toISOString().slice(0, 10);
     const u = this._dailyUsage && this._dailyUsage.date === today ? this._dailyUsage : { cfCalls: 0, ocrCalls: 0 };
+    const g = this._globalOther && this._globalOther.date === today ? this._globalOther : { cf: 0, ocr: 0 };
     return {
       'X-CF-Calls-Today': String(u.cfCalls || 0),
-      'X-OCR-Calls-Today': String(u.ocrCalls || 0)
+      'X-OCR-Calls-Today': String(u.ocrCalls || 0),
+      'X-CF-Total-Today': String((u.cfCalls || 0) + (g.cf || 0)),
+      'X-OCR-Total-Today': String((u.ocrCalls || 0) + (g.ocr || 0))
     };
+  }
+
+  async syncGlobalUsage(force = false) {
+    const sub = this.kvGet('sub');
+    if (!sub) return null;
+    const u = this.trackUsage(false, 0, false);
+    const today = u.date;
+    if (!force && this._lastGlobalDate === today && (u.cfCalls - (this._lastGlobalCf || 0) < 10) && (u.ocrCalls === (this._lastGlobalOcr || 0))) {
+      return null;
+    }
+    this._lastGlobalDate = today;
+    this._lastGlobalCf = u.cfCalls;
+    this._lastGlobalOcr = u.ocrCalls;
+    try {
+      const gStub = this.env.USER.get(this.env.USER.idFromName('app_usage'));
+      const r = await gStub.fetch(new Request('http://internal/usage/report', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          sub,
+          date: today,
+          cfCalls: u.cfCalls || 0,
+          ocrCalls: u.ocrCalls || 0,
+          bytes: this.usedBytes(),
+          persist: force
+        })
+      }));
+      if (r.ok) {
+        const j = await r.json();
+        this._globalOther = { date: today, cf: Number(j.otherCf) || 0, ocr: Number(j.otherOcr) || 0 };
+        return j;
+      }
+    } catch {}
+    return null;
   }
 
   async fetch(req) {
     try {
       const url = new URL(req.url), p = url.pathname.split('/').filter(Boolean);
-      const isOcr = p[0] === 'ocr';
-      const ocrN = Number(url.searchParams.get('n') || 1);
-      this.trackUsage(isOcr, ocrN);
+      const isInternal = p[0] === 'registry' || p[0] === 'config' || p[0] === 'usage';
+      if (isInternal) return await this._fetch(req);
+
+      const isGemini = p[0] === 'ocr' || (p[0] === 'ai' && p[1] === 'outline') || p[0] === 'usage-ocr';
+      const u = this.trackUsage(isGemini, 1);
 
       const resp = await this._fetch(req);
+      const isMutation = (p[0] === 'blob' && (req.method === 'PUT' || req.method === 'DELETE')) || p[0] === 'commit';
+      if (isGemini || isMutation || !this._lastGlobalDate || this._lastGlobalDate !== u.date || (u.cfCalls - (this._lastGlobalCf || 0) >= 10)) {
+        this.ctx.waitUntil(this.syncGlobalUsage(isGemini || isMutation));
+      }
       if (resp.status === 101) return resp; // a WebSocket hand-over cannot be rewrapped
       const h = new Headers(resp.headers);
       const uh = this.usageHeaders();
@@ -315,6 +386,142 @@ export class User extends DurableObject {
 
   async _fetch(req) {
     const url = new URL(req.url), p = url.pathname.split('/').filter(Boolean);
+
+    // Internal config routes for dynamic allowed users
+    if (p[0] === 'config' && p[1] === 'allowed') {
+      const loadExtra = () => {
+        if (this._extraAllowed) return this._extraAllowed;
+        try {
+          const parsed = JSON.parse(this.kvGet('extra_allowed') || '[]');
+          this._extraAllowed = Array.isArray(parsed) ? parsed : [];
+        } catch { this._extraAllowed = []; }
+        return this._extraAllowed;
+      };
+      if (req.method === 'GET') return json({ extra: loadExtra() });
+      if (req.method === 'POST') {
+        const b = await req.json().catch(() => ({}));
+        const email = String(b.email || '').trim().toLowerCase();
+        const cur = loadExtra();
+        if (email && !cur.includes(email)) {
+          cur.push(email);
+          this._extraAllowed = cur;
+          this.kvSet('extra_allowed', JSON.stringify(cur));
+        }
+        return json({ extra: cur });
+      }
+      if (req.method === 'DELETE') {
+        const b = await req.json().catch(() => ({}));
+        const email = String(b.email || '').trim().toLowerCase();
+        const cur = loadExtra().filter(e => e !== email);
+        this._extraAllowed = cur;
+        this.kvSet('extra_allowed', JSON.stringify(cur));
+        return json({ extra: cur });
+      }
+    }
+
+    // Internal global usage routes (cumulative usage across all users without exposing names)
+    if (p[0] === 'usage') {
+      const loadUsers = () => {
+        if (this._uUsers) return this._uUsers;
+        try {
+          const parsed = JSON.parse(this.kvGet('usage_users') || '{}');
+          this._uUsers = parsed && typeof parsed === 'object' ? parsed : {};
+        } catch { this._uUsers = {}; }
+        return this._uUsers;
+      };
+      const loadDay = date => {
+        if (!this._uDays) this._uDays = new Map();
+        if (this._uDays.has(date)) return this._uDays.get(date);
+        let d = {};
+        try {
+          const parsed = JSON.parse(this.kvGet('usage_day_' + date) || '{}');
+          if (parsed && typeof parsed === 'object') d = parsed;
+        } catch {}
+        this._uDays.set(date, d);
+        return d;
+      };
+      if (p[1] === 'report' && req.method === 'POST') {
+        const b = await req.json().catch(() => ({}));
+        const sub = String(b.sub || ''), date = String(b.date || new Date().toISOString().slice(0, 10));
+        if (!sub) return json({ ok: false }, 400);
+        const users = loadUsers();
+        let usersChanged = false;
+        if (!users[sub]) {
+          const nextIdx = Object.values(users).reduce((m, u) => Math.max(m, Number(u.idx) || 0), 0) + 1;
+          users[sub] = { idx: nextIdx, bytes: Number(b.bytes) || 0 };
+          usersChanged = true;
+        } else if (users[sub].bytes !== (Number(b.bytes) || 0)) {
+          users[sub].bytes = Number(b.bytes) || 0;
+          usersChanged = true;
+        }
+        if (usersChanged) this.kvSet('usage_users', JSON.stringify(users));
+
+        const day = loadDay(date);
+        const prev = day[sub] || { cf: 0, ocr: 0 };
+        day[sub] = {
+          cf: Math.max(prev.cf || 0, Number(b.cfCalls) || 0),
+          ocr: Math.max(prev.ocr || 0, Number(b.ocrCalls) || 0)
+        };
+        this._uUnsaved = (this._uUnsaved || 0) + 1;
+        if (b.persist || this._uUnsaved >= 5) {
+          this._uUnsaved = 0;
+          this.kvSet('usage_day_' + date, JSON.stringify(day));
+          if (this._uLastClean !== date) {
+            this._uLastClean = date;
+            const cut = new Date(Date.now() - 7 * 864e5).toISOString().slice(0, 10);
+            this.sql.exec("DELETE FROM kv WHERE k LIKE 'usage_day_%' AND k < ?", 'usage_day_' + cut);
+          }
+        }
+
+        let cfTotal = 0, ocrTotal = 0, bytesTotal = 0;
+        for (const k of Object.keys(users)) bytesTotal += Number(users[k].bytes) || 0;
+        for (const k of Object.keys(day)) {
+          cfTotal += Number(day[k].cf) || 0;
+          ocrTotal += Number(day[k].ocr) || 0;
+        }
+        const mine = day[sub] || { cf: 0, ocr: 0 };
+        return json({
+          ok: true,
+          cfTotal,
+          ocrTotal,
+          bytesTotal,
+          otherCf: Math.max(0, cfTotal - (mine.cf || 0)),
+          otherOcr: Math.max(0, ocrTotal - (mine.ocr || 0))
+        });
+      }
+      if (p[1] === 'summary' && req.method === 'GET') {
+        const reqSub = url.searchParams.get('sub') || '';
+        const date = url.searchParams.get('date') || new Date().toISOString().slice(0, 10);
+        const users = loadUsers();
+        const day = loadDay(date);
+        const allKeys = [...new Set([...Object.keys(users), ...Object.keys(day)])];
+        allKeys.sort((a, b) => (users[a]?.idx || 9999) - (users[b]?.idx || 9999));
+
+        const others = allKeys.filter(k => k !== reqSub);
+        const meData = reqSub ? {
+          me: true,
+          label: 'You',
+          cfCalls: Number(day[reqSub]?.cf) || 0,
+          ocrCalls: Number(day[reqSub]?.ocr) || 0,
+          bytes: Number(users[reqSub]?.bytes) || 0
+        } : null;
+
+        let otherN = 0;
+        const otherList = others.map(k => ({
+          me: false,
+          label: others.length === 1 ? 'Other user' : `Other user ${++otherN}`,
+          cfCalls: Number(day[k]?.cf) || 0,
+          ocrCalls: Number(day[k]?.ocr) || 0,
+          bytes: Number(users[k]?.bytes) || 0
+        }));
+
+        const list = meData ? [meData, ...otherList] : otherList;
+        const cfTotal = list.reduce((s, x) => s + x.cfCalls, 0);
+        const ocrTotal = list.reduce((s, x) => s + x.ocrCalls, 0);
+        const bytesTotal = list.reduce((s, x) => s + x.bytes, 0);
+        return json({ cfTotal, ocrTotal, bytesTotal, users: list });
+      }
+    }
 
     // Internal registry routes for "Shared with me"
     if (p[0] === 'registry') {
@@ -890,24 +1097,81 @@ Return ONLY the valid JSON array without commentary or code fences.`;
       return json({ s });
     }
 
+    if (p[0] === 'usage-ocr' && req.method === 'POST') {
+      const u = this.trackUsage(false, 0, false);
+      return json({ ok: true, ocrCallsToday: u?.ocrCalls || 0 });
+    }
+
+    if (p[0] === 'admin' && p[1] === 'users') {
+      const myEmail = String(this.kvGet('email') || '').toLowerCase();
+      const owner = ownerEmailOf(this.env);
+      if (!owner || myEmail !== owner) return json({ error: 'forbidden' }, 403);
+      const cfg = this.env.USER.get(this.env.USER.idFromName('app_config'));
+      if (req.method === 'GET') {
+        const extraUsers = await getExtraAllowed(this.env);
+        return json({ owner, envUsers: envAllowedList(this.env), extraUsers });
+      }
+      if (req.method === 'POST') {
+        const b = await req.json().catch(() => ({}));
+        const email = String(b.email || '').trim().toLowerCase();
+        if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) return json({ error: 'invalid-email', message: 'Please enter a valid email address.' }, 400);
+        const r = await cfg.fetch(new Request('http://internal/config/allowed', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ email })
+        }));
+        const j = await r.json().catch(() => ({}));
+        return json({ ok: true, owner, envUsers: envAllowedList(this.env), extraUsers: j.extra || [] });
+      }
+      if (req.method === 'DELETE') {
+        const b = await req.json().catch(() => ({}));
+        const email = decodeURIComponent(String(b.email || p[2] || '').trim().toLowerCase());
+        if (!email) return json({ error: 'invalid-email' }, 400);
+        if (envAllowedList(this.env).includes(email)) {
+          return json({ error: 'in-cloudflare', message: 'This email is listed in Cloudflare ALLOWED and must be changed there.' }, 400);
+        }
+        const r = await cfg.fetch(new Request('http://internal/config/allowed', {
+          method: 'DELETE', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ email })
+        }));
+        const j = await r.json().catch(() => ({}));
+        return json({ ok: true, owner, envUsers: envAllowedList(this.env), extraUsers: j.extra || [] });
+      }
+    }
+
     if (p[0] === 'me' && req.method === 'GET') {
       const n = this.sql.exec('SELECT COUNT(*) AS c FROM sessions').toArray()[0].c;
       const myEmail = String(this.kvGet('email') || '').toLowerCase();
-      const allowedList = (this.env.ALLOWED || '').split(',').map(s => s.trim().toLowerCase()).filter(Boolean);
+      const allowedList = await allAllowedEmails(this.env);
       const friends = allowedList.filter(e => e !== myEmail);
+      const isOwner = !!ownerEmailOf(this.env) && myEmail === ownerEmailOf(this.env);
       const u = this.trackUsage(false, 0, false);
+      await this.syncGlobalUsage(true);
+      let usageSummary = null;
+      try {
+        const gStub = this.env.USER.get(this.env.USER.idFromName('app_usage'));
+        const sr = await gStub.fetch(new Request(`http://internal/usage/summary?sub=${encodeURIComponent(mySub || '')}&date=${encodeURIComponent(u.date)}`));
+        if (sr.ok) usageSummary = await sr.json();
+      } catch {}
+      const cfTotalToday = usageSummary ? usageSummary.cfTotal : (u?.cfCalls || 0);
+      const ocrTotalToday = usageSummary ? usageSummary.ocrTotal : (u?.ocrCalls || 0);
+      const totalBytesAll = usageSummary ? usageSummary.bytesTotal : this.usedBytes();
+      const cfStorageLimit = 5 * 1024 * 1048576;
       return json({
         email: this.kvGet('email'),
+        isOwner,
         devices: n,
         bytes: this.usedBytes(),
         quota: this.quota(),
+        totalBytesAll,
+        cfStorageLimit,
         drive: !!this.kvGet('grt'),
         seq: this.seq(),
         friends,
         cfCallsToday: u?.cfCalls || 0,
+        cfTotalToday,
         cfLimit: 100000,
         ocrCallsToday: u?.ocrCalls || 0,
+        ocrTotalToday,
         ocrLimit: 1500,
+        usageUsers: usageSummary?.users || [{ me: true, label: 'You', cfCalls: u?.cfCalls || 0, ocrCalls: u?.ocrCalls || 0, bytes: this.usedBytes() }],
         merged: true
       });
     }
