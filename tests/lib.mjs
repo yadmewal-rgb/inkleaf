@@ -20,7 +20,11 @@ function setHidden(on) {
 }
 
 // Waiting only counts while the check tab can be seen, and allows it a moment to catch up after being out of sight.
+// waited() = milliseconds spent in fixed waits so far (for the time report at the end of the check).
+let sleptMs = 0;
+export const waited = () => sleptMs;
 export const sleep = async ms => {
+  sleptMs += ms;
   for (let left = ms; left > 0 && !tab.closed;) {
     const t = Date.now();
     await new Promise(r => setTimeout(r, Math.min(100, left)));
@@ -144,7 +148,8 @@ export function ownChrome() {
       await job('clean'); // whatever an earlier check that was cut off has left behind
     },
     log(t, c) { log.push({ t, c }); pump(); },
-    ev: code => job('ev', { code }),
+    // Fixed waits written inside the page code count too (each once; a wait inside a loop counts once).
+    ev: code => { for (const m of code.matchAll(/setTimeout\(r,\s*(\d+)\)/g)) sleptMs += Number(m[1]); return job('ev', { code }); },
     size: (w, h) => job('size', { w, h }),
     dark: on => job('dark', { on }),
     go: async (url, ms = 1800) => { await job('go', { url }); await sleep(ms); },

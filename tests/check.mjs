@@ -1,5 +1,7 @@
 // Inkleaf's checks before a release. Run check.cmd (or: node check.mjs). Exits with an error if anything fails.
 //   node check.mjs --quick         code and server only, no browser
+//   node check.mjs --only=writing  only these parts (comma list): code, server, library, writing, devices
+//                                  (a part always runs from its beginning)
 //   INKLEAF_ROOT=<folder>          check another copy of the app (to see that an old bug is really caught)
 import fs from 'fs';
 import http from 'http';
@@ -10,7 +12,7 @@ import { ESLint } from 'eslint';
 import globals from 'globals';
 import postcss from 'postcss';
 import { Miniflare } from 'miniflare';
-import { ownChrome, INJECT, sleep } from './lib.mjs';
+import { ownChrome, INJECT, sleep, waited } from './lib.mjs';
 
 const here = path.dirname(new URL(import.meta.url).pathname.replace(/^\/(\w:)/, '$1'));
 const ROOT = path.resolve(process.env.INKLEAF_ROOT || path.join(here, '..'));
@@ -18,7 +20,14 @@ const read = f => fs.readFileSync(path.join(ROOT, f), 'utf8');
 let passed = 0;
 const failed = [];
 const c = ownChrome(); // the tab in the owner's Chrome
+const ONLY = ((process.argv.find(a => a.startsWith('--only=')) || '').slice(7)).split(',').map(x => x.trim()).filter(Boolean);
+const want = part => !ONLY.length || ONLY.includes(part);
+// Time report: how long each check took since the one before it, and how much of that was fixed waiting.
+const times = [], parts = [];
+let tLast = Date.now(), wLast = waited();
+const mark = () => { tLast = Date.now(); wLast = waited(); };
 const ok = (name, cond, detail = '') => {
+  times.push({ name, ms: Date.now() - tLast, wait: waited() - wLast }); mark();
   if (cond) passed++; else failed.push(name + (detail !== '' ? `  (${typeof detail === 'string' ? detail : JSON.stringify(detail)})` : ''));
   c.log((cond ? '✓ ' : '✗ ') + name, cond ? '' : 'f');
   console.log(`  ${cond ? 'ok  ' : 'FAIL'}  ${name}${cond || detail === '' ? '' : '  -> ' + (typeof detail === 'string' ? detail : JSON.stringify(detail))}`);
@@ -28,6 +37,11 @@ const step = async (name, fn) => { try { await fn(); } catch (e) { ok(name, fals
 // A part of the check that runs in the tab. If it fails although the tab was out of sight for a while, that proves
 // nothing, so it is run again, once. (A failure while the tab was in front the whole time always counts.)
 const section = async (name, fn) => {
+  const t0 = Date.now(), w0 = waited();
+  try { await sectionRun(name, fn); } finally { parts.push({ name, ms: Date.now() - t0, wait: waited() - w0 }); }
+};
+const sectionRun = async (name, fn) => {
+  mark();
   for (let go = 1; ; go++) {
     const p0 = passed, f0 = failed.length, h0 = c.hiddenTimes;
     await step(name, fn);
@@ -39,12 +53,20 @@ const section = async (name, fn) => {
     c.errors.length = 0;
   }
 };
+// A step outside the tab, timed for the report, run only when its part is wanted.
+const tstep = async (part, name, fn) => {
+  if (part && !want(part)) return;
+  const t0 = Date.now(), w0 = waited();
+  mark();
+  await step(name, fn);
+  parts.push({ name, ms: Date.now() - t0, wait: waited() - w0 });
+};
 const fresh = () => Math.random().toString(36).slice(2, 8); // a new test library every time, whatever older tabs still do
 
 // ------------------------------------------------------------------ 1. the code
 console.log(`Checking ${ROOT}\n\n1. Code`);
 const jsFiles = fs.readdirSync(path.join(ROOT, 'js')).filter(f => f.endsWith('.js'));
-await step('code is readable', async () => {
+await tstep('code', 'code is readable', async () => {
   const rules = Object.fromEntries(['no-undef', 'no-dupe-keys', 'no-dupe-args', 'no-dupe-else-if', 'no-duplicate-case', 'no-redeclare', 'no-func-assign', 'no-import-assign',
     'no-const-assign', 'no-unreachable', 'no-self-assign', 'no-self-compare', 'no-unsafe-finally', 'no-unsafe-negation', 'no-constant-binary-expression', 'no-dupe-class-members',
     'use-isnan', 'valid-typeof', 'no-setter-return', 'getter-return'].map(r => [r, 2]));
@@ -59,7 +81,7 @@ await step('code is readable', async () => {
     ok(`${path.relative(ROOT, r.filePath)}: no errors`, !bad.length, bad.slice(0, 3).map(m => `line ${m.line}: ${m.message}`).join('; '));
   }
 });
-await step('imports', async () => {
+await tstep('code', 'imports', async () => {
   const exp = {}, missing = [];
   for (const f of jsFiles) {
     const s = read('js/' + f), x = exp[f] = new Set();
@@ -72,7 +94,7 @@ await step('imports', async () => {
   }
   ok('every import exists', !missing.length, missing.join('; '));
 });
-await step('styles', async () => {
+await tstep('code', 'styles', async () => {
   const seen = new Map(), clash = [];
   postcss.parse(read('css/app.css')).walkRules(r => {
     if (r.parent.type === 'atrule' && /keyframes/.test(r.parent.name)) return;
@@ -87,7 +109,7 @@ await step('styles', async () => {
   ok('no style rule contradicts another', !clash.length, clash.join('; '));
 });
 const cache = (/const CACHE = 'inkleaf-(v\d+)'/.exec(read('sw.js')) || [])[1], ver = (/APP_VER = '(v\d+)'/.exec(read('js/sync.js')) || [])[1];
-await step('versions', async () => {
+await tstep('code', 'versions', async () => {
   ok('sw.js and Settings show the same version', cache && cache === ver, `${cache} / ${ver}`);
   const list = [...read('sw.js').split('SHELL = [')[1].split('];')[0].matchAll(/'([^']+)'/g)].map(m => m[1]);
   ok('every file kept for offline use exists', list.every(f => f === './' || fs.existsSync(path.join(ROOT, f))), list.filter(f => f !== './' && !fs.existsSync(path.join(ROOT, f))));
@@ -126,7 +148,7 @@ export default { async fetch(req, env) {
 } };`;
 let mf = null, API = '';
 console.log('\n2. Sync server');
-await step('the server starts', async () => {
+if (want('server') || want('devices')) await tstep('', 'the server starts', async () => {
   mf = new Miniflare({
     modules: [{ type: 'ESModule', path: 'entry.mjs', contents: ENTRY }, { type: 'ESModule', path: 'worker.js', contents: read('server/worker.js') }],
     compatibilityDate: '2025-09-01', durableObjects: { USER: { className: 'User', useSQLite: true } },
@@ -139,7 +161,7 @@ const js = async r => { const t = await r.text(); try { return JSON.parse(t); } 
 const auth = async (sub, who) => js(await fetch(`${API}/test-auth?sub=${sub}&email=${who}@test.local`));
 const call = (t, p, o = {}) => fetch(API + p, { ...o, headers: { ...(t ? { Authorization: 'Bearer ' + t } : {}), ...(o.headers || {}) } });
 const socket = (p, first) => { const s = new WebSocket(API.replace('http', 'ws') + p); s.got = []; s.onopen = () => { if (first) s.send(JSON.stringify(first)); }; s.onmessage = e => s.got.push(JSON.parse(e.data)); s.onerror = () => {}; return s; };
-if (API) await step('server tests', async () => {
+if (API && want('server')) await tstep('server', 'server tests', async () => {
   const own = await auth('22222', 'owner'), fr = await auth('33333', 'friend'), st = await auth('44444', 'stranger');
   const put = (k, id, o, info) => call(own.token, `/blob/${k}/${id}?size=10&base=0&gz=1${info ? '&info=' + encodeURIComponent(JSON.stringify(info)) : ''}`, { method: 'PUT', body: zlib.gzipSync(JSON.stringify(o)) });
   const ws = socket('/ws?u=22222', { token: own.token });
@@ -210,7 +232,7 @@ if (API) await step('server tests', async () => {
 });
 
 // ------------------------------------------------------------------ 3. the app, in a tab of the owner's Chrome
-if (!process.argv.includes('--quick')) {
+if (!process.argv.includes('--quick') && (want('library') || want('writing') || want('devices'))) {
   console.log('\n3. The app (a tab opens in your Chrome; please keep it in front)');
   c.log('The app', 'h');
   await step('the check tab opens', async () => { await c.open(WEB); await c.go(`${WEB}/privacy.html`, 300); });
@@ -221,7 +243,7 @@ if (!process.argv.includes('--quick')) {
   const key = (k, o = '') => c.ev(`document.activeElement?.blur();for(const t of ['keydown','keyup'])document.body.dispatchEvent(new KeyboardEvent(t,{key:'${k}',${o}bubbles:true}));await new Promise(r=>setTimeout(r,250));`);
   const pops = () => c.ev(`return document.querySelectorAll('.pop').length`);
   const noPops = `document.querySelectorAll('.pop').forEach(p=>p.remove());`;
-  await section('library', async () => {
+  if (want('library')) await section('library', async () => {
     c.errors.length = 0;
     const clear = `for(const k of ['hw','geminiModel','sidebarCollapsed'])localStorage.removeItem('inkleaf.'+k);`;
     await c.ev(clear + `localStorage.setItem('inkleaf.hw','1');localStorage.setItem('inkleaf.geminiModel','gemini-3.5-flash-lite')`); // shows the AI label in the search box
@@ -265,7 +287,7 @@ if (!process.argv.includes('--quick')) {
     noErrors('the library top bar');
     await c.ev(clear);
   });
-  await section('writing', async () => {
+  if (want('writing')) await section('writing', async () => {
     c.errors.length = 0;
     await c.size(1194, 834); await c.dark(true);
     await c.go(`${WEB}/?profile=check${fresh()}`);
@@ -388,7 +410,7 @@ if (!process.argv.includes('--quick')) {
     noErrors('Settings');
   });
 
-  if (API) await section('two devices', async () => {
+  if (API && want('devices')) await section('two devices', async () => {
     console.log('   ...two devices (about a minute)');
     c.log('Two devices (about a minute)', 'h');
     c.errors.length = 0;
@@ -450,6 +472,13 @@ if (!process.argv.includes('--quick')) {
 
 if (mf) await mf.dispose().catch(() => {});
 site.close();
+// Time report: the parts, then the slowest checks. In brackets: how much of it was fixed waiting.
+const sec = ms => (ms / 1000).toFixed(1).padStart(6) + ' s';
+console.log('\nTime (fixed waiting in brackets):');
+for (const p of parts) console.log(`  ${sec(p.ms)}  (${sec(p.wait).trim()})  ${p.name}`);
+console.log('Slowest checks (time since the check before it):');
+for (const t of [...times].sort((a, b) => b.ms - a.ms).slice(0, 15)) console.log(`  ${sec(t.ms)}  (${sec(t.wait).trim()})  ${t.name}`);
+if (ONLY.length) console.log(`\nOnly these parts were run: ${ONLY.join(', ')}. Run the whole check before publishing.`);
 console.log(`\n${passed} passed, ${failed.length} failed.`);
-if (failed.length) { console.log('\nDO NOT PUBLISH. Failed:'); for (const f of failed) console.log('  - ' + f); } else console.log('Everything is fine: ready to publish.');
+if (failed.length) { console.log('\nDO NOT PUBLISH. Failed:'); for (const f of failed) console.log('  - ' + f); } else console.log(ONLY.length ? 'Everything in these parts is fine. This was not the whole check: run it all before publishing.' : 'Everything is fine: ready to publish.');
 process.exit(failed.length ? 1 : 0);
