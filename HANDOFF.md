@@ -39,6 +39,15 @@
   scrolling** (before: only a page just written on, so other pages were never checked).
   Tested: 79 tricky correct words, none marked; 21 different mistakes, all caught; checks added in `writing`.
 
+## Cloudflare limit (2026-11-27, after v101 went live)
+- Dashboard (owner logged in, Durable Objects page): today 9.14k requests, **5.06M rows read** (free plan ~5M/day),
+  10.27k written, 247 errors. ~550 rows read per request.
+- Cause, measured with the new `tests/rows.mjs` (real worker.js in Miniflare, 3,000-page library): `/changes` went
+  through the WHOLE recs table whenever anything had changed (3,528 rows for 3 changes; also after every wake-up),
+  because SQLite picked another index for `k IN (...)`. Fixed with `INDEXED BY recs_s`: now 3 rows (wake-up: 8).
+  `check.mjs` (server part) now fails if an everyday request reads more than 50 rows.
+- Fix committed, NOT pushed yet (server only; no app version change needed). Check: 171/171.
+
 ## Not done / ideas
 - Handwriting marks still wait ~1 s + Gemini's reading (1-3 s). When Gemini's word count for a line differs from the
   stroke groups, that line gets no spell check at all (`w: null` in hwsearch.js indexPage); could align words by position.

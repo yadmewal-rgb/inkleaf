@@ -1061,7 +1061,10 @@ Return ONLY the valid JSON array without commentary or code fences.`;
       if (since >= curSeq) {
         return json({ items: [], more: false, seq: curSeq });
       }
-      const rows = this.sql.exec(`SELECT k, id, s, size, parts, info, gz FROM recs WHERE s > ? AND k IN ${FEED} ORDER BY s LIMIT ?`, since, limit + 1).toArray();
+      // INDEXED BY: left to itself, Cloudflare's SQLite went through the whole table for every question (k IN ... made it
+      // pick another index), so one new page cost every record of the library in "rows read": the free plan's 5 million
+      // a day ran out on 2026-11-27. tests/rows.mjs measures it.
+      const rows = this.sql.exec(`SELECT k, id, s, size, parts, info, gz FROM recs INDEXED BY recs_s WHERE s > ? AND k IN ${FEED} ORDER BY s LIMIT ?`, since, limit + 1).toArray();
       return json({ items: rows.slice(0, limit), more: rows.length > limit, seq: curSeq });
     }
 

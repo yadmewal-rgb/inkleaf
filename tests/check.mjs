@@ -185,6 +185,18 @@ if (want('server') || want('devices')) await tstep('', 'the server starts', asyn
   API = (await mf.ready).toString().replace(/\/$/, '').replace('127.0.0.1', 'localhost');
   ok('the server starts', true);
 });
+// Rows read per request (Cloudflare's free plan: about 5 million a day). On 2026-11-27 every "what changed?" read the
+// whole library and the day's limit ran out by the afternoon. tests/rows.mjs measures it on a library of 3,000 pages.
+await tstep('server', 'rows read per request', async () => {
+  const out = JSON.parse(execFileSync(process.execPath, [path.join(here, 'rows.mjs'), '--json'], { cwd: ROOT, timeout: 240000 }).toString().trim().split(/\r?\n/).pop());
+  const at = name => (out.find(o => o.name.startsWith(name)) || { r: 1e9 }).r;
+  ok('"what changed?" reads only what changed', at('/changes, 3 new') <= 20, at('/changes, 3 new') + ' rows for 3 changes');
+  ok('the server waking up reads almost nothing', at('server wakes up') <= 50, at('server wakes up') + ' rows');
+  ok('a new device reads about one row per record', at('/changes from 0') <= 600, at('/changes from 0') + ' rows for 500 records');
+  ok('opening a shared notebook reads only its pages', at('/live/') <= 100, at('/live/') + ' rows');
+  const worst = out.filter(o => !/from 0|live/.test(o.name)).sort((a, b) => b.r - a.r)[0];
+  ok('no everyday request reads more than 50 rows', worst.r <= 50, worst.r + ' rows: ' + worst.name);
+});
 const js = async r => { const t = await r.text(); try { return JSON.parse(t); } catch { return t.slice(0, 120); } };
 const auth = async (sub, who) => js(await fetch(`${API}/test-auth?sub=${sub}&email=${who}@test.local`));
 const call = (t, p, o = {}) => fetch(API + p, { ...o, headers: { ...(t ? { Authorization: 'Bearer ' + t } : {}), ...(o.headers || {}) } });
