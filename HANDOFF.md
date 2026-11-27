@@ -46,7 +46,7 @@
   through the WHOLE recs table whenever anything had changed (3,528 rows for 3 changes; also after every wake-up),
   because SQLite picked another index for `k IN (...)`. Fixed with `INDEXED BY recs_s`: now 3 rows (wake-up: 8).
   `check.mjs` (server part) now fails if an everyday request reads more than 50 rows.
-- Fix committed, NOT pushed yet (server only; no app version change needed). Check: 171/171.
+- Fix LIVE (pushed `88e3f2a`, after-publish ALL GOOD). Next: owner checks rows read on the dashboard tomorrow (should be far below 5M).
 
 ## Not done / ideas
 - Handwriting marks still wait ~1 s + Gemini's reading (1-3 s). When Gemini's word count for a line differs from the
