@@ -9,7 +9,7 @@
 // - Pulling: the service tells every open device about a change over a live connection (WebSocket), and the
 //   device asks for what changed. A page edited on two devices is merged stroke by stroke, so nothing is lost.
 // - Sign-in: Google, once per device. The service then gives this device its own key, which does not expire.
-import { db, assetIdsOf } from './db.js';
+import { db, assetIdsOf, loadPages } from './db.js';
 import { h, uid, bus, loadScript, downloadBlob, bufToB64, b64ToBuf, editedAt } from './util.js';
 import { modal, toast, confirmBox, busy } from './ui.js';
 import { I } from './icons.js';
@@ -312,6 +312,161 @@ async function visibleCopy(a) {
     if (e.status === 403) { visibleOk = false; return true; } // no drive.file permission on this link yet
     throw e;
   }
+}
+
+// ---------------------------------------------------------------- annotated PDFs in the person's Google Drive
+// Every notebook, writing included (a PDF with its ink, or a notebook of written pages), as a PDF in the visible
+// folder Inkleaf > Annotated PDFs, so it can be opened and shared from Drive without Inkleaf (owner's wish,
+// 2026-11-27: "it is very important"). Made with export.js buildPdf, one notebook at a time, never while a notebook
+// is open; only notebooks whose writing changed since their Drive copy are made again (the copy keeps the notebook's
+// edit time in appProperties.e), and the same Drive file is replaced, so any device may do it without duplicates.
+// A renamed or moved notebook only renames its file; a binned or deleted one moves its copy to the Drive bin.
+const ANN_FOLDER = 'Annotated PDFs', ANN_EVERY = 20 * 60e3, ANN_TOUCH_MB = 150; // phones and iPads skip bigger PDFs
+const annState = { running: false, done: 0, total: 0, current: '', made: 0, waiting: 0, skippedBig: 0, err: null, last: 0 };
+let annFolderId = null, annT = 0, annAgain = false;
+export const annotatedOn = () => localStorage.getItem('inkleaf.annotated') !== 'off'; // on unless turned off on this device
+export function setAnnotatedOn(v) { localStorage.setItem('inkleaf.annotated', v ? 'on' : 'off'); bus.emit('annotated', annotatedStatus()); if (v) annSoon(2000); }
+export const annotatedStatus = () => ({ ...annState, on: annotatedOn(), linked: driveOn !== false && visibleOk !== false });
+
+async function annFolder() {
+  if (annFolderId) return annFolderId;
+  const parent = await visibleFolder();
+  const q = encodeURIComponent(`mimeType = 'application/vnd.google-apps.folder' and trashed = false and appProperties has { key='inkleaf' and value='annotated' }`);
+  const j = await (await drive(`/drive/v3/files?q=${q}&fields=files(id)`)).json();
+  if (j.files && j.files[0]) return (annFolderId = j.files[0].id);
+  const r = await (await drive('/drive/v3/files?fields=id', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ name: ANN_FOLDER, parents: [parent], mimeType: 'application/vnd.google-apps.folder', appProperties: { inkleaf: 'annotated' } })
+  })).json();
+  return (annFolderId = r.id);
+}
+
+// The Drive copies there now: docId -> [{id, name, e}] (more than one only if two devices made one at the same moment).
+async function annList(folder) {
+  const out = new Map();
+  let page = '';
+  do {
+    const q = encodeURIComponent(`'${folder}' in parents and trashed = false`);
+    const j = await (await drive(`/drive/v3/files?q=${q}&pageSize=1000&fields=nextPageToken,files(id,name,appProperties)${page ? '&pageToken=' + page : ''}`)).json();
+    for (const f of j.files || []) {
+      const id = f.appProperties && f.appProperties.inkleafDoc;
+      if (!id) continue;
+      if (!out.has(id)) out.set(id, []);
+      out.get(id).push({ id: f.id, name: f.name, e: Number(f.appProperties.e) || 0 });
+    }
+    page = j.nextPageToken || '';
+  } while (page);
+  return out;
+}
+
+// Upload: small files in one request, bigger ones as a resumable upload (Drive's limit for one request is 5 MB).
+async function annUpload(fileId, meta, blob) {
+  const base = fileId ? `/upload/drive/v3/files/${fileId}` : '/upload/drive/v3/files', method = fileId ? 'PATCH' : 'POST';
+  const multipart = async () => {
+    const boundary = 'inkleaf' + Math.random().toString(36).slice(2);
+    const body = new Blob([`--${boundary}\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n${JSON.stringify(meta)}\r\n`,
+      `--${boundary}\r\nContent-Type: application/pdf\r\n\r\n`, blob, `\r\n--${boundary}--`]);
+    return (await drive(base + '?uploadType=multipart&fields=id', { method, headers: { 'Content-Type': 'multipart/related; boundary=' + boundary }, body })).json();
+  };
+  if (blob.size <= 5 * 1048576) return multipart();
+  const start = await drive(base + '?uploadType=resumable&fields=id', {
+    method, headers: { 'Content-Type': 'application/json; charset=UTF-8', 'X-Upload-Content-Type': 'application/pdf', 'X-Upload-Content-Length': String(blob.size) }, body: JSON.stringify(meta)
+  });
+  const at = start.headers.get('location');
+  if (!at) return multipart(); // the upload address was not readable here: one request it is
+  const r = await http(at, { method: 'PUT', headers: { 'Content-Type': 'application/pdf' }, body: blob });
+  if (!r.ok) { const e = new Error(`Google Drive error ${r.status}`); e.status = r.status; throw e; }
+  return r.json();
+}
+
+// A notebook's name in Drive: its folders, then its title ("Polity - Laxmikanth.pdf"), so Drive sorts them by folder.
+function annName(doc, folders) {
+  const parts = [doc.title || 'Notebook'];
+  for (let f = folders.get(doc.folderId), n = 0; f && n < 20; f = folders.get(f.parentId), n++) parts.unshift(f.name || 'Folder');
+  return parts.join(' - ').replace(/[\\/:*?"<>|]+/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 180) + '.pdf';
+}
+const annBinned = (doc, folders) => {
+  if (doc.deleted || doc.trashed || doc.sys) return true;
+  for (let f = folders.get(doc.folderId), n = 0; f && n < 20; f = folders.get(f.parentId), n++) if (f.deleted || f.trashed) return true;
+  return false;
+};
+
+function annSoon(ms = 15000) { clearTimeout(annT); annT = setTimeout(() => annotatedPass().catch(() => {}), ms); }
+
+// opts.now ("Update now"): also when Inkleaf is in the background, and after a pass already under way.
+let annRun = null;
+export async function annotatedPass(opts = {}) {
+  while (annRun) { if (!opts.now) { annAgain = true; return annotatedStatus(); } await annRun.catch(() => {}); }
+  annRun = annWork(opts);
+  try { return await annRun; } finally { annRun = null; }
+}
+async function annWork(opts) {
+  if (!annotatedOn() || !ready() || openDocs.size || (!opts.now && document.visibilityState !== 'visible')) return annotatedStatus();
+  if (!(await driveToken().catch(() => null))) return annotatedStatus();
+  Object.assign(annState, { running: true, done: 0, total: 0, current: '', made: 0, waiting: 0, skippedBig: 0, err: null });
+  bus.emit('annotated', annotatedStatus());
+  try {
+    const folder = await annFolder();
+    const remote = await annList(folder);
+    const [docs, folderRecs] = await Promise.all([db.all('docs'), db.all('folders')]);
+    const folders = new Map(folderRecs.map(f => [f.id, f]));
+    const todo = [];
+    for (const doc of docs) {
+      const copies = remote.get(doc.id) || [];
+      if (annBinned(doc, folders)) {
+        for (const c of copies) await drive(`/drive/v3/files/${c.id}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ trashed: true }) });
+        continue;
+      }
+      for (const c of copies.slice(1)) await drive(`/drive/v3/files/${c.id}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ trashed: true }) });
+      const recs = await db.byDoc(doc.id);
+      const stamp = Math.max(editedAt(doc), ...recs.map(p => p.modified || 0));
+      const name = annName(doc, folders), copy = copies[0];
+      if (copy && copy.e >= stamp) {
+        if (copy.name !== name) await drive(`/drive/v3/files/${copy.id}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name }) });
+        continue;
+      }
+      todo.push({ doc, stamp, name, copy });
+    }
+    todo.sort((a, b) => b.stamp - a.stamp); // the latest writing first
+    annState.total = todo.length;
+    bus.emit('annotated', annotatedStatus());
+    const { buildPdf } = todo.length ? await import('./export.js') : {};
+    for (const t of todo) {
+      if (openDocs.size || !ready() || !annotatedOn()) break; // a notebook was opened: carry on later
+      annState.current = t.doc.title || 'Notebook';
+      bus.emit('annotated', annotatedStatus());
+      const pages = await loadPages(t.doc);
+      // Every PDF must be on this device, or its pages would be missing from the copy; another device (or this
+      // one, once the files have arrived) makes it then.
+      let missing = false, mb = 0;
+      for (const aid of new Set(pages.filter(p => p.pdf).map(p => p.pdf.a))) {
+        const a = await db.get('assets', aid);
+        if (!a || !a.data) missing = true; else mb += (a.data.byteLength || a.data.size || 0) / 1048576;
+      }
+      if (!pages.length || missing) { annState.waiting++; annState.done++; continue; }
+      if (matchMedia('(pointer: coarse)').matches && mb > ANN_TOUCH_MB) { annState.skippedBig++; annState.done++; continue; }
+      try {
+        const blob = await buildPdf(t.doc, pages);
+        const meta = { name: t.name, mimeType: 'application/pdf', appProperties: { inkleafDoc: t.doc.id, e: String(t.stamp) } };
+        await annUpload(t.copy && t.copy.id, t.copy ? meta : { ...meta, parents: [folder] }, blob);
+        annState.made++;
+      } catch (e) {
+        if (e.status === 401 || e.status === 403 || !navigator.onLine) throw e; // Drive itself is the problem: stop
+        annState.err = { t: Date.now(), msg: `"${t.doc.title || 'Notebook'}" could not be made: ${e.message || e}` }; // the others go on
+      }
+      annState.done++;
+      bus.emit('annotated', annotatedStatus());
+      await new Promise(r => setTimeout(r, 300)); // let the app breathe between notebooks
+    }
+  } catch (e) {
+    annState.err = { t: Date.now(), msg: e.status === 403 ? 'Google Drive needs one more permission (Settings > Link Google Drive again)' : String(e.message || e) };
+    if (e.status === 403) visibleOk = false;
+  } finally {
+    annState.running = false; annState.current = ''; annState.last = Date.now();
+    bus.emit('annotated', annotatedStatus());
+    if (annAgain) { annAgain = false; annSoon(5000); }
+  }
+  return annotatedStatus();
 }
 
 export async function signOut() {
@@ -1224,7 +1379,7 @@ export async function initSync() {
       if (ready()) { run(pullChanges, false); }
       schedule();
     });
-    bus.on('editor-close', id => { openDocs.delete(id); schedule(); });
+    bus.on('editor-close', id => { openDocs.delete(id); schedule(); annSoon(); }); // annotated PDF in Drive, soon after
     bus.on('folder-open', async folderId => {
       try {
         const docs = (await db.all('docs')).filter(d => !d.deleted && !d.trashed && (folderId ? d.folderId === folderId : true));
@@ -1240,6 +1395,9 @@ export async function initSync() {
     const meterNow = () => { if (session && !off && document.visibilityState === 'visible') readMeter().catch(() => {}); };
     setTimeout(meterNow, 10000);
     setInterval(meterNow, 1800e3);
+    // Annotated PDFs in Google Drive: a minute after opening, then every 20 minutes (only changed notebooks).
+    setTimeout(() => annSoon(0), 60000);
+    setInterval(() => annSoon(0), ANN_EVERY);
     document.addEventListener('visibilitychange', () => {
       if (document.visibilityState === 'hidden') pushSoon(0);                       // leaving: upload right away
       else if (ready()) { openLive(); run(pullChanges, false); schedule(); }
@@ -2455,6 +2613,35 @@ export async function openSettings() {
   if (session && !cfg.off) readMeter().catch(() => {});
   const offCfUsage = bus.on('meter', () => drawCfUsage());
 
+  // Annotated PDFs in Google Drive (folder Inkleaf > Annotated PDFs): on/off for this device, progress, Update now.
+  const annBox = h('div', { class: 'field annotated', style: 'margin: 8px 0 12px; padding: 10px 12px; background: var(--surface-2); border-radius: 8px;' });
+  const drawAnn = () => {
+    const a = annotatedStatus();
+    const ago = a.last ? Math.max(0, Math.round((Date.now() - a.last) / 60000)) : null;
+    const line = !session || cfg.off ? 'Needs sync to be signed in.'
+      : !a.linked ? 'Google Drive is not linked on this sign-in (see below).'
+        : !a.on ? 'Off on this device.'
+          : a.running ? (a.total ? `Making ${Math.min(a.done + 1, a.total)} of ${a.total}${a.current ? ': "' + a.current + '"' : ''}…` : 'Checking which notebooks changed…')
+            : a.last ? `Up to date ${ago < 1 ? 'just now' : ago + ' min ago'}${a.made ? ` (${a.made} made)` : ''}. Checked again after you close a notebook, and every 20 minutes.`
+              : 'Starts a minute after Inkleaf opens, and after you close a notebook.';
+    const notes = [];
+    if (a.waiting) notes.push(`${a.waiting} notebook${a.waiting === 1 ? '' : 's'} wait${a.waiting === 1 ? 's' : ''} for ${a.waiting === 1 ? 'its' : 'their'} PDF to arrive on this device.`);
+    if (a.skippedBig) notes.push(`${a.skippedBig} with PDFs over ${ANN_TOUCH_MB} MB ${a.skippedBig === 1 ? 'is' : 'are'} left to the laptop (too big for this device's memory).`);
+    annBox.replaceChildren(
+      h('div', { class: 'row', style: 'align-items: center; justify-content: space-between; margin-bottom: 4px;' },
+        h('label', { class: 'chip check' + (a.on ? ' on' : ''), style: 'cursor: pointer;' },
+          h('input', { type: 'checkbox', checked: a.on, hidden: true, onchange: e => { setAnnotatedOn(e.target.checked); drawAnn(); } }),
+          'Annotated PDFs in Google Drive'),
+        a.on && session && !cfg.off && a.linked ? h('button', { class: 'btn sm', type: 'button', disabled: a.running, onclick: () => { annotatedPass({ now: true }); } }, a.running ? 'Working…' : 'Update now') : null),
+      h('p', { class: 'modal-text small', style: 'margin: 4px 0;' }, 'Every notebook with your writing on it, as a PDF in your Drive folder Inkleaf > Annotated PDFs, to open or share without Inkleaf.'),
+      h('div', { class: 'bk-sub ann-line' }, line),
+      ...notes.map(n => h('div', { class: 'bk-sub' }, n)),
+      a.err ? h('div', { class: 'bk-sub warn' }, 'Last problem: ' + a.err.msg) : null
+    );
+  };
+  drawAnn();
+  const offAnn = bus.on('annotated', () => drawAnn());
+
   // Owner-only user manager (add/remove allowed emails without opening Cloudflare)
   const allowedUsersBox = h('div', { class: 'allowed-users', hidden: true });
   async function drawAllowedUsers() {
@@ -2684,7 +2871,7 @@ export async function openSettings() {
   const m = modal({
     title: 'Settings (' + APP_VER + ')',
     wide: true,
-    onClose: () => { offUsage(); offHwStatus(); offModelChanged(); offCfUsage(); },
+    onClose: () => { offUsage(); offHwStatus(); offModelChanged(); offCfUsage(); offAnn(); },
     body: h('div', null,
       h('div', {
         class: 'row',
@@ -2717,7 +2904,7 @@ export async function openSettings() {
         'Notes are always kept on this device, so they open instantly and work offline. With sync on, every change is also ',
         'sent to Inkleaf\'s own sync service (on Cloudflare) and appears on your other devices within a second or two.'),
       h('p', { class: 'modal-text small' }, who),
-      usage, cfUsageBox, allowedUsersBox, healthEl, devicesEl,
+      usage, cfUsageBox, annBox, allowedUsersBox, healthEl, devicesEl,
       h('div', { class: 'row' },
         h('button', {
           class: 'btn primary', type: 'button',

@@ -548,6 +548,63 @@ if (!process.argv.includes('--quick') && (want('library') || want('writing') || 
     ok('Settings shows Cloudflare\'s own limit figures', mt.text.includes('2.6M of 5M (52%)') && mt.text.includes('9,140 of 100k') && mt.mid, mt.text);
     ok('a figure Cloudflare did not give is "not known", never a guess', /Rows written\s*not known/.test(mt.text) && (mt.none.match(/not known/g) || []).length === 3, mt.none);
     ok('one message at 50%, not repeated', mt.t1 === 1 && mt.t2 === 1 && /52% of today's free rows read/.test(mt.msg), mt);
+    // Annotated PDFs in Google Drive (owner, 2026-11-27: "it is very important"). A pretend Drive records what arrives.
+    const an = await c.ev(`${E.D}const S=await import('/js/sync.js'),U=await import('/js/util.js');
+      document.querySelector('dialog .modal-head .ic')?.click();location.hash='#/';await new Promise(r=>setTimeout(r,600));
+      localStorage.setItem('inkleaf.annotated','on');
+      const files=new Map(),log=[];let nid=0;
+      const J=x=>new Response(JSON.stringify(x),{status:200,headers:{'Content-Type':'application/json'}});
+      S._setHttp(async(u,o={})=>{u=String(u);const m=o.method||'GET';
+        if(u.endsWith('/google-token'))return J({access_token:'gt',exp:Date.now()+3e6});
+        if(!u.startsWith('https://www.googleapis.com'))return J({items:[]});
+        const url=new URL(u),q=url.searchParams.get('q')||'';
+        if(url.pathname==='/drive/v3/files'&&m==='GET'){
+          if(url.searchParams.get('spaces')==='appDataFolder')return J({files:[]});
+          let list=[...files.values()].filter(f=>!f.trashed);
+          const pm=/'([^']+)' in parents/.exec(q);if(pm)list=list.filter(f=>(f.parents||[]).includes(pm[1]));
+          const am=/key='inkleaf' and value='([^']+)'/.exec(q);if(am)list=list.filter(f=>f.appProperties&&f.appProperties.inkleaf===am[1]);
+          return J({files:list.map(f=>({id:f.id,name:f.name,appProperties:f.appProperties}))});}
+        if(url.pathname==='/drive/v3/files'&&m==='POST'){const f={id:'f'+(++nid),...JSON.parse(o.body)};files.set(f.id,f);return J({id:f.id});}
+        const up=/^\\/upload\\/drive\\/v3\\/files(?:\\/(\\w+))?$/.exec(url.pathname);
+        if(up){const t=await o.body.text(),meta=JSON.parse(t.split('\\r\\n\\r\\n')[1].split('\\r\\n--')[0]),pdf=t.includes('%PDF-');
+          if(!(meta.appProperties&&meta.appProperties.inkleafDoc))return J({id:'x'+(++nid)});
+          if(up[1]){const f=files.get(up[1]);Object.assign(f,meta,{pdf});log.push('update:'+f.name);return J({id:f.id});}
+          const f={id:'f'+(++nid),...meta,pdf};files.set(f.id,f);log.push('new:'+f.name);return J({id:f.id});}
+        const pm=/^\\/drive\\/v3\\/files\\/(\\w+)$/.exec(url.pathname);
+        if(pm&&m==='PATCH'){const f=files.get(pm[1]),b=JSON.parse(o.body);if(f&&f.appProperties&&f.appProperties.inkleafDoc){Object.assign(f,b);log.push((b.trashed?'trash:':'rename:')+f.name);}return J({id:pm[1]});}
+        return J({items:[]});});
+      await S.initSync();
+      const fo=await D.createFolder('Law'),d=await D.createDoc({title:'Crimes',folderId:fo.id}),p=(await D.db.byDoc(d.id))[0];
+      p.items=[{id:'s1',t:'s',tool:'pen',c:'#1d4e89',w:2,p:[60,80,.5,120,140,.5,200,110,.5],z:1}];p.modified=Date.now();await D.db.put('pages',p);
+      const mine=()=>[...files.values()].filter(f=>f.appProperties&&f.appProperties.inkleafDoc===d.id&&!f.trashed);
+      const mineLog=()=>log.filter(l=>/Crimes/.test(l));
+      await S.annotatedPass({now:true});
+      const f1=mine()[0]||{},folder=files.get((f1.parents||[])[0])||{},top=files.get((folder.parents||[])[0])||{};
+      const first={n:mine().length,name:f1.name,pdf:f1.pdf,folder:folder.name,top:top.name};
+      await S.annotatedPass({now:true});const again=mineLog().length;
+      p.items.push({id:'s2',t:'s',tool:'pen',c:'#b23a48',w:2,p:[60,300,.5,160,320,.5,260,300,.5],z:2});p.modified=Date.now()+5;await D.db.put('pages',p);
+      await S.annotatedPass({now:true});const changed={log:mineLog().slice(),n:mine().length,same:(mine()[0]||{}).id===f1.id};
+      fo.name='Law IPC';fo.modified=Date.now();await D.db.put('folders',fo);
+      await S.annotatedPass({now:true});const renamed={log:mineLog().slice(),name:(mine()[0]||{}).name};
+      U.bus.emit('editor-open',d.id,[]);await new Promise(r=>setTimeout(r,50));
+      p.items.push({id:'s3',t:'s',tool:'pen',c:'#000000',w:2,p:[60,400,.5,90,420,.5],z:3});p.modified=Date.now()+9;await D.db.put('pages',p);
+      const before=log.length;await S.annotatedPass({now:true});const whileOpen=log.length-before;
+      U.bus.emit('editor-close',d.id);
+      const dd=await D.db.get('docs',d.id);dd.trashed=Date.now();dd.modified=Date.now();await D.db.put('docs',dd);
+      await S.annotatedPass({now:true});const binned=mine().length;
+      await S.openSettings();await new Promise(r=>setTimeout(r,300));
+      const box=document.querySelector('dialog .annotated')?.textContent||'';
+      localStorage.setItem('inkleaf.annotated','off'); // the rest of the check has no Drive
+      S._setHttp(async()=>new Response('{"items":[]}',{status:200,headers:{'Content-Type':'application/json'}}));
+      return {first,again,changed,renamed,whileOpen,binned,box};`);
+    ok('each notebook arrives in Drive as a PDF with its writing, in Inkleaf > Annotated PDFs, named after its folder',
+      an.first.n === 1 && an.first.pdf && an.first.name === 'Law - Crimes.pdf' && an.first.folder === 'Annotated PDFs' && an.first.top === 'Inkleaf', an.first);
+    ok('nothing is sent again while the notebook is unchanged', an.again === 1, an);
+    ok('new writing replaces the same Drive file (no second copy)', an.changed.log.join() === 'new:Law - Crimes.pdf,update:Law - Crimes.pdf' && an.changed.n === 1 && an.changed.same, an.changed);
+    ok('a renamed folder only renames the file', an.renamed.log.length === 3 && an.renamed.log[2] === 'rename:Law IPC - Crimes.pdf' && an.renamed.name === 'Law IPC - Crimes.pdf', an.renamed);
+    ok('nothing is made while a notebook is open', an.whileOpen === 0, an);
+    ok('a binned notebook\'s copy goes to the Drive bin', an.binned === 0, an);
+    ok('Settings shows the annotated PDFs switch and progress', an.box.includes('Annotated PDFs in Google Drive') && /Up to date/.test(an.box), an.box);
     // v101 bug: each device pushed its own model choice, so "Auto" (or any choice) made on one device was undone by the next.
     const ms = await c.ev(`const S=await import('/js/sync.js');const H=await import('/js/hwsearch.js');const puts=[];
       const run=async(server,local)=>{if(local)localStorage.setItem('inkleaf.geminiModel',local);else localStorage.removeItem('inkleaf.geminiModel');puts.length=0;
