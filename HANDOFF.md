@@ -1,6 +1,6 @@
 # Handoff
 
-**Written:** 2026-11-27 late evening, by Claude Code. **Next:** after 00:00 UTC (5:30 am India), when Cloudflare's rows are back: try annotated PDFs with the real Google Drive. Owner was asked how: (1) they tap Settings > Sync > Update now themselves and send a screenshot of Drive > Inkleaf > Annotated PDFs, or (2) Claude Code does it in a separate Chrome window (its browser tool cannot open a tab in the owner's own window) - waiting for the answer.
+**Written:** 2026-11-27 late evening, by Claude Code. **Next:** after 00:00 UTC (5:30 am India), when Cloudflare's rows are back: try annotated PDFs with the real Google Drive. Owner chose: "use separate chrome window, run drive test after 5:30" (allowed for this one test). Scheduled in the Claude Code session for 28 Nov 5:41 am (session-only: if that session was closed, run it by hand).
 **State:** **v102 LIVE** (pushed `f1fc83e`, after-publish ALL GOOD; sync server rebuilt by empty commit `917c7d2` after a dashboard secret edit deployed old code). Live meter works: 5,059,242 rows read (limit hit), 10,267 written, 8,935 requests. Check 187/187.
 
 ## What the owner asked
