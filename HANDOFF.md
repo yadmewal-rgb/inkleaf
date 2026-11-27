@@ -1,17 +1,37 @@
 # Handoff
 
-**Written:** 2026-11-27 evening, by Claude Code. **Next:** after 00:00 UTC (5:30 am India), when Cloudflare's rows are back: try annotated PDFs with the real Drive (owner's Chrome, live site).
+**Written:** 2026-11-27 late evening, by Claude Code. **Next:** after 00:00 UTC (5:30 am India), when Cloudflare's rows are back: try annotated PDFs with the real Google Drive. Owner was asked how: (1) they tap Settings > Sync > Update now themselves and send a screenshot of Drive > Inkleaf > Annotated PDFs, or (2) Claude Code does it in a separate Chrome window (its browser tool cannot open a tab in the owner's own window) - waiting for the answer.
 **State:** **v102 LIVE** (pushed `f1fc83e`, after-publish ALL GOOD; sync server rebuilt by empty commit `917c7d2` after a dashboard secret edit deployed old code). Live meter works: 5,059,242 rows read (limit hit), 10,267 written, 8,935 requests. Check 187/187.
 
 ## What the owner asked
 1. (to agy) check every line, remove code of removed features, find conflicting commands -> v101 (`6b85bb9`).
 2. (to Claude Code) "check handoff", "yes check it": review agy's v101, run the check, push.
 3. "bring it back pencil hold".
-4. Make the app FAST ("size is not a problem, lightweight = fast"): "you can do open in offline one"; the dictionary
+4. (evening) Cloudflare limit: "does this limit crossing also affect other apps?" (no: only Inkleaf uses Cloudflare
+   with a database; BrothersCompany is static files). "can we bypass cloudflare and still use app with full
+   functionality?" (no: sign-in, sync, live sharing need it). The old meter "can tell false remaining limits like
+   today": build a meter with true figures (done, v102). Ideas agreed for later: Google Drive as a backup sync route
+   when Cloudflare is out (step 2), a live-sharing on/off switch (step 3). Told: the $5 paid plan is the surest fix.
+5. "make annotated files in google drive, it is very important" (done, v102); then "Remove the limit. The iPad tries
+   everything, and we risk crashes on big books" (done, with a crash guard).
+6. "save it to handoff" (this file).
+7. Earlier: make the app FAST ("size is not a problem, lightweight = fast"): "you can do open in offline one"; the dictionary
    "is weak, does not recognise all words, shows correct words as mistakes, also very slow".
 
 ## Live now
-- App **v101** (`1eca652`) on GitHub Pages; sync server rebuilt from it.
+- App **v102** (`f1fc83e`) on GitHub Pages; sync server rebuilt from `917c7d2` (empty commit), meter answering.
+- Local only (not pushed, docs only): `cc6d35c` and this handoff. They need no release; push with the next real change.
+
+## Warning (learnt 2026-11-27)
+- **Editing a variable or secret in the Cloudflare dashboard can deploy an OLDER copy of the server code.** The owner's
+  CF_ACCOUNT edit at 17:01 UTC replaced v102 (built 16:59) with old code; `/meter` answered `signin`. Fixed by an empty
+  commit. After any dashboard edit: `curl .../meter` must answer with `used`, else push an empty commit. (Also in AGENTS.md.)
+- The owner's first CF_ACCOUNT value was wrong ("not authorized for that account"); the right one is the 32-character
+  account ID (`GET /client/v4/accounts` with the key shows it).
+- While Cloudflare's rows are used up, annotated PDFs stop too: the Drive pass comes from the sync service. Step 2
+  (asking Google directly) would fix that.
+- Claude Code's Chrome tool (claude-in-chrome) opens its own window, which the owner does not want; tests/check.mjs's
+  ownChrome works only for local pages, not the live site.
 
 ## Done (all in v101, live)
 - agy's v101 (`6b85bb9`): dead code removed, 5 conflict fixes. Reviewed by Claude Code: fine, except what follows.
