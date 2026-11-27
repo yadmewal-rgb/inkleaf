@@ -456,6 +456,15 @@ if (!process.argv.includes('--quick') && (want('library') || want('writing') || 
     ok('Settings shows the top account card', await c.ev(`return !!document.querySelector('dialog .account-card')`));
     await c.ev(`document.querySelector('dialog .modal-head .ic')?.click();await new Promise(r=>setTimeout(r,200));${E.D}const S=await import('/js/sync.js');await D.db.setMeta('cloud',{token:'111.fake',email:'owner@test.local'});S._setHttp(async()=>new Response('{"items":[]}',{status:200,headers:{'Content-Type':'application/json'}}));await S.initSync();await S.openSettings();`); await sleep(500);
     ok('Settings shows Sign out prominently when signed in', await c.ev(`return [...document.querySelectorAll('dialog .account-card button')].some(b=>b.textContent.trim()==='Sign out')`));
+    // v101 bug: each device pushed its own model choice, so "Auto" (or any choice) made on one device was undone by the next.
+    const ms = await c.ev(`const S=await import('/js/sync.js');const H=await import('/js/hwsearch.js');const puts=[];
+      const run=async(server,local)=>{if(local)localStorage.setItem('inkleaf.geminiModel',local);else localStorage.removeItem('inkleaf.geminiModel');puts.length=0;
+        S._setHttp(async(u,o)=>{if(o&&o.method==='PUT')puts.push(JSON.parse(o.body));return new Response(JSON.stringify({geminiKey:'',geminiModel:server}),{status:200,headers:{'Content-Type':'application/json'}});});
+        await S.syncUserSettings();await new Promise(r=>setTimeout(r,50));return {local:localStorage.getItem('inkleaf.geminiModel'),puts:puts.map(p=>p.geminiModel).filter(Boolean)};};
+      const a=await run('auto','gemini-3.8-flash'),b=await run('gemini-3.7-flash','gemini-3.8-flash'),d=await run('','gemini-3.8-flash');
+      H.setHwModel('auto');S._setHttp(async()=>new Response('{"items":[]}',{status:200,headers:{'Content-Type':'application/json'}}));return {a,b,d};`);
+    ok('AI model chosen on another device wins (Auto too); this device sends its own only when the server has none',
+      ms.a.local === null && !ms.a.puts.length && ms.b.local === 'gemini-3.7-flash' && !ms.b.puts.length && ms.d.local === 'gemini-3.8-flash' && ms.d.puts[0] === 'gemini-3.8-flash', ms);
     await c.ev(`document.querySelector('dialog .modal-head .ic')?.click();await (await import('/js/sync.js')).signOut();`);
     noErrors('Settings');
   });

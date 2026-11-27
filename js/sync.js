@@ -1218,10 +1218,13 @@ export async function syncUserSettings() {
       } else if (localKey && localKey !== data.geminiKey) {
         pushUserSettings({ geminiKey: localKey });
       }
-      const localModel = localStorage.getItem('inkleaf.geminiModel');
-      if (!localModel && data.geminiModel && data.geminiModel !== 'auto') {
-        setHwModel(data.geminiModel);
-      } else if (localModel && data.geminiModel !== localModel) {
+      // The model choice is sent up the moment it is changed in Settings, so the server holds the latest one and wins
+      // ('auto' included). This device's choice goes up only when the server has none; if each device pushed its own,
+      // a choice made on one device would be undone by the next device that syncs.
+      const localModel = localStorage.getItem('inkleaf.geminiModel') || 'auto';
+      if (data.geminiModel) {
+        if (data.geminiModel !== localModel) setHwModel(data.geminiModel);
+      } else if (localModel !== 'auto') {
         pushUserSettings({ geminiModel: localModel });
       }
     }
