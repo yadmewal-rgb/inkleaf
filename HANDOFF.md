@@ -1,7 +1,7 @@
 # Handoff
 
-**Written:** 2026-11-27 evening, by Claude Code. **Next:** owner sets the two Cloudflare secrets and says "push it"; after the push, check annotated PDFs with the real Drive (live site, owner's Chrome, ask first).
-**State:** v101 + row-limit fix LIVE (`88e3f2a`). **v102 committed locally, NOT pushed** (`328aff5`): meter + annotated PDFs; full check 187/187 ready to publish.
+**Written:** 2026-11-27 evening, by Claude Code. **Next:** after 00:00 UTC (5:30 am India), when Cloudflare's rows are back: try annotated PDFs with the real Drive (owner's Chrome, live site).
+**State:** **v102 LIVE** (pushed `f1fc83e`, after-publish ALL GOOD; sync server rebuilt by empty commit `917c7d2` after a dashboard secret edit deployed old code). Live meter works: 5,059,242 rows read (limit hit), 10,267 written, 8,935 requests. Check 187/187.
 
 ## What the owner asked
 1. (to agy) check every line, remove code of removed features, find conflicting commands -> v101 (`6b85bb9`).

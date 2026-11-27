@@ -37,6 +37,10 @@ raise the version in BOTH `sw.js` (CACHE) and `js/sync.js` (APP_VER, shown in Se
 - Website: https://yadmewal-rgb.github.io/inkleaf/ (GitHub Pages from `main`). **A push to main is a release.**
 - Sync service: https://inkleaf-sync.yadmewal.workers.dev (Cloudflare Worker `inkleaf-sync`, rebuilt by Cloudflare
   on every push to main; it sometimes misses one: check Builds, push an empty commit if needed).
+  **Editing a variable or secret in the Cloudflare dashboard can deploy an OLDER copy of the code** (2026-11-27: a
+  CF_ACCOUNT edit replaced v102 with v101 two minutes after the build). After any dashboard edit, check `GET /meter`
+  answers (not `signin`), or push an empty commit to rebuild. Secrets: ALLOWED, GOOGLE_SECRET, CF_API_TOKEN (read-only
+  Account Analytics key, for the limits meter), CF_ACCOUNT (account ID).
   Worker + Durable Object `User` per Google account; Google sign-in once per device (code flow, worker keeps the
   refresh token, secret GOOGLE_SECRET); secret ALLOWED = allowed e-mails (set in the Cloudflare dashboard, never in
   the repo). PDFs under 500 MB (`BIG` in sync.js) on Cloudflare, bigger ones in the owner's Google Drive (app folder), and every PDF
