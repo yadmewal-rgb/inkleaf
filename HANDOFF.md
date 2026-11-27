@@ -1,7 +1,7 @@
 # Handoff
 
-**Written:** 2026-11-27 evening, by Claude Code. **Next:** owner makes the read-only Cloudflare key (see v102 below); then confirm the analytics field names, set the secrets, push v102.
-**State:** v101 + row-limit fix LIVE (`88e3f2a`). **v102 committed locally, NOT pushed** (`ae4fe62`); full check 179/179 ready to publish.
+**Written:** 2026-11-27 evening, by Claude Code. **Next:** owner sets the two Cloudflare secrets and says "push it"; after the push, check annotated PDFs with the real Drive (live site, owner's Chrome, ask first).
+**State:** v101 + row-limit fix LIVE (`88e3f2a`). **v102 committed locally, NOT pushed** (`328aff5`): meter + annotated PDFs; full check 186/186 ready to publish.
 
 ## What the owner asked
 1. (to agy) check every line, remove code of removed features, find conflicting commands -> v101 (`6b85bb9`).
@@ -48,19 +48,30 @@
   `check.mjs` (server part) now fails if an everyday request reads more than 50 rows.
 - Fix LIVE (pushed `88e3f2a`, after-publish ALL GOOD). Next: owner checks rows read on the dashboard tomorrow (should be far below 5M).
 
-## v102 (local, not pushed): Cloudflare limits meter
+## v102 (local, not pushed), part 1: Cloudflare limits meter
 - Owner: the old meter showed false remaining limits (it counted requests, 9%, while rows read had run out).
 - `GET /meter` (worker.js, top level, no sign-in, no database): asks Cloudflare's GraphQL analytics for today's rows read,
-  rows written (`durableObjectsPeriodicGroups` sum rowsRead/rowsWritten: **field names NOT confirmed yet**, the docs do not
-  list them; confirm by introspection with the key) and Worker requests (`workersInvocationsAdaptive`). Each is its own
+  rows written (`durableObjectsPeriodicGroups` sum rowsRead/rowsWritten: **confirmed by introspection** with the owner's
+  key; a real run gave 5,059,242 rows read / 10,267 written / 8,694 requests on 2026-11-27, matching the dashboard) and Worker requests (`workersInvocationsAdaptive`). Each is its own
   question, so one failing shows only that line as "not known". Asked at most every 5 min (1 min after a failure).
 - Needs secrets **CF_API_TOKEN** (custom token, Account Analytics: Read) and **CF_ACCOUNT** (account ID) in the dashboard.
-  Owner was asked to save the key in `inkleaf-meter-key.txt` in their home folder (outside the repo) for the one-time
-  field check; delete it afterwards.
+  The key is in a text file in the owner's home folder (outside the repo; Windows named it `.txt.txt`); can be deleted.
 - App: Settings > Sync box (bars amber 50%, red 80%), toast once per level (50/80/100) per day; meter read 10 s after
   start, every 30 min while on screen, and when Settings opens. Checks added (server "limits meter", Settings in writing).
 - Old request counter (trackUsage/app_usage) still runs and writes rows: remove the Cloudflare-calls part once the meter
   is live (keep the Gemini/OCR count and per-user bytes).
+## v102 part 2: annotated PDFs in Google Drive (owner: "it is very important")
+- sync.js `annotatedPass`: every notebook (PDF + ink, or written pages) via export.js `buildPdf` into the visible Drive
+  folder Inkleaf > Annotated PDFs (folder appProperties inkleaf=annotated; files appProperties inkleafDoc=<doc id>,
+  e=<edit time = max(editedAt(doc), page.modified)>). Only notebooks newer than their copy are made again, the same file
+  is replaced (PATCH upload; resumable over 5 MB, multipart if the Location header is not readable). Name =
+  "Folder - Sub - Title.pdf"; a folder rename only renames; binned/deleted -> Drive bin; extra copies (two devices at
+  once) -> bin. Never while a notebook is open; a pass a minute after start, 15 s after closing a notebook, every 20 min.
+  Skips a notebook whose PDF is not on this device yet; phones/iPads skip PDFs over 150 MB (left to the laptop).
+- Settings: switch "Annotated PDFs in Google Drive" (per device, localStorage inkleaf.annotated, on by default),
+  progress line, Update now (waits for a running pass, then runs). Checks with a pretend Drive in the writing part.
+- NOT yet tried against the real Google Drive (only the pretend one).
+
 - Owner's ideas, agreed as steps 2 and 3 (not started): Google Drive as a backup sync route when Cloudflare is out;
   a live-sharing on/off switch (own devices: don't turn the live link off, polling every 6 s costs more).
 
