@@ -38,7 +38,7 @@ permission check), then `tests/after-publish.cmd`.
   fewest changes then commonness, case kept, "alot" -> "a lot". The list is read when a notebook opens, in steps
   (no stutter); marks appear when it is ready. **Pages on screen are now checked when a notebook opens and after
   scrolling** (before: only a page just written on, so other pages were never checked).
-  Tested: 79 tricky correct words, none marked; 22 mistakes, all caught; checks added in `writing`.
+  Tested: 79 tricky correct words, none marked; 21 different mistakes, all caught; checks added in `writing`.
 
 ## Not done / ideas
 - Handwriting marks still wait ~1 s + Gemini's reading (1-3 s). When Gemini's word count for a line differs from the
