@@ -2706,7 +2706,7 @@ async function cloudBackups() {
   return (j.items || []).map(it => {
     let info = {};
     try { info = JSON.parse(it.info || '{}'); } catch { /* none */ }
-    return { item: it, t: Number(it.id) || 0, bytes: it.size, docs: Number(info.docs) || 0 };
+    return { item: it, t: parseInt(it.id, 10) || 0, bytes: it.size, docs: Number(info.docs) || 0 };
   }).filter(f => f.t).sort((a, b) => b.t - a.t);
 }
 
@@ -2728,7 +2728,8 @@ export async function autoBackup(force) {
           folders: folders.filter(live), docs: D.map(({ thumb, ...d }) => d), pages: pages.filter(live)
         });
         await db.setMeta('autobk:' + t, text);
-        list.push({ t, docs: D.filter(d => !d.sys && !d.trashed).length, bytes: text.length });
+        // The service name gets a random tail, so two devices backing up in the same millisecond do not overwrite each other.
+        list.push({ t, id: t + '-' + Math.random().toString(36).slice(2, 8), docs: D.filter(d => !d.sys && !d.trashed).length, bytes: text.length });
         while (list.length > BK_LOCAL) { const old = list.shift(); await db.setMeta('autobk:' + old.t, null); }
         await db.setMeta('autobk', list);
       }
@@ -2739,7 +2740,7 @@ export async function autoBackup(force) {
       await exclusive(async () => {
         const raw = new TextEncoder().encode(text);
         const bytes = canZip ? await pipe(raw, new CompressionStream('gzip')) : raw;
-        await putBlob('b', String(latest.t), bytes, { info: JSON.stringify({ docs: latest.docs }), gz: canZip });
+        await putBlob('b', latest.id || String(latest.t), bytes, { info: JSON.stringify({ docs: latest.docs }), gz: canZip });
         for (const f of (await cloudBackups()).slice(BK_CLOUD)) await removeBlob('b', f.item.id).catch(() => {});
       });
       latest.cloud = true;

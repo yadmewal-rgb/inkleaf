@@ -403,6 +403,10 @@ if (!process.argv.includes('--quick') && (want('library') || want('writing') || 
     ok('two fingers held open no menu', await pops() === 0); await touch(tp('pointerup', 73, 'touch', 400, 600) + tp('pointerup', 74, 'touch', 700, 600) + noPops); await sleep(900);
     await touch(tp('pointerdown', 75, 'touch', 600, 650)); await sleep(800);
     ok('one finger held opens the menu', await pops() === 1); await touch(tp('pointerup', 75, 'touch', 600, 650) + noPops);
+    await sleep(600); await touch(tp('pointerdown', 76, 'pen', 600, 650)); await sleep(800);
+    ok('the Apple Pencil held still opens the menu', await pops() === 1); await touch(tp('pointerup', 76, 'pen', 600, 650) + noPops); await sleep(600);
+    await touch(`v.dispatchEvent(new PointerEvent('pointerdown',{pointerId:77,pointerType:'pen',clientX:600,clientY:650,bubbles:true,cancelable:true,pressure:.5,button:5,buttons:32}));`); await sleep(800);
+    ok('the pen eraser held still opens no menu', await pops() === 0); await touch(tp('pointerup', 77, 'pen', 600, 650) + noPops);
     const live = w => c.ev(`const u=await import('/js/util.js');u.bus.emit('live-message',{live:true,type:'perm',docId:'${id}',canWrite:${w}});await new Promise(r=>setTimeout(r,200));return document.querySelector('.ro')!==null`);
     ok('sharing as view-only leaves the owner writing', await live(false) === false); await live(true);
     noErrors('gestures');
@@ -546,8 +550,15 @@ if (!process.argv.includes('--quick') && (want('library') || want('writing') || 
       ok(`the reading place still travels (${who})`, x.lastPage === 3, x.lastPage);
     }
     await quiet('no uploads afterwards');
-    const nb = ((await js(await call(s1.token, '/list/b'))).items || []).length;
-    ok('each device makes its first backup once, not more', nb === 2, `${nb} backups from 2 devices`);
+    // The 8-s first backup only happens if the device already has a notebook; device B gets them about then, so it can
+    // miss it and wait for the hourly one (fine in the app, a race here). Run the hourly step now on both: a device
+    // without a backup makes its first, one that has one must not make another. Then wait for both to arrive.
+    for (const f of ['a', 'b']) await on(f, `await (await import('/js/sync.js')).autoBackup()`);
+    const backups = async () => ((await js(await call(s1.token, '/list/b'))).items || []).length;
+    await until(async () => (await backups()) >= 2, 10000); await pause(1000);
+    const nb = await backups();
+    const bkOf = f => on(f, `${E.D}const l=(await D.db.getMeta('autobk'))||[];const n=(await D.db.all('docs')).filter(d=>!d.deleted&&!d.sys).length;return JSON.stringify({notebooks:n,local:l.map(x=>({t:x.t,cloud:!!x.cloud}))})`).catch(e => 'unreadable: ' + e.message);
+    ok('each device makes its first backup once, not more', nb === 2, nb === 2 ? '' : `${nb} backups from 2 devices; A ${await bkOf('a')}; B ${await bkOf('b')}`);
     // a view-only guest
     const sh = await js(await call(s1.token, '/share/' + one, { method: 'POST', body: JSON.stringify({ allowedEmails: 'friend@test.local' }) }));
     await c.ev(`b.src='/?profile=dg${run}#/live/${sh.shareId}'`);

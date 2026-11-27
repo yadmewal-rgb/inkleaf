@@ -1414,7 +1414,7 @@ export async function mountEditor(root, docId, opts = {}) {
   function startPointerHold(e) {
     if (readOnly) return;
     clearPointerHold();
-    if (e.pointerType === 'pen' || e.button !== 0 || (e.buttons & 34)) return;
+    if (e.button !== 0 || (e.buttons & 34)) return; // the pen's barrel button and eraser end erase, they never open the menu
     holdPos = { x: e.clientX, y: e.clientY, id: e.pointerId };
     holdTimer = setTimeout(() => {
       if (holdPos) {
