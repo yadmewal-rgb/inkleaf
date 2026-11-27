@@ -1,7 +1,7 @@
 # Handoff
 
 **Written:** 2026-11-27 evening, by Claude Code. **Next:** owner sets the two Cloudflare secrets and says "push it"; after the push, check annotated PDFs with the real Drive (live site, owner's Chrome, ask first).
-**State:** v101 + row-limit fix LIVE (`88e3f2a`). **v102 committed locally, NOT pushed** (`328aff5`): meter + annotated PDFs; full check 186/186 ready to publish.
+**State:** v101 + row-limit fix LIVE (`88e3f2a`). **v102 committed locally, NOT pushed** (`328aff5`): meter + annotated PDFs; full check 187/187 ready to publish.
 
 ## What the owner asked
 1. (to agy) check every line, remove code of removed features, find conflicting commands -> v101 (`6b85bb9`).
@@ -67,7 +67,9 @@
   is replaced (PATCH upload; resumable over 5 MB, multipart if the Location header is not readable). Name =
   "Folder - Sub - Title.pdf"; a folder rename only renames; binned/deleted -> Drive bin; extra copies (two devices at
   once) -> bin. Never while a notebook is open; a pass a minute after start, 15 s after closing a notebook, every 20 min.
-  Skips a notebook whose PDF is not on this device yet; phones/iPads skip PDFs over 150 MB (left to the laptop).
+  Skips a notebook whose PDF is not on this device yet. No size limit (owner chose: iPad tries everything); crash guard:
+  localStorage inkleaf.annTrying marks the notebook being made; found at the next start = it crashed; after 2 crashes in
+  the same state that device leaves it to another (inkleaf.annCrashed), new writing = fresh try.
 - Settings: switch "Annotated PDFs in Google Drive" (per device, localStorage inkleaf.annotated, on by default),
   progress line, Update now (waits for a running pass, then runs). Checks with a pretend Drive in the writing part.
 - NOT yet tried against the real Google Drive (only the pretend one).

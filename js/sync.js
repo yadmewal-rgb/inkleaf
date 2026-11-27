@@ -321,8 +321,21 @@ async function visibleCopy(a) {
 // is open; only notebooks whose writing changed since their Drive copy are made again (the copy keeps the notebook's
 // edit time in appProperties.e), and the same Drive file is replaced, so any device may do it without duplicates.
 // A renamed or moved notebook only renames its file; a binned or deleted one moves its copy to the Drive bin.
-const ANN_FOLDER = 'Annotated PDFs', ANN_EVERY = 20 * 60e3, ANN_TOUCH_MB = 150; // phones and iPads skip bigger PDFs
-const annState = { running: false, done: 0, total: 0, current: '', made: 0, waiting: 0, skippedBig: 0, err: null, last: 0 };
+// No size limit (owner's choice): every device tries every notebook. If making one ever crashes the tab (a huge PDF on
+// an iPad), the mark left in localStorage (inkleaf.annTrying) shows it after the reload, and this device then leaves
+// that notebook (in that state) to another device instead of crashing again and again.
+const ANN_FOLDER = 'Annotated PDFs', ANN_EVERY = 20 * 60e3;
+const annState = { running: false, done: 0, total: 0, current: '', made: 0, waiting: 0, crashed: 0, err: null, last: 0 };
+const annCrashed = () => { try { return JSON.parse(localStorage.getItem('inkleaf.annCrashed') || '{}'); } catch { return {}; } };
+{ // a mark left from the last time Inkleaf ran: making that notebook did not finish (the tab crashed or was closed)
+  let t = null;
+  try { t = JSON.parse(localStorage.getItem('inkleaf.annTrying') || 'null'); } catch {}
+  if (t && t.id) {
+    const c = annCrashed(), n = (c[t.id] && c[t.id].e === t.e ? c[t.id].n : 0) + 1;
+    c[t.id] = { e: t.e, n };
+    try { localStorage.setItem('inkleaf.annCrashed', JSON.stringify(c)); localStorage.removeItem('inkleaf.annTrying'); } catch {}
+  }
+}
 let annFolderId = null, annT = 0, annAgain = false;
 export const annotatedOn = () => localStorage.getItem('inkleaf.annotated') !== 'off'; // on unless turned off on this device
 export function setAnnotatedOn(v) { localStorage.setItem('inkleaf.annotated', v ? 'on' : 'off'); bus.emit('annotated', annotatedStatus()); if (v) annSoon(2000); }
@@ -403,7 +416,7 @@ export async function annotatedPass(opts = {}) {
 async function annWork(opts) {
   if (!annotatedOn() || !ready() || openDocs.size || (!opts.now && document.visibilityState !== 'visible')) return annotatedStatus();
   if (!(await driveToken().catch(() => null))) return annotatedStatus();
-  Object.assign(annState, { running: true, done: 0, total: 0, current: '', made: 0, waiting: 0, skippedBig: 0, err: null });
+  Object.assign(annState, { running: true, done: 0, total: 0, current: '', made: 0, waiting: 0, crashed: 0, err: null });
   bus.emit('annotated', annotatedStatus());
   try {
     const folder = await annFolder();
@@ -438,13 +451,16 @@ async function annWork(opts) {
       const pages = await loadPages(t.doc);
       // Every PDF must be on this device, or its pages would be missing from the copy; another device (or this
       // one, once the files have arrived) makes it then.
-      let missing = false, mb = 0;
+      let missing = false;
       for (const aid of new Set(pages.filter(p => p.pdf).map(p => p.pdf.a))) {
         const a = await db.get('assets', aid);
-        if (!a || !a.data) missing = true; else mb += (a.data.byteLength || a.data.size || 0) / 1048576;
+        if (!a || !a.data) missing = true;
       }
       if (!pages.length || missing) { annState.waiting++; annState.done++; continue; }
-      if (matchMedia('(pointer: coarse)').matches && mb > ANN_TOUCH_MB) { annState.skippedBig++; annState.done++; continue; }
+      // Twice crashed here in this state: leave it to another device (new writing in it means a fresh try).
+      const cr = annCrashed()[t.doc.id];
+      if (cr && cr.e === t.stamp && cr.n >= 2) { annState.crashed++; annState.done++; continue; }
+      try { localStorage.setItem('inkleaf.annTrying', JSON.stringify({ id: t.doc.id, e: t.stamp })); } catch {}
       try {
         const blob = await buildPdf(t.doc, pages);
         const meta = { name: t.name, mimeType: 'application/pdf', appProperties: { inkleafDoc: t.doc.id, e: String(t.stamp) } };
@@ -453,7 +469,7 @@ async function annWork(opts) {
       } catch (e) {
         if (e.status === 401 || e.status === 403 || !navigator.onLine) throw e; // Drive itself is the problem: stop
         annState.err = { t: Date.now(), msg: `"${t.doc.title || 'Notebook'}" could not be made: ${e.message || e}` }; // the others go on
-      }
+      } finally { try { localStorage.removeItem('inkleaf.annTrying'); } catch {} }
       annState.done++;
       bus.emit('annotated', annotatedStatus());
       await new Promise(r => setTimeout(r, 300)); // let the app breathe between notebooks
@@ -2626,7 +2642,7 @@ export async function openSettings() {
               : 'Starts a minute after Inkleaf opens, and after you close a notebook.';
     const notes = [];
     if (a.waiting) notes.push(`${a.waiting} notebook${a.waiting === 1 ? '' : 's'} wait${a.waiting === 1 ? 's' : ''} for ${a.waiting === 1 ? 'its' : 'their'} PDF to arrive on this device.`);
-    if (a.skippedBig) notes.push(`${a.skippedBig} with PDFs over ${ANN_TOUCH_MB} MB ${a.skippedBig === 1 ? 'is' : 'are'} left to the laptop (too big for this device's memory).`);
+    if (a.crashed) notes.push(`${a.crashed} notebook${a.crashed === 1 ? ' was' : 's were'} too big for this device (Inkleaf closed while making ${a.crashed === 1 ? 'it' : 'them'}); another device, such as the laptop, makes ${a.crashed === 1 ? 'it' : 'them'}.`);
     annBox.replaceChildren(
       h('div', { class: 'row', style: 'align-items: center; justify-content: space-between; margin-bottom: 4px;' },
         h('label', { class: 'chip check' + (a.on ? ' on' : ''), style: 'cursor: pointer;' },

@@ -592,11 +592,17 @@ if (!process.argv.includes('--quick') && (want('library') || want('writing') || 
       U.bus.emit('editor-close',d.id);
       const dd=await D.db.get('docs',d.id);dd.trashed=Date.now();dd.modified=Date.now();await D.db.put('docs',dd);
       await S.annotatedPass({now:true});const binned=mine().length;
+      const big=await D.createDoc({title:'Huge'}),bp=(await D.db.byDoc(big.id))[0];bp.items=[{id:'h1',t:'s',tool:'pen',c:'#000000',w:2,p:[60,80,.5,90,90,.5],z:1}];bp.modified=Date.now()+20;await D.db.put('pages',bp);
+      const hugeLog=()=>log.filter(l=>/Huge/.test(l)).length;
+      localStorage.setItem('inkleaf.annCrashed',JSON.stringify({[big.id]:{e:bp.modified,n:2}}));
+      await S.annotatedPass({now:true});const crash={skipped:hugeLog()===0,note:S.annotatedStatus().crashed};
+      bp.modified=Date.now()+40;await D.db.put('pages',bp);await S.annotatedPass({now:true});crash.retried=hugeLog()===1;
+      localStorage.removeItem('inkleaf.annCrashed');
       await S.openSettings();await new Promise(r=>setTimeout(r,300));
       const box=document.querySelector('dialog .annotated')?.textContent||'';
       localStorage.setItem('inkleaf.annotated','off'); // the rest of the check has no Drive
       S._setHttp(async()=>new Response('{"items":[]}',{status:200,headers:{'Content-Type':'application/json'}}));
-      return {first,again,changed,renamed,whileOpen,binned,box};`);
+      return {first,again,changed,renamed,whileOpen,binned,crash,box};`);
     ok('each notebook arrives in Drive as a PDF with its writing, in Inkleaf > Annotated PDFs, named after its folder',
       an.first.n === 1 && an.first.pdf && an.first.name === 'Law - Crimes.pdf' && an.first.folder === 'Annotated PDFs' && an.first.top === 'Inkleaf', an.first);
     ok('nothing is sent again while the notebook is unchanged', an.again === 1, an);
@@ -604,6 +610,7 @@ if (!process.argv.includes('--quick') && (want('library') || want('writing') || 
     ok('a renamed folder only renames the file', an.renamed.log.length === 3 && an.renamed.log[2] === 'rename:Law IPC - Crimes.pdf' && an.renamed.name === 'Law IPC - Crimes.pdf', an.renamed);
     ok('nothing is made while a notebook is open', an.whileOpen === 0, an);
     ok('a binned notebook\'s copy goes to the Drive bin', an.binned === 0, an);
+    ok('a notebook that closed Inkleaf twice while being made is left to another device, until new writing', an.crash.skipped && an.crash.note === 1 && an.crash.retried, an.crash);
     ok('Settings shows the annotated PDFs switch and progress', an.box.includes('Annotated PDFs in Google Drive') && /Up to date/.test(an.box), an.box);
     // v101 bug: each device pushed its own model choice, so "Auto" (or any choice) made on one device was undone by the next.
     const ms = await c.ev(`const S=await import('/js/sync.js');const H=await import('/js/hwsearch.js');const puts=[];
