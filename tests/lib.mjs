@@ -70,7 +70,7 @@ const jobs={
  dark:async m=>{f.style.colorScheme=m.on?'dark':'light';},
  go:async m=>{await new Promise(r=>{f.onload=r;f.src=m.url;});},
  ev:async m=>f.contentWindow.eval('(async()=>{'+m.code+'})()'),
- clean:async()=>{await blank();for(const d of await indexedDB.databases())if(/^inkleaf/.test(d.name))await new Promise(r=>{const q=indexedDB.deleteDatabase(d.name);q.onsuccess=q.onerror=q.onblocked=r;});for(const k of Object.keys(localStorage))if(/^inkleaf/.test(k))localStorage.removeItem(k);},
+ clean:async()=>{await blank();for(const d of await indexedDB.databases())if(/^inkleaf/.test(d.name))await new Promise(r=>{const q=indexedDB.deleteDatabase(d.name);q.onsuccess=q.onerror=q.onblocked=r;});for(const k of Object.keys(localStorage))if(/^inkleaf/.test(k))localStorage.removeItem(k);if(navigator.serviceWorker)for(const r of await navigator.serviceWorker.getRegistrations())await r.unregister();for(const k of await caches.keys())if(/^inkleaf/.test(k))await caches.delete(k);},
  end:async m=>{ended=true;say(m.text,m.bad?'bad':'');document.title=(m.bad?'FAILED':'OK')+' - Inkleaf check';}
 };
 (async()=>{

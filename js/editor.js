@@ -12,7 +12,7 @@ import { popMenu, popover, confirmBox, promptText, toast, modal, chipGroup, temp
 import { exportFlow, pdfAsPictures } from './export.js';
 import { syncNow, syncStatus, mergePage, mergeDoc, shareNotebook, sendLiveDelta, sendGuestLiveDelta } from './sync.js';
 import { matchPage, matchSync, hwOn, pageIndex, warmDocIndexes, queuePages, getActiveHwModel, formatModelName } from './hwsearch.js';
-import { findSpellingErrorsOnPage, addToUserDict, ignoreWord } from './spellcheck.js';
+import { findSpellingErrorsOnPage, addToUserDict, ignoreWord, loadDictionary } from './spellcheck.js';
 import {
   GAP, MIN_S, MAX_S, COARSE, MAXPX, REGION_PX, REGION_PAD, PULL_PX, PALM_MS, INK, INK_ON_DARK, PEN_COLORS, HL_COLORS, SHAPES,
   MM, mmToPt, TAPE_COLORS, LASER_COLORS, RULER_L, RULER_W, ZOOM_TOOLS, NOTE_COLORS, FILL_COLORS, HIST_GAP, HIST_MAX, HIST_DAYS,
@@ -888,12 +888,20 @@ export async function mountEditor(root, docId, opts = {}) {
   // --- handwriting and text spell checking (temporary red dotted underline like GoodNotes)
   const spellLayer = h('div', { class: 'spell-layer' });
   overlay.append(spellLayer);
-  let activeSpellMarks = [], spellTimer = 0;
+  let activeSpellMarks = [], spellTimer = 0, spellSeen = '', spellViewT = 0;
 
   function positionSpellMarks() {
     if (prefs.spellcheck === false) {
       spellLayer.replaceChildren();
       return;
+    }
+    // Pages that come on screen (opening, scrolling, page turns) are checked once the view rests a moment;
+    // before, only a page just written on was, so words already on other pages were never marked.
+    const onScreen = pvs.filter(pv => inRange(pv, 0)).map(pv => pv.page.id).join();
+    if (onScreen !== spellSeen) {
+      spellSeen = onScreen;
+      clearTimeout(spellViewT);
+      spellViewT = setTimeout(() => { if (!destroyed) updateSpellMarks(); }, 300);
     }
     for (const mark of activeSpellMarks) {
       if (!mark.el) continue;
@@ -7280,6 +7288,7 @@ export async function mountEditor(root, docId, opts = {}) {
         onClick: () => {
           prefs.spellcheck = prefs.spellcheck === false;
           savePrefs();
+          if (prefs.spellcheck) loadDictionary();
           updateSpellMarks();
           toast(prefs.spellcheck ? 'Spell check as you write is on (red dotted underlines for errors)' : 'Spell check is off');
         }
@@ -7582,6 +7591,7 @@ export async function mountEditor(root, docId, opts = {}) {
     el.remove();
   }
 
+  if (prefs.spellcheck !== false) loadDictionary(); // read once per app start; marks appear when it is ready
   const offs = [
     ...badgeOffs,
     bus.on('remote-record', onRemote),

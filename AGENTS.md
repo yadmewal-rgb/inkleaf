@@ -25,7 +25,11 @@
 Plain HTML + ES modules, no build step. Vendored pdf.js 3.11.174 and pdf-lib 1.17.1 in `vendor/`.
 `js/`: app.js, library.js, editor.js (~7,700 lines, the big one), editor-consts.js, render.js, pageshots.js,
 scan.js, export.js, pdfrender.js, pdftools.js, goodnotes.js (GoodNotes import), sync.js, db.js (IndexedDB), ui.js,
-util.js, icons.js, hwsearch.js (handwriting search), spellcheck.js, vocab.js. `sw.js` = service worker. On every release
+util.js, icons.js, hwsearch.js (handwriting search), spellcheck.js. Spell-check words: `vendor/words/en.txt` (~200,000 words
+from SCOWL by commonness level + extra-india.txt/extra-law.txt; rebuild with `vendor/words/build.cjs`, see its top).
+`sw.js` = service worker, **offline first** (v101, owner wants the app FAST): the app opens from the copy on the device,
+never waiting for the network; a release is fetched whole in the background, then a toast offers Reload (else next
+start). Every file the app loads must be in `SHELL`. On every release
 raise the version in BOTH `sw.js` (CACHE) and `js/sync.js` (APP_VER, shown in Settings).
 `server/` = Cloudflare Worker sync service (worker.js, wrangler.jsonc). `tests/` = the checks (not part of the app).
 
@@ -48,7 +52,7 @@ raise the version in BOTH `sw.js` (CACHE) and `js/sync.js` (APP_VER, shown in Se
 - **The owner wants testing in their own Chrome, as a normal tab, never in a separate Chrome window.** `tests/check.cmd`
   does that: it opens a tab "Inkleaf check" (own local address, pretend clipboard, no reach to the real library) that must
   stay in front, with the Chrome window not covered; it pauses when it is not, and gives up after 10 minutes. Ask the
-  owner before starting it: it takes over their Chrome for about 2 minutes. `--only=code,server,library,writing,devices`
+  owner before starting it: it takes over their Chrome for about 2 minutes. `--only=code,server,library,writing,devices,opening`
   runs single parts (not enough before a push); the end shows a time report (each part, slowest checks, fixed waiting).
   Waits are "until ready" (`until`, `settle`), not fixed: keep it that way when adding checks.
 - **Before every push run `tests/check.cmd`** and push only if it

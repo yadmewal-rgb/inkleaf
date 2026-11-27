@@ -4134,6 +4134,17 @@ body.split-dragging canvas {
   opacity: 0;
 }
 
+/* A toast with a button (e.g. "A new version is ready. Reload") must take taps, unlike the rest of #toasts. */
+.toast:has(.toast-act) {
+  pointer-events: auto;
+}
+
+.toast-act {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
 .busy {
   position: fixed;
   inset: 0;

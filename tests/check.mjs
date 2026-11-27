@@ -131,11 +131,32 @@ await tstep('code', 'versions', async () => {
 
 // ------------------------------------------------------------------ a local copy of the app and of the sync server
 const mime = { '.html': 'text/html', '.js': 'text/javascript', '.css': 'text/css', '.svg': 'image/svg+xml', '.png': 'image/png', '.webmanifest': 'application/manifest+json' };
-const site = http.createServer((q, r) => {
+// The opening check needs a network that is slow (delay ms), gone ('down') or silent ('hang': connected, no answer),
+// and the offline copy (sw.js) only then. It runs the app under /app/ (like /inkleaf/ on GitHub Pages), so the copy
+// covers only /app/: never this check tab, nor the other parts at /. swVer = pretend a new release.
+// /sw.js is a copy-keeper that removes itself and all copies: one left from an older check (an old check tab keeps it
+// alive) is replaced by it as soon as the app starts at /, so the other parts never get files from an old copy.
+const KILL = "self.addEventListener('install',()=>self.skipWaiting());self.addEventListener('activate',e=>e.waitUntil(caches.keys().then(k=>Promise.all(k.map(x=>caches.delete(x)))).then(()=>self.registration.unregister())));";
+const net = { sw: false, delay: 0, mode: '', swVer: '', hung: [] };
+const netReset = () => { Object.assign(net, { sw: false, delay: 0, mode: '', swVer: '' }); for (const r of net.hung.splice(0)) r.destroy(); };
+const site = http.createServer(async (q, r) => {
   if (c.handle(q, r)) return;
+  if (net.mode === 'down') { r.destroy(); return; }
+  if (net.mode === 'hang') { net.hung.push(r); return; }
+  if (net.delay) await pause(net.delay);
   let p = decodeURIComponent(q.url.split('?')[0]);
+  if (p === '/sw.js') { r.writeHead(200, { 'Content-Type': 'text/javascript', 'Cache-Control': 'no-store' }); r.end(KILL); return; }
+  const inApp = p === '/app' || p.startsWith('/app/');
+  if (inApp) p = p.slice(4) || '/';
   if (p === '/') p = '/index.html';
   const f = path.join(ROOT, p);
+  if (p === '/sw.js' && (!inApp || !net.sw)) { r.writeHead(404); r.end(); return; }
+  if (p === '/sw.js') {
+    let code = read('sw.js');
+    // A pretend release: another CACHE name (its sync.js version test is switched off, the files are the same).
+    if (net.swVer) code = code.replace(/const CACHE = '[^']+'/, () => `const CACHE = '${net.swVer}'`).replace('if (!sync.includes(', 'if (false && !sync.includes(');
+    r.writeHead(200, { 'Content-Type': 'text/javascript', 'Cache-Control': 'no-store' }); r.end(code); return;
+  }
   if (!f.startsWith(ROOT) || p === '/sw.js' || !fs.existsSync(f) || !fs.statSync(f).isFile()) { r.writeHead(404); r.end(); return; }
   r.writeHead(200, { 'Content-Type': mime[path.extname(f)] || 'application/octet-stream', 'Cache-Control': 'no-store' });
   if (p === '/index.html') { r.end(fs.readFileSync(f, 'utf8').replace('<head>', '<head>' + INJECT)); return; }
@@ -252,7 +273,7 @@ if (API && want('server')) await tstep('server', 'server tests', async () => {
 });
 
 // ------------------------------------------------------------------ 3. the app, in a tab of the owner's Chrome
-if (!process.argv.includes('--quick') && (want('library') || want('writing') || want('devices'))) {
+if (!process.argv.includes('--quick') && (want('library') || want('writing') || want('devices') || want('opening'))) {
   console.log('\n3. The app (a tab opens in your Chrome; please keep it in front)');
   c.log('The app', 'h');
   await step('the check tab opens', async () => { await c.open(WEB); await c.go(`${WEB}/privacy.html`, 300); });
@@ -410,6 +431,22 @@ if (!process.argv.includes('--quick') && (want('library') || want('writing') || 
     const live = w => c.ev(`const u=await import('/js/util.js');u.bus.emit('live-message',{live:true,type:'perm',docId:'${id}',canWrite:${w}});await new Promise(r=>setTimeout(r,200));return document.querySelector('.ro')!==null`);
     ok('sharing as view-only leaves the owner writing', await live(false) === false); await live(true);
     noErrors('gestures');
+    // Spell check (v101): the SCOWL word list knows real words, catches mistakes, and pages are checked when they are
+    // opened, not only after writing on them.
+    const sp = await c.ev(`const S=await import('/js/spellcheck.js');await S.loadDictionary();
+      const good="The organisation's colour stopped bigger India's don't ministers' well-known socio-economic Lok Sabha Ashoka Nehru judiciary habeas corpus UPSC 21st e.g. “quoted”".split(' ');
+      const bad='recieve goverment untill presure parliment'.split(' ');
+      return {fp:good.filter(w=>S.checkWord(w).misspelled),fn:bad.filter(w=>!S.checkWord(w).misspelled),sug:S.checkWord('parliment').suggestions[0],cap:S.checkWord('Goverment').suggestions[0]}`);
+    ok('spell check knows real words (British spellings, word forms, names, Indian and legal terms)', sp.fp.length === 0, sp.fp);
+    ok('spell check catches mistakes and suggests the right word, in the same case', !sp.fn.length && sp.sug === 'parliament' && sp.cap === 'Government', sp);
+    const spDoc = await c.ev(`${E.D}const d=await D.createDoc({title:'Spell'});const p=(await D.db.byDoc(d.id))[0];p.items=[{id:'tx1',t:'tx',x:80,y:80,w:300,s:'The goverment of India',fs:16,c:'#000',z:1,m:Date.now()}];await D.db.put('pages',p);return d.id`);
+    await c.ev(noPops + `location.hash='#/d/${spDoc}'`);
+    const marks = await until(() => c.ev(`return document.querySelectorAll('.spell-mark').length`), 5000);
+    ok('a page is checked when the notebook opens', marks === 1, marks);
+    await c.ev(`document.querySelector('.spell-mark')?.click()`); await sleep(300);
+    const sugBtn = await c.ev(`return [...document.querySelectorAll('.spell-sug-word')].map(s=>s.textContent).join(',')`);
+    ok('tapping the mark shows the suggestion', sugBtn.split(',')[0] === 'government', sugBtn);
+    await c.ev(noPops + `location.hash='#/d/${id}'`); await until(() => c.ev(edReady));
     // More menu
     const more = `document.querySelectorAll('.pop').forEach(p=>p.remove());[...document.querySelectorAll('button')].find(b=>b.title==='More'&&b.offsetParent).click();await new Promise(r=>setTimeout(r,150));`;
     const labels = await c.ev(more + `return [...document.querySelectorAll('.pop .mi')].map(b=>b.textContent.trim())`);
@@ -568,6 +605,49 @@ if (!process.argv.includes('--quick') && (want('library') || want('writing') || 
     ok('and cannot switch writing on', await on('b', `return document.querySelector('.ro')!==null`));
     const e = [...new Set(c.errors)].filter(x => !/offline/.test(x));
     ok('two devices: no errors', !e.length, e.slice(0, 3).join(' ; '));
+  });
+  // Opening (v101): from the copy kept on the device, without waiting for the network. Times are the app's own clock:
+  // ms from the start of loading until the first screen is up (performance mark 'inkleaf-ready').
+  if (want('opening')) await section('opening', async () => {
+    console.log('   ...opening fast, and without a network');
+    c.log('Opening: fast, and without a network', 'h');
+    c.errors.length = 0;
+    await c.size(1194, 834);
+    const prof = 'op' + fresh(), secs = x => x ? (x / 1000).toFixed(2) + ' s' : 'never';
+    let n = 0;
+    const open = async () => {
+      const k = ++n;
+      await c.ev(`location.href='/app/?profile=${prof}&n=${k}'`).catch(() => {});
+      return until(() => c.ev(`return location.search.includes('n=${k}') && performance.getEntriesByName('inkleaf-ready')[0]?.startTime`), 20000);
+    };
+    netReset(); net.delay = 250; // a slow network: every answer takes a quarter of a second
+    const before = await open(); // without the offline copy every file comes over the network, as every start did before v101
+    net.delay = 0; net.sw = true;
+    await open();
+    ok('the offline copy is made on the first visit', !!await until(() => c.ev('return !!navigator.serviceWorker.controller'), 15000));
+    net.delay = 250;
+    const after = await open();
+    const swInfo = await c.ev("const r=await navigator.serviceWorker.getRegistration();const k=await caches.keys();const n=[];for(const x of k)n.push(x+':'+(await (await caches.open(x)).keys()).length);return JSON.stringify({ctl:navigator.serviceWorker.controller?.scriptURL,active:r?.active?.state,waiting:!!r?.waiting,installing:!!r?.installing,caches:n})").catch(e => e.message);
+    ok('opens fast on a slow network', before && after && after < before / 2, `${secs(before)} without the copy, ${secs(after)} with it; ${swInfo}`);
+    console.log(`         opening on a slow network: ${secs(before)} without the copy, ${secs(after)} with it`);
+    net.delay = 0; net.mode = 'hang';
+    const hang = await open();
+    ok('opens when the network answers nothing', hang && hang < 4000, secs(hang));
+    netReset(); net.sw = true; net.mode = 'down';
+    ok('opens offline', !!await open());
+    net.mode = ''; net.swVer = 'inkleaf-v999'; // a new release appears
+    await c.ev('(await navigator.serviceWorker.getRegistration())?.update().catch(()=>{})');
+    const news = await until(() => c.ev(`const t=[...document.querySelectorAll('.toast')].find(t=>/new version/.test(t.textContent));return t&&getComputedStyle(t).pointerEvents`), 15000);
+    ok('a new version is fetched in the background and offered, with a button that takes taps', news === 'auto', news);
+    await c.ev(`[...document.querySelectorAll('.toast button')].find(b=>b.textContent==='Reload')?.click()`).catch(() => {});
+    const keys = await until(async () => { const v = await c.ev(`return !document.querySelector('.toast-act')&&performance.getEntriesByName('inkleaf-ready')[0]&&(await caches.keys()).join(',')`); return v === 'inkleaf-v999' && v; }, 10000);
+    ok('Reload loads it, and the old copy is removed', keys === 'inkleaf-v999', keys);
+    await c.ev('for(const r of await navigator.serviceWorker.getRegistrations())await r.unregister();for(const k of await caches.keys())await caches.delete(k);');
+    netReset();
+    await c.ev("location.href='/privacy.html'").catch(() => {}); // nothing left inside /app/, so the copy-keeper really goes
+    await until(() => c.ev("return location.pathname==='/privacy.html'"), 5000);
+    const e = [...new Set(c.errors)];
+    ok('opening: no errors', !e.length, e.slice(0, 3).join(' ; '));
   });
   await c.close(failed.length ? `${failed.length} of ${passed + failed.length} checks FAILED. Do not publish.` : `All ${passed} checks passed. You can close this tab.`, failed.length > 0);
   if (failed.length && c.hiddenTimes) console.log('\nNote: the check tab was out of sight at times, which can make checks fail. Run it again before judging.');

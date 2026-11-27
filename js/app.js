@@ -155,14 +155,35 @@ async function route() {
 
 const go = () => { queue = queue.then(route).catch(e => { console.error(e); toast('Something went wrong: ' + e.message); }); };
 
+// The app opens from the copy kept on this device (sw.js). When a new version has been fetched in the background and
+// taken over, offer to load it; otherwise it is used from the next start.
+function offlineCopy() {
+  if (!('serviceWorker' in navigator) || !window.isSecureContext) return;
+  const sw = navigator.serviceWorker;
+  const hadCopy = !!sw.controller; // the very first install is not news: this page already is the newest version
+  sw.addEventListener('controllerchange', () => {
+    if (!hadCopy) return;
+    toast(h('span', { class: 'toast-act' }, 'A new version of Inkleaf is ready.',
+      h('button', { class: 'btn sm primary', type: 'button', onclick: () => location.reload() }, 'Reload')), 15000);
+  });
+  sw.register('sw.js').then(reg => {
+    // An app left open for days (iPad) looks for a new version when it comes back to the screen, at most twice an hour.
+    let asked = Date.now();
+    document.addEventListener('visibilitychange', () => {
+      if (document.visibilityState === 'visible' && Date.now() - asked > 18e5) { asked = Date.now(); reg.update().catch(() => {}); }
+    });
+  }).catch(e => console.warn('Offline mode unavailable', e));
+}
+
 window.addEventListener('hashchange', go);
 
 (async () => {
   // Ask the browser to keep our storage even when the device runs low on space.
   if (navigator.storage && navigator.storage.persist) navigator.storage.persist().catch(() => {});
-  if ('serviceWorker' in navigator && window.isSecureContext) navigator.serviceWorker.register('sw.js').catch(e => console.warn('Offline mode unavailable', e));
+  offlineCopy();
   await initSync().catch(e => console.error(e));
   go();
+  queue.then(() => performance.mark('inkleaf-ready')); // the first screen is up (the check measures opening time with it)
 
   // Handle incoming shared file from Web Share Target (shared from phone / other app)
   if (location.search.includes('shared=1')) {
