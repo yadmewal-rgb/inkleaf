@@ -1,7 +1,7 @@
 # Handoff
 
-**Written:** 2026-11-27, by Claude Code. **Next:** owner tries v101 on the iPad (opening speed, spell check on real notes).
-**State:** **v101 is LIVE** (pushed `1eca652`; `tests/after-publish.cmd`: ALL GOOD, website and Cloudflare server). Check: 166/166.
+**Written:** 2026-11-27 evening, by Claude Code. **Next:** owner makes the read-only Cloudflare key (see v102 below); then confirm the analytics field names, set the secrets, push v102.
+**State:** v101 + row-limit fix LIVE (). **v102 committed locally, NOT pushed** (); full check 179/179 ready to publish.
 
 ## What the owner asked
 1. (to agy) check every line, remove code of removed features, find conflicting commands -> v101 (`6b85bb9`).
@@ -47,6 +47,21 @@
   because SQLite picked another index for `k IN (...)`. Fixed with `INDEXED BY recs_s`: now 3 rows (wake-up: 8).
   `check.mjs` (server part) now fails if an everyday request reads more than 50 rows.
 - Fix LIVE (pushed `88e3f2a`, after-publish ALL GOOD). Next: owner checks rows read on the dashboard tomorrow (should be far below 5M).
+
+## v102 (local, not pushed): Cloudflare limits meter
+- Owner: the old meter showed false remaining limits (it counted requests, 9%, while rows read had run out).
+-  (worker.js, top level, no sign-in, no database): asks Cloudflare's GraphQL analytics for today's rows read,
+  rows written ( sum rowsRead/rowsWritten: **field names NOT confirmed yet**, the docs do not
+  list them; confirm by introspection with the key) and Worker requests (). Each is its own
+  question, so one failing shows only that line as "not known". Asked at most every 5 min (1 min after a failure).
+- Needs secrets **CF_API_TOKEN** (custom token, Account Analytics: Read) and **CF_ACCOUNT** (account ID) in the dashboard.
+  Owner was asked to save the key in C:UsersYadraminkleaf-meter-key.txt (outside the repo) for the one-time field check.
+- App: Settings > Sync box (bars amber 50%, red 80%), toast once per level (50/80/100) per day; meter read 10 s after
+  start, every 30 min while on screen, and when Settings opens. Checks added (server "limits meter", Settings in writing).
+- Old request counter (trackUsage/app_usage) still runs and writes rows: remove the Cloudflare-calls part once the meter
+  is live (keep the Gemini/OCR count and per-user bytes).
+- Owner's ideas, agreed as steps 2 and 3 (not started): Google Drive as a backup sync route when Cloudflare is out;
+  a live-sharing on/off switch (own devices: don't turn the live link off, polling every 6 s costs more).
 
 ## Not done / ideas
 - Handwriting marks still wait ~1 s + Gemini's reading (1-3 s). When Gemini's word count for a line differs from the
