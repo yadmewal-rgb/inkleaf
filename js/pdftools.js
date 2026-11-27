@@ -3,6 +3,7 @@
 import { pdfDoc } from './pdfrender.js';
 import { db } from './db.js';
 import { call } from './sync.js';
+import { getActiveHwModel } from './hwsearch.js';
 
 const linkCache = new Map(), textCache = new Map();
 const mctx = document.createElement('canvas').getContext('2d');
@@ -174,9 +175,9 @@ export async function generatePdfOutline(assetId) {
         if (typeof it.str !== 'string' || !it.str.trim()) continue;
         const tm = it.transform;
         const hgt = it.height || Math.hypot(tm[2], tm[3]) || 10;
-        const [x, y] = vp.convertToViewportPoint(tm[4], tm[5]);
+        const [, y] = vp.convertToViewportPoint(tm[4], tm[5]);
         if (!curLine || Math.abs(curLine.y - y) > 5) {
-          curLine = { y, x, hgt, text: it.str.trim(), maxHgt: hgt };
+          curLine = { y, hgt, text: it.str.trim(), maxHgt: hgt };
           lines.push(curLine);
         } else {
           curLine.text += ' ' + it.str.trim();
@@ -217,7 +218,7 @@ export async function generatePdfOutline(assetId) {
   if (localTocCandidates.length > 0) {
     // Try Gemini AI (direct key or via sync server /ai/outline) to clean & structure
     const directKey = localStorage.getItem('inkleaf.geminiKey');
-    const model = localStorage.getItem('inkleaf.geminiModel') || 'gemini-3.5-flash-lite';
+    const model = getActiveHwModel();
 
     if (navigator.onLine) {
       if (directKey) {
@@ -253,15 +254,13 @@ export async function generatePdfOutline(assetId) {
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ text: allTocRawText, numPages: total })
         });
-        if (sRes.ok) {
-          const sData = await sRes.json();
-          if (Array.isArray(sData.outline) && sData.outline.length >= 2) {
-            return sData.outline.map(p => ({
-              title: String(p.title || '').trim(),
-              depth: Number(p.depth) || 0,
-              i: Math.max(0, Math.min(total - 1, (Number(p.page) || 1) - 1))
-            }));
-          }
+        const sData = await sRes.json();
+        if (Array.isArray(sData.outline) && sData.outline.length >= 2) {
+          return sData.outline.map(p => ({
+            title: String(p.title || '').trim(),
+            depth: Number(p.depth) || 0,
+            i: Math.max(0, Math.min(total - 1, (Number(p.page) || 1) - 1))
+          }));
         }
       } catch {}
     }
@@ -297,7 +296,7 @@ export async function generatePdfOutline(assetId) {
         if (typeof it.str !== 'string' || !it.str.trim()) continue;
         const tm = it.transform;
         const hgt = it.height || Math.hypot(tm[2], tm[3]) || 10;
-        const [x, y] = vp.convertToViewportPoint(tm[4], tm[5]);
+        const [, y] = vp.convertToViewportPoint(tm[4], tm[5]);
         if (!curLine || Math.abs(curLine.y - y) > 5) {
           curLine = { y, hgt, text: it.str.trim(), maxHgt: hgt };
           lines.push(curLine);

@@ -457,16 +457,6 @@ p {
   vertical-align: middle;
 }
 
-.tag-folder-ic {
-  display: inline-flex;
-  align-items: center;
-}
-
-.tag-folder-ic svg {
-  width: 12px;
-  height: 12px;
-}
-
 /* List View layout */
 .grid.list-view {
   display: flex;
@@ -841,20 +831,6 @@ p {
   0% { transform: scale(0.8); opacity: 0.6; }
   100% { transform: scale(1.2); opacity: 1; }
 }
-
-/* Folder Colors */
-.folder-dot {
-  width: 9px;
-  height: 9px;
-  border-radius: 50%;
-  display: inline-block;
-  flex-shrink: 0;
-}
-.dot-red { background: #e05260; box-shadow: 0 0 6px rgba(224, 82, 96, 0.4); }
-.dot-blue { background: #3b82f6; box-shadow: 0 0 6px rgba(59, 130, 246, 0.4); }
-.dot-green { background: #10b981; box-shadow: 0 0 6px rgba(16, 185, 129, 0.4); }
-.dot-yellow { background: #f59e0b; box-shadow: 0 0 6px rgba(245, 158, 11, 0.4); }
-.dot-purple { background: #a855f7; box-shadow: 0 0 6px rgba(168, 85, 247, 0.4); }
 
 /* The whole folder takes its colour (owner's wish, 2026-11-26): the cover of a folder card, the folder sign in the
    sidebar and on notebook cards, and the colour chooser. --fc is the folder's colour. */
@@ -2830,10 +2806,6 @@ button.pageind:hover {
   z-index: 6;
 }
 
-.flip-status-tag.time-mode {
-  color: #e59866;
-}
-
 .flip-status-tag.break-mode {
   color: #5dade2;
 }
@@ -3074,7 +3046,7 @@ button.pageind:hover {
 
 .cal-fire {
   font-size: 16px;
-  animation: pulse 1.5s infinite alternate;
+  animation: pulseDot 1.5s infinite alternate;
 }
 
 .cal-streak-sub {
@@ -3292,12 +3264,6 @@ button.pageind:hover {
   display: block;
   border-radius: 4px;
   outline: 1px solid var(--line);
-}
-
-.hl-text {
-  display: block;
-  font-size: 14px;
-  line-height: 1.4;
 }
 
 .tag-row .bk-sub {
@@ -4354,11 +4320,6 @@ body.split-dragging canvas {
   }
 }
 
-.tag-c.hl-shot {
-  max-height: 200px;
-  background: #fff;
-}
-
 /* Tray as a column down the right side (laptops). The page area narrows so nothing hides behind it. */
 .hltray.side {
   left: auto;
@@ -4487,11 +4448,6 @@ body.split-dragging canvas {
 /* Settings: space used on the sync service */
 .usage {
   margin: 6px 0 10px;
-}
-
-.usage-text {
-  font-size: 13px;
-  margin-bottom: 5px;
 }
 
 .usage-bar {

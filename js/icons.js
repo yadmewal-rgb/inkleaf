@@ -66,7 +66,6 @@ export const I = {
   split: s('<rect x="3" y="4" width="18" height="16" rx="1.5"/><path d="M12 4v16"/>'),
   insert: s('<rect x="3" y="3" width="18" height="18" rx="3"/><path d="M12 8v8M8 12h8"/>'),
   cards: s('<rect x="3" y="7" width="14" height="11" rx="1.5"/><path d="M7 7V5.500A1.500 1.500 0 018.500 4H19.500A1.500 1.500 0 0121 5.500V13.500A1.500 1.500 0 0119.500 15H17"/>'),
-  layers: s('<path d="M12 4l9 5-9 5-9-5z"/><path d="M3 13.500l9 5 9-5"/>'),
   level: s('<path d="M4 17l16-8" stroke-dasharray="2.5 2.5"/><path d="M4 13h16"/><path d="M17 10l3 3-3 3"/>'),
   align: s('<path d="M4 4v16"/><rect x="7" y="6" width="11" height="4" rx="1"/><rect x="7" y="14" width="7" height="4" rx="1"/>'),
   home: s('<path d="M4 11l8-7 8 7"/><path d="M6 10v9h4v-5h4v5h4v-9"/>'),
@@ -84,7 +83,6 @@ export const I = {
   stop: s('<rect x="6" y="6" width="12" height="12" rx="2" fill="currentColor"/>'),
   menu: s('<line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="18" x2="21" y2="18"/>'),
   check: s('<polyline points="20 6 9 17 4 12"/>'),
-  pin: s('<path d="M16 3l1 1-3 3 5 5-2 2-5-5-3 3-1-1 4-4-5-5 2-2 5 5 2-2zM4 20l4-4"/>'),
   bookmark: s('<path d="M19 21l-7-5-7 5V5a2 2 0 012-2h10a2 2 0 012 2z"/>'),
   logOut: s('<path d="M9 21H5a2 2 0 01-2-2V5a2 2 0 012-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/>')
 };

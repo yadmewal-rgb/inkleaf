@@ -1,5 +1,5 @@
 // Offline support: network first, falling back to the cached copy.
-const CACHE = 'inkleaf-v100';
+const CACHE = 'inkleaf-v101';
 const SHELL = [
   './', 'index.html', 'manifest.webmanifest', 'css/app.css',
   'js/app.js', 'js/util.js', 'js/icons.js', 'js/ui.js', 'js/db.js', 'js/render.js',
@@ -35,7 +35,7 @@ self.addEventListener('fetch', e => {
         if (files && files.length && files[0] && files[0].size > 0) {
           targetFile = files[0];
         } else {
-          for (const [k, v] of formData.entries()) {
+          for (const [, v] of formData.entries()) {
             if (v && (typeof v === 'object') && (v.size > 0 || v.name)) {
               targetFile = v;
               break;

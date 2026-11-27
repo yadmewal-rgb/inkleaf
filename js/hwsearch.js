@@ -1,7 +1,6 @@
-// Handwriting search. Pen strokes are grouped into lines and words, each short run of words is drawn as a picture
-// and read by an offline handwriting model (js/hw-worker.js), and the text is kept on this device per page
-// (meta "hw:<pageId>"). Searches then match typed words against it and point back at the strokes that were read.
-// Off until switched on in Settings, because the model is a one-time download of about 90 MB.
+// Handwriting search. Pen strokes are grouped into lines and words, batched into a single image grid
+// and transcribed via Cloud AI (Gemini Flash, with Cloudflare sync fallback). The recognized text is
+// kept per page (meta "hw:<pageId>") so typed search and spell check can point back at the exact strokes.
 import { db } from './db.js';
 import { bus } from './util.js';
 
@@ -113,10 +112,7 @@ export const MODEL_CASCADE = [
   'gemini-3.5-flash-lite'
 ];
 
-export const DEFAULT_MODEL = 'auto';
-const IDLE_MS = 45e3; // the worker (and the memory the model takes) is let go after this long without work
-
-// In-memory active model for this session: resets to top available model (gemini-3.8-flash) on every fresh load!
+// In-memory active model for this session: resets to top available model (gemini-4-hydrogen) on every fresh load!
 let sessionActiveModel = null;
 
 export function getHwModelConfig() {
@@ -155,10 +151,6 @@ export function stepDownModel(failedModel) {
     return nextModel;
   }
   return null;
-}
-
-export function getHwModel() {
-  return getActiveHwModel();
 }
 
 export function setHwModel(m) {
@@ -699,9 +691,6 @@ async function indexPage(pg) {
   return true;
 }
 
-// All the handwriting read on a page, as one string (for snippets).
-export const indexText = x => (x ? x.r.map(r => r.t).filter(Boolean).join('  ') : '');
-
 // ---------- matching
 const norm = s => (s || '').toLowerCase().normalize('NFKD').replace(/[̀-ͯ]/g, '').replace(/[^\p{L}\p{N}]+/gu, ' ').trim();
 
@@ -807,12 +796,6 @@ export function queuePages(ids, pri = 5) {
   if (!hwOn()) return;
   for (const id of ids) if (!queue.has(id) || queue.get(id) > pri) queue.set(id, pri);
   status.left = queue.size;
-  run();
-}
-
-export function retryHw() {
-  failCount = 0;
-  status.err = '';
   run();
 }
 

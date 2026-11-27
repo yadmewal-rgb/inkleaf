@@ -14,6 +14,17 @@ const CLIENT_ID = '473809010149-3hhf0nu5aisisgvu3gnaee49lfgdlga2.apps.googleuser
 const PART = 1_500_000;             // largest piece of a blob in one row (SQLite rows are limited to 2 MB)
 const KINDS = new Set(['f', 'd', 'p', 'a', 'b']);
 const FEED = "('f','d','p','a')";   // kinds that go out in the changes feed (snapshots are listed separately)
+const GEMINI_MODELS = new Set([
+  'gemini-4-hydrogen',
+  'gemini-3.8-flash',
+  'gemini-3.8-flash-lite',
+  'gemini-3.7-flash',
+  'gemini-3.7-flash-lite',
+  'gemini-3.6-flash',
+  'gemini-3.6-flash-lite',
+  'gemini-3.5-flash',
+  'gemini-3.5-flash-lite'
+]);
 
 const json = (data, status = 200, headers = {}) => new Response(JSON.stringify(data), { status, headers: { 'Content-Type': 'application/json', ...headers } });
 
@@ -916,18 +927,7 @@ export class User extends DurableObject {
       const image = body.image;
       const mimeType = body.mimeType || 'image/jpeg';
       const n = Math.max(1, Math.min(40, Number(body.n) || 1));
-      const allowedModels = new Set([
-        'gemini-4-hydrogen',
-        'gemini-3.8-flash',
-        'gemini-3.8-flash-lite',
-        'gemini-3.7-flash',
-        'gemini-3.7-flash-lite',
-        'gemini-3.6-flash',
-        'gemini-3.6-flash-lite',
-        'gemini-3.5-flash',
-        'gemini-3.5-flash-lite'
-      ]);
-      const model = allowedModels.has(body.model) ? body.model : 'gemini-3.8-flash';
+      const model = GEMINI_MODELS.has(body.model) ? body.model : 'gemini-4-hydrogen';
       if (!image) return json({ error: 'no-image' }, 400);
 
       const prompt = n > 1
@@ -1010,13 +1010,8 @@ export class User extends DurableObject {
 
 Return ONLY the valid JSON array without commentary or code fences.`;
 
-      const allowedModels = new Set([
-        'gemini-4-hydrogen',
-        'gemini-3.8-flash', 'gemini-3.8-flash-lite', 'gemini-3.7-flash', 'gemini-3.7-flash-lite',
-        'gemini-3.6-flash', 'gemini-3.6-flash-lite', 'gemini-3.5-flash', 'gemini-3.5-flash-lite'
-      ]);
-      const reqModel = this.kvGet('geminiModel') || 'gemini-3.8-flash';
-      const model = allowedModels.has(reqModel) ? reqModel : 'gemini-3.8-flash';
+      const reqModel = this.kvGet('geminiModel') || 'gemini-4-hydrogen';
+      const model = GEMINI_MODELS.has(reqModel) ? reqModel : 'gemini-4-hydrogen';
       const geminiUrl = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`;
 
       try {

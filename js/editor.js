@@ -215,7 +215,7 @@ export async function mountEditor(root, docId, opts = {}) {
   let livePv = null, liveFn = null, rafLive = 0;
   const undoStack = [], redoStack = [];
   const dirtyPages = new Set();
-  let saveT = 0, docDirty = false, changed = false, destroyed = false;
+  let saveT = 0, docDirty = false, destroyed = false;
   let docTouch = false;       // the notebook record needs saving, but only for its reading place or thumbnail
   let docGone = false;        // deleted or moved to the bin on another device: its record is left alone
   let touched = false;        // has the notebook's "last edited" stamp been bumped this session?
@@ -249,7 +249,7 @@ export async function mountEditor(root, docId, opts = {}) {
   }
   // Notebooks can open in view-only, so a phone held in the hand does not draw stray lines. Automatic (null):
   // on touch devices where fingers would draw (no stylus seen, e.g. phones); an iPad with Apple Pencil opens for writing.
-  const openRead = () => prefs.openRead === true || (prefs.openRead == null && COARSE && !prefs.penSeen && prefs.fingerDraw !== false);
+  const openRead = () => prefs.openRead === true || (prefs.openRead == null && COARSE && !prefs.penSeen && !prefs.applePencilOnly && prefs.fingerDraw !== false);
   try { readOnly = openRead() || localStorage.getItem('inkleaf.ro.' + doc.id) === '1'; } catch { readOnly = openRead(); }
   if (guestLocked) readOnly = true;
   const pencilOnly = () => Boolean(prefs.applePencilOnly);
@@ -1126,7 +1126,6 @@ export async function mountEditor(root, docId, opts = {}) {
   function dirty(page) {
     page.modified = Date.now();
     dirtyPages.add(page);
-    changed = true;
     saveSoon(250);
     if (panelOpen) refreshThumb(page);
     if (zw && zw.pv.page === page) queueZoom();
@@ -1409,16 +1408,19 @@ export async function mountEditor(root, docId, opts = {}) {
   // ------------------------------------------------------------------ pointer input
   let holdTimer = null;
   let holdPos = null;
+  let holdFired = false;
+  let lastPenEraseT = 0;
 
   function startPointerHold(e) {
     if (readOnly) return;
     clearPointerHold();
-    if (e.pointerType === 'mouse' && e.button !== 0) return;
+    if (e.pointerType === 'pen' || e.button !== 0 || (e.buttons & 34)) return;
     holdPos = { x: e.clientX, y: e.clientY, id: e.pointerId };
     holdTimer = setTimeout(() => {
       if (holdPos) {
         const { x, y } = holdPos;
         holdPos = null;
+        holdFired = true;
         if (action && !action.far) cancelAction();
         openCanvasContextMenu(x, y);
       }
@@ -1439,6 +1441,7 @@ export async function mountEditor(root, docId, opts = {}) {
 
   function onDown(e) {
     if (e.pointerType === 'mouse' && e.button === 2) return;
+    holdFired = false;
     measure();
     pullHint.hidden = true;
     if (textEd || boxEd) { commitText(); return; } // this press just closes the text box
@@ -1487,6 +1490,7 @@ export async function mountEditor(root, docId, opts = {}) {
       if (pinch) { pinch = null; zooming = false; applyView(); }
       multiTap = null;
       const erasing = e.button === 5 || (e.buttons & 32) || e.button === 2 || (e.buttons & 2);
+      if (erasing) lastPenEraseT = performance.now();
       if (dbg) dbgEv(e, erasing ? 'erase' : 'draw');
       startAction(e, erasing ? 'eraser' : null);
       return;
@@ -1544,6 +1548,7 @@ export async function mountEditor(root, docId, opts = {}) {
     if (!p) return;
     ptrs.delete(e.pointerId);
     if (action && action.pid === e.pointerId) {
+      if (action.ptype === 'pen' && action.tool === 'eraser') lastPenEraseT = performance.now();
       if (e.type !== 'pointercancel') endAction(e);
       // A cancelled pen or mouse stroke is still what was written, so it is kept; a cancelled finger stroke is not.
       else if (action.ptype !== 'touch' && (action.tool === 'pen' || action.tool === 'hl')) endAction(null);
@@ -2490,7 +2495,7 @@ export async function mountEditor(root, docId, opts = {}) {
 
   function commitSelTransform() {
     if (!sel) return;
-    const { k, dx, dy, b, pv, ang = 0 } = sel;
+    const { k, dx, dy, b, ang = 0 } = sel;
     if (k === 1 && !dx && !dy && !ang) return;
     const old = sel.items;
     const bw = b.w * k, bh = b.h * k;
@@ -4427,7 +4432,6 @@ export async function mountEditor(root, docId, opts = {}) {
     clearSel();
     doc.pages = pages.map(p => p.id);
     docDirty = true;
-    changed = true;
     rebuild();
     if (focusIndex != null) scrollToPage(focusIndex); else applyView();
     flush().catch(saveFailed);
@@ -4764,7 +4768,7 @@ export async function mountEditor(root, docId, opts = {}) {
     const secs = pages.map((p, i) => ({ p, i })).filter(x => x.p.sec);
     const secBtn = (panelTab === 'thumbnails' && secs.length) ? h('button', {
       class: 'chip sm', type: 'button', title: 'Jump to a section',
-      onclick: e => popMenu(e.currentTarget, secs.map((x, n) => ({
+      onclick: e => popMenu(e.currentTarget, secs.map(x => ({
         label: `${x.p.sec}  (page ${x.i + 1})`, icon: I.list, onClick: () => { scrollToPage(x.i); fillPanel(); }
       })))
     }, h('span', { class: 'btn-ic', html: I.list }), 'Sections') : null;
@@ -6126,7 +6130,7 @@ export async function mountEditor(root, docId, opts = {}) {
     let hasText = false;
     for (const i of big.idx.slice(0, 3)) { try { if ((await pageText(big.id, i)).s.trim().length > 20) hasText = true; } catch { /* unreadable */ } }
     let dpi = 150;
-    const m = modal({
+    modal({
       title: 'Make the PDF smaller',
       body: h('div', null,
         h('p', { class: 'modal-text' }, `${big.name} is ${Math.round(big.mb)} MB for ${big.idx.length} pages. Inkleaf can rebuild its pages as pictures, which is usually far smaller. It makes a copy of this notebook with the smaller PDF and your writing; this notebook stays as it is, so you can compare and then delete one.`),
@@ -6220,7 +6224,6 @@ export async function mountEditor(root, docId, opts = {}) {
     doc.cardDels = dels;
     queueTray();
     docDirty = true;
-    changed = true;
     saveSoon(250);
   }
 
@@ -6461,7 +6464,7 @@ export async function mountEditor(root, docId, opts = {}) {
         h('label', { class: 'check' }, all, 'Do this for every PDF page in the notebook'),
         h('p', { class: 'modal-text small' }, 'Trimming finds the white border around the print and cuts it off, so the text fills more of the screen. Your writing keeps its place on the PDF either way. "Original size" undoes both.')),
       actions: [
-        { label: 'Original size', onClick: () => run(async p => ({ l: 0, t: 0, r: 0, b: 0 })) },
+        { label: 'Original size', onClick: () => run(async () => ({ l: 0, t: 0, r: 0, b: 0 })) },
         { label: 'Trim white borders', onClick: () => run(async p => (await trimOf(p)) || p.pm || { l: 0, t: 0, r: 0, b: 0 }) },
         {
           label: 'Add margin', primary: true, onClick: () => run(async p => {
@@ -6833,22 +6836,22 @@ export async function mountEditor(root, docId, opts = {}) {
       })),
       '-',
       {
-        label: `Apple Pencil Only: ${prefs.applePencilOnly ? 'ON' : 'OFF'}`,
+        label: `Apple Pencil only: ${prefs.applePencilOnly ? 'ON' : 'OFF'}`,
         icon: I.pen,
         onClick: () => {
           prefs.applePencilOnly = !prefs.applePencilOnly;
           savePrefs();
-          toast(prefs.applePencilOnly ? 'Apple Pencil Only is ON (fingers scroll/zoom, only pencil draws)' : 'Apple Pencil Only is OFF');
+          toast(prefs.applePencilOnly ? 'Apple Pencil only is ON (fingers scroll & zoom, only pencil writes)' : 'Apple Pencil only is OFF');
         }
       },
       {
-        label: `Hover Cursor Preview: ${prefs.penHoverPreview !== false ? 'ON' : 'OFF'}`,
+        label: `Pencil hover preview: ${prefs.penHoverPreview !== false ? 'ON' : 'OFF'}`,
         icon: I.eye,
         onClick: () => {
           prefs.penHoverPreview = prefs.penHoverPreview === false;
           savePrefs();
           if (prefs.penHoverPreview === false) penHoverCur.hidden = true;
-          toast(prefs.penHoverPreview !== false ? 'Hover Cursor Preview is ON' : 'Hover Cursor Preview is OFF');
+          toast(prefs.penHoverPreview !== false ? 'Pencil hover preview is ON' : 'Pencil hover preview is OFF');
         }
       }
     ]);
@@ -6873,7 +6876,7 @@ export async function mountEditor(root, docId, opts = {}) {
     }
     const colors = prefs[prefKey];
     const cur = prefs[key].color;
-    const pick = (c, slotIdx) => {
+    const pick = c => {
       prefs[key].color = c;
       savePrefs();
       if (key === 'text' && textEd) { textEd.color = inkFor(textEd.pv, c); styleTa(); textEd.ta.focus(); }
@@ -6908,7 +6911,7 @@ export async function mountEditor(root, docId, opts = {}) {
           if (isSelected) {
             openEditor(e.currentTarget);
           } else {
-            pick(c, i);
+            pick(c);
           }
         }
       });
@@ -6994,7 +6997,7 @@ export async function mountEditor(root, docId, opts = {}) {
   const fmtMm = pt => { const mm = pt * MM; return (mm < 1 ? String(Math.round(mm * 100) / 100) : mm.toFixed(1)) + ' mm'; };
 
   // Preset dots (given in mm) followed by a button showing the exact size, which opens a slider.
-  function sizes(key, defaultMms, defaultDots, maxMm) {
+  function sizes(key, defaultMms, maxMm) {
     const prefKey = key + 'Sizes';
     if (!Array.isArray(prefs[prefKey]) || prefs[prefKey].length !== defaultMms.length) {
       prefs[prefKey] = [...defaultMms];
@@ -7117,7 +7120,7 @@ export async function mountEditor(root, docId, opts = {}) {
       kids = [
         ...favPens(), h('div', { class: 'vsep' }),
         ...swatches('pen', PEN_COLORS), h('div', { class: 'vsep' }),
-        ...sizes('pen', [0.3, 0.5, 0.7, 1.0], [3, 5, 7, 10], 3)
+        ...sizes('pen', [0.3, 0.5, 0.7, 1.0], 3)
       ];
     }
     else if (t === 'hl') {
@@ -7125,7 +7128,7 @@ export async function mountEditor(root, docId, opts = {}) {
       kids = [
         ...swatches('hl', HL_COLORS),
         h('div', { class: 'vsep' }),
-        ...sizes('hl', [3.5, 5.5, 8.5], [7, 11, 15], 14)
+        ...sizes('hl', [3.5, 5.5, 8.5], 14)
       ];
       if (hasPdf) {
         kids.push(
@@ -7141,14 +7144,14 @@ export async function mountEditor(root, docId, opts = {}) {
         h('div', { class: 'vsep' }),
         h('span', { class: 'lbl' }, 'Erases'),
         seg([['all', 'Everything'], ['pen', 'Pen only'], ['hl', 'Highlighter only']], prefs.eraser.only || 'all', v => { prefs.eraser.only = v; savePrefs(); renderOpts(); }),
-        h('div', { class: 'vsep' }), ...sizes('eraser', [3, 5.5, 10.5], [7, 11, 16], 20)
+        h('div', { class: 'vsep' }), ...sizes('eraser', [3, 5.5, 10.5], 20)
       ];
     } else if (t === 'shape') {
       const fill = prefs.shape.fill;
       const fillPick = v => { prefs.shape.fill = v; savePrefs(); renderOpts(); };
       kids = [
         seg(SHAPES, prefs.shape.kind, v => { prefs.shape.kind = v; savePrefs(); renderOpts(); }),
-        h('div', { class: 'vsep' }), ...swatches('shape', PEN_COLORS), h('div', { class: 'vsep' }), ...sizes('shape', [0.4, 0.8, 1.4], [5, 8, 12], 3),
+        h('div', { class: 'vsep' }), ...swatches('shape', PEN_COLORS), h('div', { class: 'vsep' }), ...sizes('shape', [0.4, 0.8, 1.4], 3),
         h('div', { class: 'vsep' }), h('span', { class: 'lbl' }, 'Fill'),
         h('button', { class: 'sw nofill' + (fill ? '' : ' on'), type: 'button', title: 'No fill', onclick: () => fillPick(null) }),
         ...FILL_COLORS.map(c => h('button', { class: 'sw' + (fill === c ? ' on' : ''), type: 'button', title: 'Fill', style: { '--c': c }, onclick: () => fillPick(c) }))
@@ -7166,7 +7169,7 @@ export async function mountEditor(root, docId, opts = {}) {
         h('button', { class: 'btn sm', type: 'button', title: 'Bulleted list', onclick: toggleBullet }, h('span', { class: 'btn-ic', html: I.list }), 'List'),
         h('span', { class: 'hint' }, 'Tap the page to type')];
     } else if (t === 'tape') {
-      kids = [...swatches('tape', TAPE_COLORS), h('div', { class: 'vsep' }), ...sizes('tape', [4, 7, 11], [7, 11, 15], 20),
+      kids = [...swatches('tape', TAPE_COLORS), h('div', { class: 'vsep' }), ...sizes('tape', [4, 7, 11], 20),
         h('span', { class: 'hint' }, 'Drag to cover something. Tap a strip to show or hide what is under it.')];
     } else if (t === 'laser') {
       kids = [...swatches('laser', LASER_COLORS), h('span', { class: 'hint' }, 'Point and draw: nothing is saved. Tap a link or a strip of tape to use it.')];
@@ -7185,7 +7188,6 @@ export async function mountEditor(root, docId, opts = {}) {
     doc.title = name;
     titleBtn.textContent = name;
     docDirty = true;
-    changed = true;
     flush().catch(saveFailed);
   }
 
@@ -7217,7 +7219,9 @@ export async function mountEditor(root, docId, opts = {}) {
   function moreMenu(anchor) {
     const narrow = innerWidth <= 760 || full; // the tool row's own buttons are hidden on phones and in full screen
     const fd = prefs.fingerDraw;
-    const label = fd === true ? 'Finger drawing: on' : fd === false ? 'Finger drawing: off' : `Finger drawing: auto (${fingerDraws() ? 'on' : 'off'})`;
+    const label = prefs.applePencilOnly
+      ? 'Finger drawing: off (Apple Pencil only is on)'
+      : fd === true ? 'Finger drawing: on' : fd === false ? 'Finger drawing: off' : `Finger drawing: auto (${fingerDraws() ? 'on' : 'off'})`;
     popMenu(anchor, [
       { label: 'Add a page', icon: I.addPage, onClick: () => addPageAfter(currentPv()) },
       '-',
@@ -7283,26 +7287,33 @@ export async function mountEditor(root, docId, opts = {}) {
       { label: 'Gestures', icon: I.finger, onClick: gestureHelp },
       { label: dbg ? 'Close input test' : 'Input test', icon: I.pen, onClick: toggleDebug },
       {
-        label: 'Apple Pencil Only (100% Palm Rejection): ' + (prefs.applePencilOnly ? 'ON' : 'OFF'),
+        label: 'Apple Pencil only (100% palm rejection): ' + (prefs.applePencilOnly ? 'ON' : 'OFF'),
         icon: I.pen,
         onClick: () => {
           prefs.applePencilOnly = !prefs.applePencilOnly;
           savePrefs();
-          toast(prefs.applePencilOnly ? 'Apple Pencil Only: fingers scroll & zoom, only pencil writes' : 'Apple Pencil Only is off');
+          toast(prefs.applePencilOnly ? 'Apple Pencil only: fingers scroll & zoom, only pencil writes' : 'Apple Pencil only is off');
         }
       },
       {
-        label: 'Pencil Hover Preview: ' + (prefs.penHoverPreview !== false ? 'ON' : 'OFF'),
+        label: 'Pencil hover preview: ' + (prefs.penHoverPreview !== false ? 'ON' : 'OFF'),
         icon: I.eye,
         onClick: () => {
           prefs.penHoverPreview = prefs.penHoverPreview === false;
           savePrefs();
           if (prefs.penHoverPreview === false) penHoverCur.hidden = true;
-          toast(prefs.penHoverPreview !== false ? 'Pencil Hover Preview is ON' : 'Pencil Hover Preview is off');
+          toast(prefs.penHoverPreview !== false ? 'Pencil hover preview is ON' : 'Pencil hover preview is off');
         }
       },
       {
         label, icon: I.finger, onClick: () => {
+          if (prefs.applePencilOnly) {
+            prefs.applePencilOnly = false;
+            prefs.fingerDraw = true;
+            savePrefs();
+            toast('Fingers draw (Apple Pencil only turned off)');
+            return;
+          }
           prefs.fingerDraw = fd == null ? !fingerDraws() : fd === true ? false : null;
           savePrefs();
           toast(prefs.fingerDraw === true ? 'Fingers draw' : prefs.fingerDraw === false ? 'Fingers scroll, stylus draws' : 'Automatic: fingers scroll once a stylus is used');
@@ -7321,13 +7332,15 @@ export async function mountEditor(root, docId, opts = {}) {
   }
 
   // ------------------------------------------------------------------ keyboard, lifecycle
+  let lastKeyPasteT = 0;
+
   function onKey(e) {
     if (activeEd && activeEd !== me) return; // side by side: the other notebook has the keyboard
     if (e.target.closest && e.target.closest('input, textarea, dialog')) return;
     const mod = e.ctrlKey || e.metaKey, key = e.key.toLowerCase();
     if (mod && key === 'z') { e.preventDefault(); if (e.shiftKey) redo(); else undo(); }
     else if (mod && (key === 'c' || key === 'x') && sel) { e.preventDefault(); copySel(key === 'x'); }
-    else if (mod && key === 'v') { e.preventDefault(); if (!readOnly) pasteClip(); }
+    else if (mod && key === 'v') { e.preventDefault(); if (!readOnly) { lastKeyPasteT = performance.now(); pasteClip(); } }
     else if (mod && key === 'y') { e.preventDefault(); redo(); }
     else if (mod && key === 'f') { e.preventDefault(); openFind(); }
     else if ((e.key === 'ArrowDown' || e.key === 'ArrowUp') && !hz) { // scroll the page, which matters most in read-only mode
@@ -7358,6 +7371,7 @@ export async function mountEditor(root, docId, opts = {}) {
   async function onNativePaste(e) {
     if (activeEd && activeEd !== me) return;
     if (readOnly) return;
+    if (performance.now() - lastKeyPasteT < 250) return;
     if (e.target && e.target.closest && e.target.closest('input, textarea, [contenteditable="true"], dialog')) return;
     const cd = e.clipboardData;
     if (!cd) return;
@@ -7634,6 +7648,7 @@ export async function mountEditor(root, docId, opts = {}) {
   vp.addEventListener('contextmenu', e => {
     e.preventDefault();
     clearPointerHold();
+    if (holdFired || performance.now() - lastPenEraseT < 500) { holdFired = false; return; }
     openCanvasContextMenu(e.clientX, e.clientY);
   });
   // Keep the browser's own touch gestures (double-tap zoom, magnifier, page pinch) away from the paper:

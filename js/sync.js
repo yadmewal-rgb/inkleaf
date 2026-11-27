@@ -13,10 +13,10 @@ import { db, assetIdsOf } from './db.js';
 import { h, uid, bus, loadScript, downloadBlob, bufToB64, b64ToBuf, editedAt } from './util.js';
 import { modal, toast, confirmBox, busy } from './ui.js';
 import { I } from './icons.js';
-import { hwOn, setHwOn, status as hwStatus, setCloudOcr, setDirectOcrReport, getHwUsage, setHwLimit, getHwModel, setHwModel, getHwModelConfig, getActiveHwModel, MODEL_CASCADE, formatModelName, updateHwUsageFromServer } from './hwsearch.js';
+import { hwOn, setHwOn, status as hwStatus, setCloudOcr, setDirectOcrReport, getHwUsage, setHwLimit, setHwModel, getHwModelConfig, getActiveHwModel, formatModelName, updateHwUsageFromServer } from './hwsearch.js';
 export { updateHwUsageFromServer };
 
-export const APP_VER = 'v100';
+export const APP_VER = 'v101';
 const SERVER = 'https://inkleaf-sync.yadmewal.workers.dev';
 // drive.appdata: Inkleaf's hidden app folder (files it syncs); drive.file: only files Inkleaf itself creates, used
 // for the visible "Inkleaf" folder holding copies of the PDFs under their real names.
@@ -458,7 +458,7 @@ export async function call(path, opts = {}) {
   return r;
 }
 
-export async function syncOcr(imageB64, n = 1, model = 'gemini-3.8-flash') {
+export async function syncOcr(imageB64, n = 1, model = 'gemini-4-hydrogen') {
   if (!session || !navigator.onLine) return null;
   try {
     const r = await call('/ocr', {
@@ -466,14 +466,10 @@ export async function syncOcr(imageB64, n = 1, model = 'gemini-3.8-flash') {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ image: imageB64, n, model })
     });
-    if (!r.ok) {
-      const errJson = await r.json().catch(() => ({}));
-      return { error: errJson.error || `HTTP_${r.status}`, detail: errJson.detail };
-    }
     const j = await r.json().catch(() => null);
     return j && j.text ? j.text : null;
   } catch (e) {
-    return { error: 'network-failed', detail: e.message };
+    return { error: e.status ? `HTTP_${e.status}` : 'network-failed', detail: e.serverMessage || e.message };
   }
 }
 setCloudOcr(syncOcr);
@@ -1221,6 +1217,12 @@ export async function syncUserSettings() {
         localStorage.setItem('inkleaf.geminiKey', data.geminiKey);
       } else if (localKey && localKey !== data.geminiKey) {
         pushUserSettings({ geminiKey: localKey });
+      }
+      const localModel = localStorage.getItem('inkleaf.geminiModel');
+      if (!localModel && data.geminiModel && data.geminiModel !== 'auto') {
+        setHwModel(data.geminiModel);
+      } else if (localModel && data.geminiModel !== localModel) {
+        pushUserSettings({ geminiModel: localModel });
       }
     }
   } catch {}
@@ -2401,7 +2403,6 @@ export async function openSettings() {
   async function drawAllowedUsers() {
     try {
       const r = await call('/admin/users');
-      if (!r.ok) { allowedUsersBox.hidden = true; return; }
       const data = await r.json();
       const envSet = new Set(data.envUsers || []);
       const all = [...new Set([...(data.envUsers || []), ...(data.extraUsers || [])])];
@@ -2412,13 +2413,15 @@ export async function openSettings() {
       const addUser = async () => {
         const email = inp.value.trim().toLowerCase();
         if (!email || !email.includes('@')) { toast('Please enter a valid email address.'); inp.focus(); return; }
-        const res = await call('/admin/users', {
-          method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ email })
-        });
-        const body = await res.json().catch(() => ({}));
-        if (!res.ok) { toast(body.message || 'Could not add user'); return; }
-        toast(`Added ${email}. They can sign in now.`);
-        drawAllowedUsers();
+        try {
+          await call('/admin/users', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ email })
+          });
+          toast(`Added ${email}. They can sign in now.`);
+          drawAllowedUsers();
+        } catch (err) {
+          toast(err.serverMessage || err.message || 'Could not add user');
+        }
       };
       inp.addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); addUser(); } });
       allowedUsersBox.replaceChildren(
@@ -2438,10 +2441,15 @@ export async function openSettings() {
               class: 'btn sm', type: 'button',
               onclick: async () => {
                 if (!await confirmBox('Remove user', `Stop allowing ${email} to sign in?`, 'Remove', true)) return;
-                const res = await call('/admin/users', {
-                  method: 'DELETE', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ email })
-                });
-                if (res.ok) { toast(`Removed ${email}`); drawAllowedUsers(); }
+                try {
+                  await call('/admin/users', {
+                    method: 'DELETE', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ email })
+                  });
+                  toast(`Removed ${email}`);
+                  drawAllowedUsers();
+                } catch (err) {
+                  toast(err.serverMessage || err.message || 'Could not remove user');
+                }
               }
             }, 'Remove') : null
           );

@@ -99,15 +99,22 @@ export function popover(anchor, content, { align = 'left', onClose } = {}) {
   pop.style.left = x + 'px';
   pop.style.top = y + 'px';
   const onDoc = e => { if (!pop.contains(e.target)) close(); };
+  const onKey = e => { if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); close(); } };
   let closed = false;
   function close() {
     if (closed) return;
     closed = true;
     pop.remove();
     document.removeEventListener('pointerdown', onDoc, true);
+    document.removeEventListener('keydown', onKey, true);
     if (onClose) onClose();
   }
-  setTimeout(() => { if (!closed) document.addEventListener('pointerdown', onDoc, true); }, 0);
+  setTimeout(() => {
+    if (!closed) {
+      document.addEventListener('pointerdown', onDoc, true);
+      document.addEventListener('keydown', onKey, true);
+    }
+  }, 0);
   return close;
 }
 

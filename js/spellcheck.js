@@ -38,7 +38,6 @@ export const COMMON_TYPOS = {
   arguement: ['argument'],
   beggining: ['beginning'],
   calender: ['calendar'],
-  colleague: ['colleague'],
   collegue: ['colleague'],
   concious: ['conscious'],
   embarass: ['embarrass'],
@@ -140,21 +139,6 @@ export function ignoreWord(word) {
   bus.emit('spell-dict-updated', word);
 }
 
-// Levenshtein distance
-function lev(a, b, max = 2) {
-  if (Math.abs(a.length - b.length) > max) return max + 1;
-  const d = [];
-  for (let i = 0; i <= a.length; i++) d[i] = [i];
-  for (let j = 0; j <= b.length; j++) d[0][j] = j;
-  for (let i = 1; i <= a.length; i++) {
-    for (let j = 1; j <= b.length; j++) {
-      const cost = a[i - 1] === b[j - 1] ? 0 : 1;
-      d[i][j] = Math.min(d[i - 1][j] + 1, d[i][j - 1] + 1, d[i - 1][j - 1] + cost);
-    }
-  }
-  return d[a.length][b.length];
-}
-
 // Check if a single cleaned English word is valid
 function isWordValid(w, userDict) {
   if (!w || w.length <= 1) return true; // ignore lone letters (a, i, x)
@@ -192,7 +176,7 @@ function isWordValid(w, userDict) {
 }
 
 // Fast candidate generation using edit distance 1
-function getCandidates(w, maxResults = 3) {
+function getCandidates(w, maxResults = 3, userDict = getUserDict()) {
   const letters = 'abcdefghijklmnopqrstuvwxyz';
   const cands = new Set();
   for (let i = 0; i < w.length; i++) cands.add(w.slice(0, i) + w.slice(i + 1));
@@ -203,7 +187,6 @@ function getCandidates(w, maxResults = 3) {
   for (let i = 0; i <= w.length; i++) {
     for (const c of letters) cands.add(w.slice(0, i) + c + w.slice(i));
   }
-  const userDict = getUserDict();
   const valid = [];
   for (const cand of cands) {
     if (cand.length >= 2 && (DICT.has(cand) || userDict.has(cand))) {
@@ -232,7 +215,7 @@ export function checkWord(rawWord) {
   }
 
   // 2. Fast candidate generation (edit distance 1)
-  const cands = getCandidates(lw, 3);
+  const cands = getCandidates(lw, 3, userDict);
   if (cands.length > 0) {
     return {
       misspelled: true,

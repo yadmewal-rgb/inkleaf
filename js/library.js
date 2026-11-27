@@ -46,11 +46,11 @@ export const lastPageOf = (docOrId, D = []) => {
 };
 
 export const FOLDER_COLORS = {
-  red: { label: 'Red', class: 'dot-red', color: '#e05260' },
-  blue: { label: 'Blue', class: 'dot-blue', color: '#3b82f6' },
-  green: { label: 'Green', class: 'dot-green', color: '#10b981' },
-  yellow: { label: 'Yellow', class: 'dot-yellow', color: '#f59e0b' },
-  purple: { label: 'Purple', class: 'dot-purple', color: '#a855f7' }
+  red: { label: 'Red', color: '#e05260' },
+  blue: { label: 'Blue', color: '#3b82f6' },
+  green: { label: 'Green', color: '#10b981' },
+  yellow: { label: 'Yellow', color: '#f59e0b' },
+  purple: { label: 'Purple', color: '#a855f7' }
 };
 export const COLOR_KEYS = ['red', 'blue', 'green', 'yellow', 'purple'];
 
