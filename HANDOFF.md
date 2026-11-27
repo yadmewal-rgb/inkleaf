@@ -1,8 +1,7 @@
 # Handoff
 
-**Written:** 2026-11-27, by Claude Code. **Next:** push v101 (owner's OK needed: the push was blocked by Claude Code's
-permission check), then `tests/after-publish.cmd`.
-**State:** **v101** committed locally on `main`, **NOT pushed**. `tests/check.cmd`: **166 passed, 0 failed, "ready to publish"**.
+**Written:** 2026-11-27, by Claude Code. **Next:** owner tries v101 on the iPad (opening speed, spell check on real notes).
+**State:** **v101 is LIVE** (pushed `1eca652`; `tests/after-publish.cmd`: ALL GOOD, website and Cloudflare server). Check: 166/166.
 
 ## What the owner asked
 1. (to agy) check every line, remove code of removed features, find conflicting commands -> v101 (`6b85bb9`).
@@ -12,9 +11,9 @@ permission check), then `tests/after-publish.cmd`.
    "is weak, does not recognise all words, shows correct words as mistakes, also very slow".
 
 ## Live now
-- App **v100** (`999a7a1`) on GitHub Pages; sync server from `999a7a1`.
+- App **v101** (`1eca652`) on GitHub Pages; sync server rebuilt from it.
 
-## Done (local only, all in v101)
+## Done (all in v101, live)
 - agy's v101 (`6b85bb9`): dead code removed, 5 conflict fixes. Reviewed by Claude Code: fine, except what follows.
 - **AI model sync fixed:** each device pushed its own choice, so a choice on one device (also "Auto") was undone by
   the next device that synced. Now the server's value wins; a device sends its own only when the server has none.
@@ -46,6 +45,5 @@ permission check), then `tests/after-publish.cmd`.
 - "Add to dictionary" words are kept per device (localStorage), not synced.
 
 ## Next step
-1. Owner allows the push -> `git push origin main` -> `tests/after-publish.cmd` must say ALL GOOD
-   (worker.js changed in v101: Cloudflare must rebuild the sync server).
-2. Owner tries it on the iPad: opening speed, and spell check on their notes.
+1. Owner tries it on the iPad: opening speed, and spell check on their notes. Their first open after the update still
+   uses v100's way; the "new version" toast appears once (v100 had no toast, so on that first update just reopen).
