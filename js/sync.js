@@ -16,7 +16,7 @@ import { I } from './icons.js';
 import { hwOn, setHwOn, status as hwStatus, setCloudOcr, setDirectOcrReport, getHwUsage, setHwLimit, setHwModel, getHwModelConfig, getActiveHwModel, formatModelName, updateHwUsageFromServer } from './hwsearch.js';
 export { updateHwUsageFromServer };
 
-export const APP_VER = 'v101';
+export const APP_VER = 'v102';
 const SERVER = 'https://inkleaf-sync.yadmewal.workers.dev';
 // drive.appdata: Inkleaf's hidden app folder (files it syncs); drive.file: only files Inkleaf itself creates, used
 // for the visible "Inkleaf" folder holding copies of the PDFs under their real names.
@@ -341,6 +341,52 @@ export async function signOut() {
   scheduleTargetsUpdate();
   bus.emit('synced');
   if (s) http(server + '/signout', { method: 'POST', headers: { Authorization: 'Bearer ' + s.token } }).catch(() => {});
+}
+
+// Today's use of Cloudflare's free daily limits, as Cloudflare itself counts it: the sync service asks Cloudflare's
+// analytics (GET /meter, no sign-in, answers even when the day's rows have run out). Never a guess: a figure that
+// could not be read stays null and is shown as "not known". On 2026-11-27 the old count (requests, 9% used) looked
+// fine while the real limit, rows read, had run out.
+const METER_NAMES = { rowsRead: 'rows read', rowsWritten: 'rows written', requests: 'requests' };
+let meterLast = null; // { ...answer, got: when this device got it } or { ok: false, why: 'offline' | 'no-answer' }
+export const lastMeter = () => meterLast;
+export const meterParts = m => Object.keys(METER_NAMES).map(k => {
+  const used = m && m.used ? m.used[k] : null, limit = (m && m.limits && m.limits[k]) || 0;
+  return { k, name: METER_NAMES[k], used, limit, pct: used == null || !limit ? null : used / limit * 100 };
+});
+// When the limits start again, on this device's clock ("5:30 am").
+export const meterResetAt = () => { const n = new Date(); return new Date(Date.UTC(n.getUTCFullYear(), n.getUTCMonth(), n.getUTCDate() + 1)).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }); };
+export const shortNum = n => n >= 1e6 ? (n / 1e6).toFixed(n >= 1e7 ? 1 : 2).replace(/\.?0+$/, '') + 'M' : n >= 1e4 ? Math.round(n / 1e3) + 'k' : Math.round(n).toLocaleString();
+
+export async function readMeter() {
+  if (!navigator.onLine) meterLast = { ok: false, why: 'offline' };
+  else {
+    try {
+      const r = await http(server + '/meter');
+      const j = await r.json();
+      meterLast = { ...j, got: Date.now() };
+    } catch { meterLast = { ok: false, why: 'no-answer' }; }
+  }
+  bus.emit('meter', meterLast);
+  warnMeter(meterLast);
+  return meterLast;
+}
+
+// One message per level (50%, 80%, used up) per day, for the figure closest to its limit.
+function warnMeter(m) {
+  if (!m || !m.ok) return;
+  const top = meterParts(m).filter(x => x.pct != null).sort((a, b) => b.pct - a.pct)[0];
+  if (!top) return;
+  const level = top.pct >= 100 ? 100 : top.pct >= 80 ? 80 : top.pct >= 50 ? 50 : 0;
+  let warned = {};
+  try { warned = JSON.parse(localStorage.getItem('inkleaf.meterWarned') || '{}'); } catch {}
+  if (warned.day !== m.day) warned = { day: m.day, level: 0 };
+  if (level <= (warned.level || 0)) return;
+  try { localStorage.setItem('inkleaf.meterWarned', JSON.stringify({ day: m.day, level })); } catch {}
+  const fig = `${shortNum(top.used)} of ${shortNum(top.limit)} ${top.name}`;
+  toast(level >= 100
+    ? `Cloudflare's free limit for today is used up (${fig}). Sync pauses; your notes are safe on this device. It starts again at ${meterResetAt()}.`
+    : `Cloudflare: ${Math.floor(top.pct)}% of today's free ${top.name} used (${fig}). It starts again at ${meterResetAt()}. Details: Settings > Sync.`, 12000);
 }
 
 // Cloudflare sync request usage tracking
@@ -1189,6 +1235,11 @@ export async function initSync() {
     window.addEventListener('online', () => { if (ready()) { fullRun(false); openLive(); } });
     setTimeout(() => autoBackup(), 8000);          // weekly snapshot, if one is due
     setInterval(() => autoBackup(), 3600e3);
+    // Cloudflare's free limits: checked soon after opening, then every 30 minutes while on screen (one small
+    // request each; the service asks Cloudflare at most every 5 minutes for everyone together).
+    const meterNow = () => { if (session && !off && document.visibilityState === 'visible') readMeter().catch(() => {}); };
+    setTimeout(meterNow, 10000);
+    setInterval(meterNow, 1800e3);
     document.addEventListener('visibilitychange', () => {
       if (document.visibilityState === 'hidden') pushSoon(0);                       // leaving: upload right away
       else if (ready()) { openLive(); run(pullChanges, false); schedule(); }
@@ -2370,36 +2421,39 @@ export async function openSettings() {
   drawHealth();
   const healthT = setInterval(() => { if (!healthEl.isConnected) { clearInterval(healthT); return; } drawHealth(); }, 2000);
 
-  // Cloudflare sync request usage (cumulative across all users)
-  const cfUsageBox = h('div', { class: 'field', style: 'margin: 8px 0 12px; padding: 10px 12px; background: var(--surface-2); border-radius: 8px;' });
+  // Cloudflare's free daily limits, as Cloudflare itself counts them (all users together).
+  const cfUsageBox = h('div', { class: 'field meter', style: 'margin: 8px 0 12px; padding: 10px 12px; background: var(--surface-2); border-radius: 8px;' });
   const drawCfUsage = () => {
-    const cf = getCfUsage();
-    const totalCalls = Math.max(cf.totalCalls || 0, cf.calls || 0);
-    const limit = cf.limit || 100000;
-    const pct = Math.min(100, Math.round((totalCalls / limit) * 100));
+    const m = lastMeter();
     const lastErrMsg = health.err?.msg || '';
     const isQuotaExceeded = lastErrMsg.includes('free tier daily limit') || lastErrMsg.includes('Exceeded allowed rows read');
-
-    const kids = [
-      h('div', { class: 'row', style: 'align-items: center; justify-content: space-between; margin-bottom: 4px;' },
-        h('b', { style: 'font-size: 13px;' }, 'Cloudflare Sync Requests (All users):'),
-        h('span', { class: 'bk-sub' }, `${totalCalls.toLocaleString()} / ${limit.toLocaleString()} requests today`)
-      ),
-      h('div', { class: 'usage-bar', style: 'margin: 6px 0;' },
-        h('div', { class: 'usage-fill' + (pct > 80 || isQuotaExceeded ? ' warn' : ''), style: { width: Math.max(pct, isQuotaExceeded ? 100 : 1) + '%' } })
-      ),
-      renderUserUsagePills(cf.users, u => u.cfCalls, n => n.toLocaleString()),
-      h('div', { class: 'bk-sub', style: 'font-size: 11.5px; color: var(--muted); margin-top: 4px;' },
-        'Cumulative across all users & devices · Free tier: 100,000 req/day · Resets daily at 00:00 UTC'
-      ),
-      isQuotaExceeded ? h('div', { style: 'margin-top: 8px; padding: 6px 10px; background: rgba(224, 49, 49, 0.12); border-left: 3px solid #e03131; border-radius: 4px; font-size: 12px; color: #ff6b6b; line-height: 1.4;' },
-        '⚠️ Cloudflare daily row-read budget reached. Your writing and changes are saved 100% safely on this device and will automatically sync once the quota resets at midnight UTC.'
-      ) : null
-    ].filter(Boolean);
+    const whyNot = !m ? 'checking…'
+      : m.why === 'offline' ? 'not known (no internet)'
+        : m.why === 'no-key' ? 'not known (the sync service has no Cloudflare key yet)'
+          : m.why === 'no-answer' ? 'not known (the sync service did not answer)' : 'not known (Cloudflare did not give it)';
+    const kids = [h('b', { style: 'font-size: 13px; display: block; margin-bottom: 4px;' }, 'Cloudflare free limits today (all users):')];
+    for (const x of meterParts(m)) {
+      const pct = x.pct == null ? 0 : Math.min(100, x.pct);
+      kids.push(
+        h('div', { class: 'row', style: 'align-items: center; justify-content: space-between; margin-top: 6px;' },
+          h('span', { style: 'font-size: 12.5px;' }, x.name[0].toUpperCase() + x.name.slice(1)),
+          h('span', { class: 'bk-sub meter-fig' }, x.pct == null ? whyNot : `${shortNum(x.used)} of ${shortNum(x.limit)} (${x.pct < 1 ? x.pct.toFixed(1) : Math.floor(x.pct)}%)`)
+        ),
+        h('div', { class: 'usage-bar', style: 'margin: 4px 0;' },
+          h('div', { class: 'usage-fill' + (x.pct == null ? ' none' : x.pct >= 80 ? ' warn' : x.pct >= 50 ? ' mid' : ''), style: { width: (x.pct == null ? 0 : Math.max(pct, 1)) + '%' } }))
+      );
+    }
+    const ago = m && m.at ? Math.max(0, Math.round((Date.now() - m.at) / 60000)) : null;
+    kids.push(h('div', { class: 'bk-sub', style: 'font-size: 11.5px; color: var(--muted); margin-top: 4px;' },
+      (ago == null ? '' : `Cloudflare's own figures, ${ago < 1 ? 'just now' : ago + ' min old'} (they run a few minutes behind). `) +
+      `Starts again at ${meterResetAt()} (00:00 UTC). A message appears at 50% and 80%.`));
+    if (isQuotaExceeded) kids.push(h('div', { style: 'margin-top: 8px; padding: 6px 10px; background: rgba(224, 49, 49, 0.12); border-left: 3px solid #e03131; border-radius: 4px; font-size: 12px; color: #ff6b6b; line-height: 1.4;' },
+      `⚠️ Cloudflare's free limit for today is used up. Your writing is safe on this device and syncs again after ${meterResetAt()}.`));
     cfUsageBox.replaceChildren(...kids);
   };
   drawCfUsage();
-  const offCfUsage = bus.on('cf-usage', () => drawCfUsage());
+  if (session && !cfg.off) readMeter().catch(() => {});
+  const offCfUsage = bus.on('meter', () => drawCfUsage());
 
   // Owner-only user manager (add/remove allowed emails without opening Cloudflare)
   const allowedUsersBox = h('div', { class: 'allowed-users', hidden: true });

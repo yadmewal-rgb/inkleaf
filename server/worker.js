@@ -99,6 +99,48 @@ async function allowedEmail(email, env) {
   return extra.includes(e);
 }
 
+// Cloudflare's free plan, per account and per day (it starts again at 00:00 UTC).
+const FREE = { rowsRead: 5_000_000, rowsWritten: 100_000, requests: 100_000 };
+// Each figure is its own small question to Cloudflare's analytics, so one that fails leaves the others standing.
+// [dataset, its day filter, the variable's type, fields inside sum{}]
+const METER_ASK = {
+  rows: ['durableObjectsPeriodicGroups', 'date_geq', 'Date', ['rowsRead', 'rowsWritten']],
+  requests: ['workersInvocationsAdaptive', 'datetime_geq', 'Time', ['requests']]
+};
+let meterMemo = null; // { t, p }: the last answer (or the one on its way), shared by every caller for 5 minutes
+
+// Today's use of the free limits, as Cloudflare itself counts it (its analytics run a few minutes behind).
+// Never a guess: a figure Cloudflare did not give is null, with the reason in `problems`.
+async function meter(env) {
+  if (!env.CF_API_TOKEN || !env.CF_ACCOUNT) return { ok: false, why: 'no-key', limits: FREE };
+  if (meterMemo && Date.now() - meterMemo.t < 300e3) return meterMemo.p;
+  const memo = { t: Date.now(), p: readMeter(env) };
+  meterMemo = memo;
+  const r = await memo.p;
+  if (!r.ok) memo.t = Date.now() - 240e3; // a failed answer is asked again after 1 minute, not 5
+  return r;
+}
+
+async function readMeter(env) {
+  const day = new Date().toISOString().slice(0, 10);
+  const used = { rowsRead: null, rowsWritten: null, requests: null }, problems = {};
+  await Promise.all(Object.entries(METER_ASK).map(async ([name, [set, filter, type, fields]]) => {
+    try {
+      const query = `query($a: String!, $d: ${type}!) { viewer { accounts(filter: {accountTag: $a}) { g: ${set}(filter: {${filter}: $d}, limit: 10000) { sum { ${fields.join(' ')} } } } } }`;
+      const r = await fetch('https://api.cloudflare.com/client/v4/graphql', {
+        method: 'POST', headers: { Authorization: 'Bearer ' + env.CF_API_TOKEN, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ query, variables: { a: env.CF_ACCOUNT, d: type === 'Date' ? day : day + 'T00:00:00Z' } })
+      });
+      const j = await r.json().catch(() => null);
+      if (!j || (j.errors && j.errors.length) || !j.data) throw new Error((j && j.errors && j.errors[0] && j.errors[0].message) || 'Cloudflare answered ' + r.status);
+      const acc = (j.data.viewer && j.data.viewer.accounts || [])[0];
+      if (!acc) throw new Error('account not found');
+      for (const f of fields) used[f] = (acc.g || []).reduce((s, g) => s + (Number(g.sum && g.sum[f]) || 0), 0);
+    } catch (e) { problems[name] = String(e && e.message || e).slice(0, 200); }
+  }));
+  return { ok: Object.values(used).some(v => v !== null), day, at: Date.now(), limits: FREE, used, problems };
+}
+
 export default {
   async fetch(req, env) {
     const cors = corsHeaders(req, env);
@@ -106,6 +148,11 @@ export default {
     const url = new URL(req.url);
     try {
       if (url.pathname === '/' && req.method === 'GET') return withCors(json({ app: 'inkleaf-sync', ok: true }), cors);
+
+      // Today's use of Cloudflare's free daily limits. Needs no sign-in and no database, so it still answers when
+      // the day's rows have run out. It shows only counts (no names, no notes); secrets CF_API_TOKEN (read-only
+      // "Account Analytics") and CF_ACCOUNT are set in the Cloudflare dashboard.
+      if (url.pathname === '/meter' && req.method === 'GET') return withCors(json(await meter(env)), cors);
 
       // Sign-in. {code}: a Google authorization code (the app's normal way): exchanged here for a refresh token
       // too, so the service can later hand devices fresh Google Drive passes. {access_token}: older app versions.

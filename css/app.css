@@ -4478,6 +4478,11 @@ body.split-dragging canvas {
   background: #e03131;
 }
 
+/* Cloudflare limits: 50-80% used */
+.usage-fill.mid {
+  background: #f08c00;
+}
+
 /* Scroll bar along the edge of the pages (auto-hides when writing notes). */
 .overlay>.vscroll {
   right: 0;

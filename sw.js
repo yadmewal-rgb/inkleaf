@@ -1,7 +1,7 @@
 // Offline first: the app opens from the copy kept on this device, without waiting for the network (fast on weak
 // Wi-Fi, and it opens when the connection is on but answers nothing). A new version comes as a new sw.js (every
 // release raises CACHE): it fetches the whole new copy in the background, takes over, and the page offers a reload.
-const CACHE = 'inkleaf-v101';
+const CACHE = 'inkleaf-v102';
 const SHELL = [
   './', 'index.html', 'manifest.webmanifest', 'css/app.css',
   'js/app.js', 'js/util.js', 'js/icons.js', 'js/ui.js', 'js/db.js', 'js/render.js',

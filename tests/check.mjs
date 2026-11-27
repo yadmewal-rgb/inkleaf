@@ -197,6 +197,29 @@ await tstep('server', 'rows read per request', async () => {
   const worst = out.filter(o => !/from 0|live/.test(o.name)).sort((a, b) => b.r - a.r)[0];
   ok('no everyday request reads more than 50 rows', worst.r <= 50, worst.r + ' rows: ' + worst.name);
 });
+// The limits meter (GET /meter): Cloudflare's own figures, from its analytics. Here a pretend Cloudflare answers.
+await tstep('server', 'limits meter', async () => {
+  const base = { modules: [{ type: 'ESModule', path: 'worker.js', contents: read('server/worker.js') }], compatibilityDate: '2025-09-01', durableObjects: { USER: { className: 'User', useSQLite: true } } };
+  const bare = new Miniflare({ ...base, bindings: {} });
+  const m0 = await (await bare.dispatchFetch('http://x/meter')).json();
+  await bare.dispose();
+  ok('without a Cloudflare key the meter says "not known", never a guess', m0.ok === false && m0.why === 'no-key' && !m0.used, m0);
+  const asks = [];
+  const fake = new Miniflare({ ...base, bindings: { CF_API_TOKEN: 'k1', CF_ACCOUNT: 'acc1' }, outboundService: async req => {
+    const b = await req.json();
+    asks.push({ host: new URL(req.url).host, key: req.headers.get('authorization'), b });
+    if (b.query.includes('durableObjectsPeriodicGroups')) return Response.json({ data: { viewer: { accounts: [{ g: [{ sum: { rowsRead: 3000000, rowsWritten: 4000 } }, { sum: { rowsRead: 60000, rowsWritten: 0 } }] }] } } });
+    return Response.json({ data: null, errors: [{ message: 'unknown field "requests"' }] });
+  } });
+  const m1 = await (await fake.dispatchFetch('http://x/meter')).json();
+  const m2 = await (await fake.dispatchFetch('http://x/meter')).json();
+  await fake.dispose();
+  const day = new Date().toISOString().slice(0, 10);
+  ok('the meter adds up Cloudflare\'s own figures', m1.ok && m1.used.rowsRead === 3060000 && m1.used.rowsWritten === 4000 && m1.limits.rowsRead === 5e6 && m1.day === day, m1);
+  ok('a figure Cloudflare did not give stays "not known"', m1.used.requests === null && /unknown field/.test(m1.problems.requests || ''), m1);
+  ok('it asks Cloudflare with the key, for this account and today', asks.length === 2 && asks.every(a => a.host === 'api.cloudflare.com' && a.key === 'Bearer k1' && a.b.variables.a === 'acc1' && String(a.b.variables.d).startsWith(day)), asks.map(a => a.b.variables));
+  ok('everyone together asks Cloudflare at most every 5 minutes', asks.length === 2 && m2.at === m1.at, `${asks.length} questions`);
+});
 const js = async r => { const t = await r.text(); try { return JSON.parse(t); } catch { return t.slice(0, 120); } };
 const auth = async (sub, who) => js(await fetch(`${API}/test-auth?sub=${sub}&email=${who}@test.local`));
 const call = (t, p, o = {}) => fetch(API + p, { ...o, headers: { ...(t ? { Authorization: 'Bearer ' + t } : {}), ...(o.headers || {}) } });
@@ -509,6 +532,22 @@ if (!process.argv.includes('--quick') && (want('library') || want('writing') || 
     ok('Settings shows the top account card', await c.ev(`return !!document.querySelector('dialog .account-card')`));
     await c.ev(`document.querySelector('dialog .modal-head .ic')?.click();await new Promise(r=>setTimeout(r,200));${E.D}const S=await import('/js/sync.js');await D.db.setMeta('cloud',{token:'111.fake',email:'owner@test.local'});S._setHttp(async()=>new Response('{"items":[]}',{status:200,headers:{'Content-Type':'application/json'}}));await S.initSync();await S.openSettings();`); await sleep(500);
     ok('Settings shows Sign out prominently when signed in', await c.ev(`return [...document.querySelectorAll('dialog .account-card button')].some(b=>b.textContent.trim()==='Sign out')`));
+    // 2026-11-27: the old count (requests, 9%) looked fine while the real limit, rows read, had run out. The meter shows
+    // Cloudflare's own figures, "not known" for a missing one, and one message per level per day.
+    const mt = await c.ev(`const S=await import('/js/sync.js');localStorage.removeItem('inkleaf.meterWarned');
+      const day=new Date().toISOString().slice(0,10),toasts=()=>[...document.querySelectorAll('#toasts .toast')].map(t=>t.textContent);
+      S._setHttp(async u=>new Response(JSON.stringify(String(u).endsWith('/meter')?{ok:true,day,at:Date.now(),limits:{rowsRead:5e6,rowsWritten:1e5,requests:1e5},used:{rowsRead:2.6e6,rowsWritten:null,requests:9140},problems:{rows:'x'}}:{items:[]}),{status:200,headers:{'Content-Type':'application/json'}}));
+      await S.readMeter();await new Promise(r=>setTimeout(r,100));
+      const box=document.querySelector('dialog .meter'),text=box?box.textContent:'',t1=toasts().filter(t=>t.includes('Cloudflare')).length;
+      await S.readMeter();await new Promise(r=>setTimeout(r,100));
+      const t2=toasts().filter(t=>t.includes('Cloudflare')).length,mid=!!box.querySelector('.usage-fill.mid');
+      S._setHttp(async u=>new Response(String(u).endsWith('/meter')?'{"ok":false,"why":"no-key","limits":{}}':'{"items":[]}',{status:200,headers:{'Content-Type':'application/json'}}));
+      await S.readMeter();const none=box.textContent;
+      S._setHttp(async()=>new Response('{"items":[]}',{status:200,headers:{'Content-Type':'application/json'}}));
+      return {text,t1,t2,mid,none,msg:toasts().find(t=>t.includes('52%'))||''};`);
+    ok('Settings shows Cloudflare\'s own limit figures', mt.text.includes('2.6M of 5M (52%)') && mt.text.includes('9,140 of 100k') && mt.mid, mt.text);
+    ok('a figure Cloudflare did not give is "not known", never a guess', /Rows written\s*not known/.test(mt.text) && (mt.none.match(/not known/g) || []).length === 3, mt.none);
+    ok('one message at 50%, not repeated', mt.t1 === 1 && mt.t2 === 1 && /52% of today's free rows read/.test(mt.msg), mt);
     // v101 bug: each device pushed its own model choice, so "Auto" (or any choice) made on one device was undone by the next.
     const ms = await c.ev(`const S=await import('/js/sync.js');const H=await import('/js/hwsearch.js');const puts=[];
       const run=async(server,local)=>{if(local)localStorage.setItem('inkleaf.geminiModel',local);else localStorage.removeItem('inkleaf.geminiModel');puts.length=0;
