@@ -45,5 +45,6 @@
 - "Add to dictionary" words are kept per device (localStorage), not synced.
 
 ## Next step
-1. Owner tries it on the iPad: opening speed, and spell check on their notes. Their first open after the update still
-   uses v100's way; the "new version" toast appears once (v100 had no toast, so on that first update just reopen).
+1. Owner tries it on the iPad: opening speed, and spell check on their notes. On each device the first open after
+   the update still runs v100 (it has no Reload toast) and fetches v101 in the background: close and reopen once.
+   From then on releases show the Reload toast.
