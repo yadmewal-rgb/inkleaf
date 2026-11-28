@@ -34,6 +34,51 @@ async function annotOverlay(pg) {
 export async function buildPdf(doc, pages, progress, front) {
   await loadScript('vendor/pdf-lib.min.js');
   const L = window.PDFLib;
+  if (!front || !front.cards.length) {
+    // A big book: its writing is added to the end of the book's own file instead of making a new file
+    // (pdfappend.js; making a new one needed 5-6 times the book's size in memory and crashed Chrome).
+    const big = await bigSource(pages);
+    if (big) {
+      try { return await appendBuild(L, doc, pages, progress, big); } catch (e) { console.warn('Adding to the end of the big PDF did not work; making it the usual way', e); }
+    }
+  }
+  const out = await L.PDFDocument.create();
+  out.setTitle(doc.title);
+  out.setCreator('Inkleaf');
+  out.setProducer('Inkleaf');
+  await fillPdf(L, out, pages, progress, front, null);
+  const bytes = await out.save();
+  return new Blob([bytes], { type: 'application/pdf' });
+}
+
+let APPEND_MIN = 40 * 1048576;
+export const _setAppendMin = n => { APPEND_MIN = n; }; // the check uses small books
+const sizeOf = d => (d ? d.byteLength ?? d.size ?? 0 : 0);
+async function bigSource(pages) {
+  let best = null;
+  for (const id of new Set(pages.filter(p => p.pdf).map(p => p.pdf.a))) {
+    const a = await db.get('assets', id);
+    const n = sizeOf(a && a.data);
+    if (n >= APPEND_MIN && (!best || n > sizeOf(best.data))) best = a;
+  }
+  return best;
+}
+async function appendBuild(L, doc, pages, progress, a) {
+  const { readPdf, startNumbers, writeUpdate } = await import('./pdfappend.js');
+  const data = a.data instanceof Blob ? await a.data.arrayBuffer() : a.data;
+  const src = readPdf(L, new Uint8Array(data));
+  const out = await L.PDFDocument.create();
+  const first = startNumbers(out, src);
+  const onBase = pg => !!pg.pdf && pg.pdf.a === a.id && pg.pdf.i < src.pages.length;
+  const pageOut = await fillPdf(L, out, pages, progress, null, onBase);
+  const list = pages.map(pg => ({ leaf: pageOut.get(pg.id), base: onBase(pg) ? pg.pdf.i : null, w: pg.w, h: pg.h, box: R.pdfBox(pg), bg: R.paperOf(pg).bg }));
+  const tail = await writeUpdate(out, src, list, first);
+  return new Blob([data, tail], { type: 'application/pdf' });
+}
+
+// Draws the notebook into `out`. onBase(pg): pages of the big book (appendBuild), for which only the writing is
+// drawn here (the book's page goes under it later). Returns page.id -> pdf-lib page.
+async function fillPdf(L, out, pages, progress, front, onBase) {
   const { PDFDocument, LineCapStyle, LineJoinStyle, BlendMode } = L;
   const hex = c => {
     const m = /^#?([0-9a-f]{6})$/i.exec(c || '');
@@ -41,16 +86,11 @@ export async function buildPdf(doc, pages, progress, front) {
     return L.rgb((n >> 16 & 255) / 255, (n >> 8 & 255) / 255, (n & 255) / 255);
   };
 
-  const out = await PDFDocument.create();
-  out.setTitle(doc.title);
-  out.setCreator('Inkleaf');
-  out.setProducer('Inkleaf');
-
   // Embed source PDF pages, one batch per source file so shared fonts and images are stored once.
   const embedded = new Map(); // page.id -> embedded page | 'blank'
   const bySrc = new Map();
   for (const pg of pages) {
-    if (!pg.pdf) continue;
+    if (!pg.pdf || (onBase && onBase(pg))) continue;
     if (!bySrc.has(pg.pdf.a)) bySrc.set(pg.pdf.a, []);
     bySrc.get(pg.pdf.a).push(pg);
   }
@@ -130,9 +170,12 @@ export async function buildPdf(doc, pages, progress, front) {
     const H = pg.h, pap = R.paperOf(pg);
     const page = out.addPage([pg.w, H]);
     pageOut.set(pg.id, page);
-    page.drawRectangle({ x: 0, y: 0, width: pg.w, height: H, color: hex(pap.bg) });
+    const base = !!(onBase && onBase(pg));
+    if (!base) page.drawRectangle({ x: 0, y: 0, width: pg.w, height: H, color: hex(pap.bg) });
 
-    if (pg.pdf) {
+    if (base) {
+      // the big book's own page goes under the writing (pdfappend.js)
+    } else if (pg.pdf) {
       const e = embedded.get(pg.id);
       const pb = R.pdfBox(pg), at = { x: pb.x, y: H - pb.y - pb.h, width: pb.w, height: pb.h }; // margins added or borders trimmed
       if (e && e !== 'blank') page.drawPage(e, at);
@@ -260,9 +303,7 @@ export async function buildPdf(doc, pages, progress, front) {
     const annot = out.context.obj({ Type: 'Annot', Subtype: 'Link', Rect: l.rect, Border: [0, 0, 0], Dest: [to.ref, 'Fit'] });
     l.sheet.node.addAnnot(out.context.register(annot));
   }
-
-  const bytes = await out.save();
-  return new Blob([bytes], { type: 'application/pdf' });
+  return pageOut;
 }
 
 // front: highlight cards to put first (see buildPdf); frontOnly: just those, without the notebook's pages.

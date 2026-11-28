@@ -635,6 +635,35 @@ if (!process.argv.includes('--quick') && (want('library') || want('writing') || 
         let k=0;for(let i=0;i<d.length;i+=4)if(d[i]<185&&d[i+1]<185&&d[i+2]<185)k++;cv.width=cv.height=0;return k;};
       return {date:await ink(1,36,28,200,18),head:await ink(1,28,58,150,12),round:await ink(1,28,290,40,14),plain:await ink(2,36,28,200,18)};`);
     ok('a journal page in the PDF keeps its date, headings and Pomodoro rounds', jw.date > 40 && jw.head > 20 && jw.round > 5 && jw.plain === 0, jw);
+    // Owner, 2026-11-28: a big book's annotated PDF crashed Chrome (Out of Memory). Big books now get the writing added
+    // to the end of their own file (pdfappend.js). It must look the same as the usual way, page for page.
+    const ap = await c.ev(`const E=await import('/js/export.js'),{openPdf}=await import('/js/pdfrender.js'),{db}=await import('/js/db.js'),U=await import('/js/util.js');
+      await U.loadScript('vendor/pdf-lib.min.js');const L=window.PDFLib;
+      const d=await L.PDFDocument.create(),font=await d.embedFont(L.StandardFonts.HelveticaBold);
+      for(let i=0;i<3;i++){const p=d.addPage([400,600]);p.drawRectangle({x:30,y:60,width:340,height:420,color:L.rgb(.85,.9,1)});
+        p.drawText('Book page '+(i+1),{x:50,y:500,size:30,font});p.drawLine({start:{x:0,y:0},end:{x:400,y:600},thickness:4});
+        if(i===1)p.setRotation(L.degrees(90));if(i===2)p.setCropBox(20,30,300,400);}
+      d.getPage(0).node.addAnnot(d.context.register(d.context.obj({Type:'Annot',Subtype:'Link',Rect:[50,490,250,530],Border:[0,0,0],Dest:[d.getPage(2).ref,'Fit']})));
+      const book=await d.save();const aid='apbook'+Date.now();await db.put('assets',{id:aid,mime:'application/pdf',name:'b.pdf',data:book.buffer.slice(0),modified:Date.now()});
+      const ink=(id,x)=>[{id,t:'s',tool:'pen',c:'#b23a48',w:3,p:[x,80,.5,x+60,140,.5,x+120,90,.5],z:1},{id:id+'h',t:'s',tool:'hl',c:'#f5d90a',w:14,p:[40,300,.5,200,300,.5],z:2}];
+      const pages=[{id:'p1',w:400,h:600,pdf:{a:aid,i:0},items:ink('a',60)},{id:'p2',w:595,h:842,template:'focus',day:'2026-11-28',paper:'white',items:ink('b',90)},
+        {id:'p3',w:600,h:400,pdf:{a:aid,i:1},items:ink('c',120)},{id:'p4',w:340,h:410,pm:{l:20,t:20,r:40,b:20},pdf:{a:aid,i:2},items:ink('d',30)},{id:'p5',w:400,h:600,pdf:{a:aid,i:0},items:[]}];
+      E._setAppendMin(1);const nb=await E.buildPdf({title:'Big'},pages);E._setAppendMin(Infinity);const ob=await E.buildPdf({title:'Big'},pages);E._setAppendMin(40*1048576);
+      const nbytes=new Uint8Array(await nb.arrayBuffer());let kept=nbytes.length>book.length;for(let i=0;kept&&i<book.length;i++)if(nbytes[i]!==book[i])kept=false;
+      const added=nbytes.length-book.length; // (pdf.js takes the bytes it is given)
+      const A=await openPdf(nbytes),B=await openPdf(new Uint8Array(await ob.arrayBuffer()));
+      const shot=async(P,n)=>{const p=await P.getPage(n),v=p.getViewport({scale:1}),cv=document.createElement('canvas');cv.width=Math.round(v.width);cv.height=Math.round(v.height);
+        await p.render({canvasContext:cv.getContext('2d'),viewport:v}).promise;const r={w:cv.width,h:cv.height,d:cv.getContext('2d').getImageData(0,0,cv.width,cv.height).data};cv.width=cv.height=0;return r;};
+      const diffs=[];for(let n=1;n<=Math.min(A.numPages,B.numPages);n++){const a=await shot(A,n),b=await shot(B,n);
+        if(a.w!==b.w||a.h!==b.h){diffs.push('size '+a.w+'x'+a.h+' vs '+b.w+'x'+b.h);continue;}
+        let bad=0,inked=0;for(let i=0;i<a.d.length;i+=4){const e=Math.abs(a.d[i]-b.d[i])+Math.abs(a.d[i+1]-b.d[i+1])+Math.abs(a.d[i+2]-b.d[i+2]);if(e>90)bad++;if(a.d[i]+a.d[i+1]+a.d[i+2]<600)inked++;}
+        diffs.push(+(100*bad/(a.w*a.h)).toFixed(2)+'% differ, '+(100*inked/(a.w*a.h)).toFixed(0)+'% inked');}
+      const links=(await (await A.getPage(1)).getAnnotations()).filter(x=>x.subtype==='Link').length;
+      return {kept,added,pages:[A.numPages,B.numPages],diffs,links};`);
+    ok('a big book gets its writing added to the end of its own file (the book\'s bytes untouched)', ap.kept && ap.added > 0 && ap.added < 200000, ap);
+    ok('...and it looks the same as the usual way on every page (turned, cut, with margins, repeated, journal page between)',
+      ap.pages[0] === 5 && ap.pages[1] === 5 && ap.diffs.length === 5 && ap.diffs.every(x => /^[0-9.]+% differ/.test(x) && parseFloat(x) < 1.5 && !/ 0% inked/.test(x)), ap);
+    ok('...and the book\'s own link still works on its page', ap.links === 1, ap);
     // Owner, 2026-11-28: big files go to Drive in pieces that Drive joins; after a break only the rest is sent.
     const pc = await c.ev(`const S=await import('/js/sync.js');S._setPiece(1048576,10);
       const N=5.5*1048576|0,src=new Uint8Array(N);for(let i=0;i<N;i++)src[i]=(i*7+3)&255;

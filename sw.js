@@ -1,11 +1,11 @@
 // Offline first: the app opens from the copy kept on this device, without waiting for the network (fast on weak
 // Wi-Fi, and it opens when the connection is on but answers nothing). A new version comes as a new sw.js (every
 // release raises CACHE): it fetches the whole new copy in the background, takes over, and the page offers a reload.
-const CACHE = 'inkleaf-v103';
+const CACHE = 'inkleaf-v104';
 const SHELL = [
   './', 'index.html', 'manifest.webmanifest', 'css/app.css',
   'js/app.js', 'js/util.js', 'js/icons.js', 'js/ui.js', 'js/db.js', 'js/render.js',
-  'js/pdfrender.js', 'js/pdftools.js', 'js/library.js', 'js/editor.js', 'js/export.js', 'js/sync.js', 'js/goodnotes.js', 'js/scan.js', 'js/pageshots.js', 'js/editor-consts.js',
+  'js/pdfrender.js', 'js/pdftools.js', 'js/library.js', 'js/editor.js', 'js/export.js', 'js/pdfappend.js', 'js/sync.js', 'js/goodnotes.js', 'js/scan.js', 'js/pageshots.js', 'js/editor-consts.js',
   'js/hwsearch.js', 'js/spellcheck.js', 'vendor/words/en.txt',
   'vendor/pdf.min.js', 'vendor/pdf.worker.min.js', 'vendor/pdf-lib.min.js',
   'icons/icon.svg', 'icons/icon-192.png', 'icons/icon-512.png', 'icons/apple-touch-icon.png'
