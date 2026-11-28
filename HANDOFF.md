@@ -1,9 +1,37 @@
 # Handoff
 
-**Written:** 2026-11-27 late evening, by Claude Code. **Next:** after 00:00 UTC (5:30 am India), when Cloudflare's rows are back: try annotated PDFs with the real Google Drive. Owner chose: "use separate chrome window, run drive test after 5:30" (allowed for this one test). Scheduled in the Claude Code session for 28 Nov 5:41 am (session-only: if that session was closed, run it by hand).
-**State:** **v102 LIVE** (pushed `f1fc83e`, after-publish ALL GOOD; sync server rebuilt by empty commit `917c7d2` after a dashboard secret edit deployed old code). Live meter works: 5,059,242 rows read (limit hit), 10,267 written, 8,935 requests. Check 187/187.
+**Written:** 2026-11-28 ~21:00 India, by Claude Code. **State:** **v103 LIVE** (`5fd8dd8`, check 192/192, after-publish ALL GOOD).
 
-## What the owner asked
+## v103 (2026-11-28), from the owner's real-Drive test (screenshots in Pictures\Screenshots, 20:08-20:09)
+- The owner tested annotated PDFs with the real Drive: they arrive. Found and fixed:
+  - **Journal/planner words missing in the PDF** (date, weather marks, DO FIRST / BRAIN DUMP / POMODORO headings, hours,
+    Round labels + circles): export.js drew only templateGeometry. Now render.js `drawPaperText` (split out of drawPaper)
+    is drawn as a clear PNG (3x) over the lines; `paperHasText(pg)` says which pages need it; same words = one image.
+    Affects normal PDF export too.
+  - **Stray "null" in Settings** (replaceChildren got a null child). Now filtered.
+  - **"1 notebook was too big for this device" on the LAPTOP** (owner: "1 pdf is not syncing even in laptop"). The crash
+    guard counted closing/reloading Inkleaf mid-PDF as a crash. Now `pagehide` clears inkleaf.annTrying (a real crash never
+    says goodbye). Settings names the left-out notebook(s) with a **Try again** button (`annRetry`). The old marks stay on
+    the laptop until Try again is tapped. **Which notebook it is: not known yet** (owner should look in Settings). If it is a
+    very big book (SnT?), the real cause may be memory while MAKING the PDF (pdf-lib loads the whole source), not the
+    upload: then a lighter build is the next job (e.g. draw ink onto the loaded source PDF instead of embedPages).
+  - Page count: Drive copy had 31 pages, app 32; the Drive screenshot was taken before "Update now", probably just older.
+    Check it on the next look.
+- Owner asked "upload in small packets ... merge in google drive": **done**. `driveResumable` (sync.js): files over
+  5 MB go up in 8 MB pieces; after a break Drive is asked how much arrived (Range) and only the rest is sent; up to 6 breaks,
+  waits 1-30 s. Used by big library PDFs (>= 500 MB, before: ONE multipart request) and annotated PDFs.
+  Test switches `_setPiece(n, wait)`, `_driveUpload`. Not yet tried against the real Drive with a file over 5 MB.
+- Owner asked: Settings shows **"In Google Drive: X of Y notebooks up to date"** (kept in localStorage inkleaf.annCount).
+- Check: the Apple Pencil hold-menu check failed once (timing), passed alone and in the next full run.
+
+## Next step
+1. Owner: open Settings on the laptop, read which notebook is "Left out", tap Try again (keep Inkleaf open until it is made).
+   If it stops again: it is memory while making that book -> build a lighter way for big PDFs.
+2. Check the journal PDF in Drive now has its headings, and the Drive count.
+3. Later (agreed): Drive as backup sync route when Cloudflare is out; live-sharing on/off switch.
+
+## Earlier (2026-11-27)
+### What the owner asked
 1. (to agy) check every line, remove code of removed features, find conflicting commands -> v101 (`6b85bb9`).
 2. (to Claude Code) "check handoff", "yes check it": review agy's v101, run the check, push.
 3. "bring it back pencil hold".
