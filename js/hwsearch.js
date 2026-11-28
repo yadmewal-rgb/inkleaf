@@ -3,6 +3,7 @@
 // kept per page (meta "hw:<pageId>") so typed search and spell check can point back at the exact strokes.
 import { db } from './db.js';
 import { bus } from './util.js';
+import { countedFetch } from './meters.js';
 
 const VER = 2;
 const KEY = 'inkleaf.hw';
@@ -272,7 +273,7 @@ export function batchedPicture(runs) {
 }
 
 async function callDirectGemini(b64, N, prompt, model, directKey) {
-  return await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${directKey}`, {
+  return await countedFetch(fetch, `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${directKey}`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({

@@ -2,6 +2,7 @@
 // Every position returned here is in page units with the origin at the top left, like the rest of the app.
 import { pdfDoc } from './pdfrender.js';
 import { db } from './db.js';
+import { countedFetch } from './meters.js';
 import { call } from './sync.js';
 import { getActiveHwModel } from './hwsearch.js';
 
@@ -224,7 +225,7 @@ export async function generatePdfOutline(assetId) {
       if (directKey) {
         try {
           const prompt = `Here is text from the Table of Contents of a ${total}-page PDF:\n\n${allTocRawText.slice(0, 30000)}\n\nExtract and return a clean Table of Contents JSON array of objects: [{"title": string, "page": number (1-based target page), "depth": 0 or 1}]. Return ONLY valid JSON without code blocks or commentary.`;
-          const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${directKey}`, {
+          const res = await countedFetch(fetch, `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${directKey}`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({

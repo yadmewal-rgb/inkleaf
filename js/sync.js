@@ -13,10 +13,11 @@ import { db, assetIdsOf, loadPages } from './db.js';
 import { h, uid, bus, loadScript, downloadBlob, bufToB64, b64ToBuf, editedAt } from './util.js';
 import { modal, toast, confirmBox, busy } from './ui.js';
 import { I } from './icons.js';
+import { countedFetch, countSocket, driveTrack, trackDownload, dataNow, speedNow, memoryNow, driveNow, resetData, badgeOn, setBadgeOn, fmtBytes, fmtSpeed, fmtAgo, fmtLeft } from './meters.js';
 import { hwOn, setHwOn, status as hwStatus, setCloudOcr, setDirectOcrReport, getHwUsage, setHwLimit, setHwModel, getHwModelConfig, getActiveHwModel, formatModelName, updateHwUsageFromServer } from './hwsearch.js';
 export { updateHwUsageFromServer };
 
-export const APP_VER = 'v104';
+export const APP_VER = 'v105';
 const SERVER = 'https://inkleaf-sync.yadmewal.workers.dev';
 // drive.appdata: Inkleaf's hidden app folder (files it syncs); drive.file: only files Inkleaf itself creates, used
 // for the visible "Inkleaf" folder holding copies of the PDFs under their real names.
@@ -27,10 +28,13 @@ const PART = 1_400_000; // pieces of large files (the service keeps at most 1.5 
 const PUSH_MS = 250;    // delay between a local save and its upload
 const POLL_LIVE = 60000, POLL_NOLIVE = 6000, POLL_IDLE = 30000; // checks besides the live connection
 
-let http = (url, opts) => fetch(url, opts);
-export const _setHttp = fn => { http = fn; };           // tests swap in a fake service
-let makeSocket = url => new WebSocket(url);
-export const _setSocket = fn => { makeSocket = fn; };
+let rawHttp = (url, opts) => fetch(url, opts);
+export const _setHttp = fn => { rawHttp = fn; };        // tests swap in a fake service
+const http = (url, opts) => countedFetch(rawHttp, url, opts); // every byte Inkleaf moves is counted (meters.js)
+export const _http = (url, opts) => http(url, opts); // for the check
+let rawSocket = url => new WebSocket(url);
+export const _setSocket = fn => { rawSocket = fn; };
+const makeSocket = url => countSocket(rawSocket(url));
 
 // Built-in Google OAuth client, so devices do not need one pasted in. A client ID is public by design.
 const CLIENT_ID = '473809010149-3hhf0nu5aisisgvu3gnaee49lfgdlga2.apps.googleusercontent.com';
@@ -278,7 +282,7 @@ export const _setPiece = (n, wait) => { PIECE = n; if (wait != null) PIECE_WAIT 
 export const _driveUpload = (...a) => driveUpload(...a); // for the check
 const ONE_GO = 5 * 1048576; // Drive's limit for a file sent in one request
 // Returns Drive's answer ({id}), or null when the upload address is not readable here (then: one request).
-async function driveResumable(base, method, meta, blob) {
+async function driveResumable(base, method, meta, blob, track) {
   const size = blob.size;
   const start = await drive(base + '?uploadType=resumable&fields=id', {
     method, body: JSON.stringify(meta),
@@ -292,8 +296,8 @@ async function driveResumable(base, method, meta, blob) {
     const end = Math.min(sent + PIECE, size);
     let r = null;
     try { r = await http(at, { method: 'PUT', headers: { 'Content-Range': `bytes ${sent}-${end - 1}/${size}` }, body: blob.slice(sent, end) }); } catch {}
-    if (r && (r.status === 200 || r.status === 201)) return r.json();
-    if (r && r.status === 308) { const a = arrived(r); sent = a == null ? end : a; continue; } // piece taken
+    if (r && (r.status === 200 || r.status === 201)) { if (track) track.step(size); return r.json(); }
+    if (r && r.status === 308) { const a = arrived(r); sent = a == null ? end : a; if (track) track.step(sent); continue; } // piece taken
     if (r && r.status >= 400 && r.status < 500 && r.status !== 408 && r.status !== 429) {
       const e = new Error(`Google Drive error ${r.status}`); e.status = r.status; throw e; // e.g. the upload address ran out
     }
@@ -302,8 +306,8 @@ async function driveResumable(base, method, meta, blob) {
     await new Promise(res => setTimeout(res, Math.min(30000, PIECE_WAIT * 2 ** (breaks - 1))));
     try {
       const q = await http(at, { method: 'PUT', headers: { 'Content-Range': `bytes */${size}` } });
-      if (q.status === 200 || q.status === 201) return q.json();
-      if (q.status === 308) sent = arrived(q) ?? 0;
+      if (q.status === 200 || q.status === 201) { if (track) track.step(size); return q.json(); }
+      if (q.status === 308) { sent = arrived(q) ?? 0; if (track) track.step(sent); }
     } catch {}
   }
 }
@@ -311,10 +315,16 @@ async function driveResumable(base, method, meta, blob) {
 async function driveUpload(id, data, mime, name, fileName, metaOver) {
   const metaObj = metaOver || { name: fileName || 'a_' + id, parents: ['appDataFolder'], mimeType: mime, description: name || '' };
   const blob = data instanceof Blob ? data : new Blob([data], { type: mime });
+  const backup = /^zbackup-/.test(fileName || '');
+  const track = driveTrack(backup ? 'Backup of your notes' : (metaOver && metaOver.name) || name || fileName || 'A file', blob.size, backup ? 'backup' : 'file');
+  try { return await driveUploadNow(metaObj, blob, data, mime, track); } finally { track.end(); }
+}
+async function driveUploadNow(metaObj, blob, data, mime, track) {
   if (blob.size > ONE_GO) {
-    const j = await driveResumable('/upload/drive/v3/files', 'POST', metaObj, blob);
+    const j = await driveResumable('/upload/drive/v3/files', 'POST', metaObj, blob, track);
     if (j) return j;
   }
+  track.whole = true; // one request: nothing to show until it is done
   const boundary = 'inkleaf' + Math.random().toString(36).slice(2);
   const meta = JSON.stringify(metaObj);
   const body = new Blob([
@@ -369,7 +379,7 @@ async function visibleCopy(a) {
 // an iPad), the mark left in localStorage (inkleaf.annTrying) shows it after the reload, and this device then leaves
 // that notebook (in that state) to another device instead of crashing again and again.
 const ANN_FOLDER = 'Annotated PDFs', ANN_EVERY = 20 * 60e3;
-const annState = { running: false, done: 0, total: 0, current: '', made: 0, waiting: 0, crashed: 0, crashedNames: [], err: null, last: 0, inDrive: null, all: null };
+const annState = { running: false, step: '', pg: 0, pgs: 0, done: 0, total: 0, current: '', made: 0, waiting: 0, crashed: 0, crashedNames: [], err: null, last: 0, inDrive: null, all: null };
 // How many notebooks have an up-to-date copy in Drive, of how many (kept, so Settings shows it before the first pass).
 try { Object.assign(annState, JSON.parse(localStorage.getItem('inkleaf.annCount') || '{}')); } catch {}
 const annCrashed = () => { try { return JSON.parse(localStorage.getItem('inkleaf.annCrashed') || '{}'); } catch { return {}; } };
@@ -428,6 +438,10 @@ async function annList(folder) {
 
 // Upload: small files in one request, bigger ones in pieces (driveResumable; Drive's limit for one request is 5 MB).
 async function annUpload(fileId, meta, blob) {
+  const track = driveTrack(meta.name, blob.size, 'annotated');
+  try { return await annUploadNow(fileId, meta, blob, track); } finally { track.end(); }
+}
+async function annUploadNow(fileId, meta, blob, track) {
   const base = fileId ? `/upload/drive/v3/files/${fileId}` : '/upload/drive/v3/files', method = fileId ? 'PATCH' : 'POST';
   const multipart = async () => {
     const boundary = 'inkleaf' + Math.random().toString(36).slice(2);
@@ -435,8 +449,8 @@ async function annUpload(fileId, meta, blob) {
       `--${boundary}\r\nContent-Type: application/pdf\r\n\r\n`, blob, `\r\n--${boundary}--`]);
     return (await drive(base + '?uploadType=multipart&fields=id', { method, headers: { 'Content-Type': 'multipart/related; boundary=' + boundary }, body })).json();
   };
-  if (blob.size <= ONE_GO) return multipart();
-  return (await driveResumable(base, method, meta, blob)) || multipart(); // address not readable here: one request
+  if (blob.size <= ONE_GO) { track.whole = true; return multipart(); }
+  return (await driveResumable(base, method, meta, blob, track)) || ((track.whole = true), multipart()); // address not readable here: one request
 }
 
 // A notebook's name in Drive: its folders, then its title ("Polity - Laxmikanth.pdf"), so Drive sorts them by folder.
@@ -513,14 +527,22 @@ async function annWork(opts) {
       if (cr && cr.e === t.stamp && cr.n >= 2) { annState.crashed++; annState.crashedNames.push(t.doc.title || 'Notebook'); annState.done++; continue; }
       try { localStorage.setItem('inkleaf.annTrying', JSON.stringify({ id: t.doc.id, e: t.stamp })); } catch {}
       try {
-        const blob = await buildPdf(t.doc, pages);
+        Object.assign(annState, { step: 'making', pg: 0, pgs: pages.length });
+        let shown = 0;
+        const blob = await buildPdf(t.doc, pages, (n, of, what) => {
+          if (what) return; // highlight cards: not in these PDFs
+          Object.assign(annState, { pg: n, pgs: of });
+          if (performance.now() - shown > 250 || n === of) { shown = performance.now(); bus.emit('annotated', annotatedStatus()); }
+        });
+        annState.step = 'sending';
+        bus.emit('annotated', annotatedStatus());
         const meta = { name: t.name, mimeType: 'application/pdf', appProperties: { inkleafDoc: t.doc.id, e: String(t.stamp) } };
         await annUpload(t.copy && t.copy.id, t.copy ? meta : { ...meta, parents: [folder] }, blob);
         annState.made++; annState.inDrive++;
       } catch (e) {
         if (e.status === 401 || e.status === 403 || !navigator.onLine) throw e; // Drive itself is the problem: stop
         annState.err = { t: Date.now(), msg: `"${t.doc.title || 'Notebook'}" could not be made: ${e.message || e}` }; // the others go on
-      } finally { try { localStorage.removeItem('inkleaf.annTrying'); } catch {} }
+      } finally { annState.step = ''; try { localStorage.removeItem('inkleaf.annTrying'); } catch {} }
       annState.done++;
       bus.emit('annotated', annotatedStatus());
       await new Promise(r => setTimeout(r, 300)); // let the app breathe between notebooks
@@ -995,7 +1017,7 @@ async function pullAsset(id, item) {
     try {
       const f = await driveFind(id);
       if (f) {
-        const data = await (await drive(`/drive/v3/files/${f.id}?alt=media`)).arrayBuffer();
+        const data = await trackDownload(await drive(`/drive/v3/files/${f.id}?alt=media`), f.description || 'A file').arrayBuffer();
         rec = { id, mime: f.mimeType || 'application/octet-stream', name: f.description || '', data, modified: Date.now() };
         st[name] = { drive: 1 };
       }
@@ -2681,6 +2703,52 @@ export async function openSettings() {
   if (session && !cfg.off) readMeter().catch(() => {});
   const offCfUsage = bus.on('meter', () => drawCfUsage());
 
+  // A bar with its words: pct null = under way, how far not known (sent in one go).
+  const progressRow = (pct, text) => [h('div', { class: 'bk-sub', style: 'margin-top: 6px;' }, text),
+    h('div', { class: 'usage-bar', style: 'margin: 4px 0;' }, h('div', { class: 'usage-fill' + (pct == null ? ' busy' : ''), style: { width: (pct == null ? 100 : Math.max(1, Math.min(100, pct))) + '%' } }))];
+  const driveLine = t => {
+    const what = t.dir === 'up' ? 'Sending' : 'Getting';
+    if (t.whole || t.pct == null) return progressRow(null, `${what} "${t.name}"${t.size ? ' (' + fmtBytes(t.size) + (t.whole ? ', in one go' : '') + ')' : ''}…`);
+    return progressRow(t.pct, [`${what} "${t.name}": ${fmtBytes(t.done)} of ${fmtBytes(t.size)} (${Math.floor(t.pct)}%)`,
+      t.bps ? fmtSpeed(t.bps) : '', fmtLeft(t.size - t.done, t.bps)].filter(Boolean).join(' · '));
+  };
+
+  // This device's own meters (meters.js): data Inkleaf used, speed, memory, Google Drive transfers, on-screen meter.
+  const deviceBox = h('div', { class: 'field device-meters', style: 'margin: 8px 0 12px; padding: 10px 12px; background: var(--surface-2); border-radius: 8px;' });
+  const drawDevice = () => {
+    const d = dataNow(), sp = speedNow(), mem = memoryNow(), dr = driveNow().filter(t => t.kind !== 'annotated');
+    const row = (label, value) => h('div', { class: 'row', style: 'justify-content: space-between; align-items: baseline; margin-top: 4px; gap: 10px;' },
+      h('span', { style: 'font-size: 12.5px;' }, label), h('span', { class: 'bk-sub meter-fig', style: 'text-align: right;' }, value));
+    const head = t => h('b', { style: 'font-size: 13px; display: block; margin-top: 10px;' }, t);
+    const note = t => h('div', { class: 'bk-sub', style: 'font-size: 11.5px; color: var(--muted); margin-top: 4px;' }, t);
+    const ud = x => `↑ ${fmtBytes(x.up)} sent · ↓ ${fmtBytes(x.down)} received`;
+    const speedOf = x => x ? `${fmtSpeed(x.bps)} (${fmtAgo(x.at)}, on ${fmtBytes(x.bytes)})` : 'not measured yet';
+    deviceBox.replaceChildren(...[
+      h('b', { style: 'font-size: 13px; display: block;' }, 'Data Inkleaf used on this device'),
+      row('Today', ud(d.today)), row('This month', ud(d.month)), row('Since Inkleaf opened', ud(d.session)),
+      note('Counted by Inkleaf itself: sync, live sharing, Google Drive and AI. Not counted: downloading a new version of Inkleaf, and what other apps use.'),
+      head("Speed (measured on Inkleaf's own transfers)"),
+      row('Sending', speedOf(sp.up)), row('Receiving', speedOf(sp.down)),
+      sp.guess ? row("Chrome's own estimate", 'about ' + fmtSpeed(sp.guess) + ' receiving') : null,
+      note('Measured on transfers of 128 KB or more, so no data is used just for measuring.'),
+      head('Memory'),
+      row('Drawn pages', `${fmtBytes(mem.pages)} (${mem.canvases} canvas${mem.canvases === 1 ? '' : 'es'})`),
+      row('JavaScript', mem.js ? fmtBytes(mem.js) + (mem.jsLimit ? ' of ' + fmtBytes(mem.jsLimit) + ' allowed' : '') : 'not given by this browser'),
+      row('This device', mem.device ? `about ${mem.device} GB RAM (Chrome's rounded figure)` : 'not given by this browser'),
+      note(mem.js ? "Chrome rounds its JavaScript figure. Drawn pages are counted by Inkleaf itself; they are what fills a device's memory."
+        : "This browser gives web apps no memory figure (Chrome on iPad never does). Drawn pages are counted by Inkleaf itself; they are what fills an iPad's memory."),
+      dr.length ? head('Google Drive now') : null,
+      ...dr.flatMap(driveLine),
+      h('div', { class: 'row', style: 'align-items: center; gap: 8px; margin-top: 10px; flex-wrap: wrap;' },
+        h('label', { class: 'chip check' + (badgeOn() ? ' on' : ''), style: 'cursor: pointer;' },
+          h('input', { type: 'checkbox', checked: badgeOn(), hidden: true, onchange: e => { setBadgeOn(e.target.checked); drawDevice(); } }),
+          'Small meter on screen'),
+        h('button', { class: 'btn sm', type: 'button', onclick: () => { resetData(); drawDevice(); } }, 'Reset data counts'))
+    ].filter(Boolean));
+  };
+  drawDevice();
+  const deviceT = setInterval(() => { if (!deviceBox.isConnected) { clearInterval(deviceT); return; } drawDevice(); }, 2000);
+
   // Annotated PDFs in Google Drive (folder Inkleaf > Annotated PDFs): on/off for this device, progress, Update now.
   const annBox = h('div', { class: 'field annotated', style: 'margin: 8px 0 12px; padding: 10px 12px; background: var(--surface-2); border-radius: 8px;' });
   const drawAnn = () => {
@@ -2695,6 +2763,11 @@ export async function openSettings() {
     const notes = [];
     if (a.all != null && session && !cfg.off && a.linked) notes.push(a.all && a.inDrive >= a.all ? `In Google Drive: all ${a.all} notebook${a.all === 1 ? '' : 's'}, up to date.` : `In Google Drive: ${a.inDrive} of ${a.all} notebook${a.all === 1 ? '' : 's'} up to date.`);
     if (a.waiting) notes.push(`${a.waiting} notebook${a.waiting === 1 ? '' : 's'} wait${a.waiting === 1 ? 's' : ''} for ${a.waiting === 1 ? 'its' : 'their'} PDF to arrive on this device.`);
+    // While a notebook is made: a bar for its pages, then one for sending it to Drive.
+    const sendingNow = driveNow().find(t => t.kind === 'annotated');
+    const bars = !a.running ? []
+      : a.step === 'making' && a.pgs ? progressRow(a.pg / a.pgs * 100, `Making the PDF: ${a.pg} of ${a.pgs} pages`)
+        : sendingNow ? driveLine({ ...sendingNow, name: a.current }) : [];
     const crashedNote = a.crashed ? h('div', { class: 'bk-sub ann-crashed' },
       `Left out on this device: ${a.crashedNames.map(n => '"' + n + '"').join(', ')} (Inkleaf stopped twice while making ${a.crashed === 1 ? 'it' : 'them'}). `,
       h('button', { class: 'btn sm', type: 'button', disabled: a.running, onclick: () => { annRetry(); } }, 'Try again')) : null;
@@ -2706,6 +2779,7 @@ export async function openSettings() {
         a.on && session && !cfg.off && a.linked ? h('button', { class: 'btn sm', type: 'button', disabled: a.running, onclick: () => { annotatedPass({ now: true }); } }, a.running ? 'Working…' : 'Update now') : null),
       h('p', { class: 'modal-text small', style: 'margin: 4px 0;' }, 'Every notebook with your writing on it, as a PDF in your Drive folder Inkleaf > Annotated PDFs, to open or share without Inkleaf.'),
       h('div', { class: 'bk-sub ann-line' }, line),
+      ...bars,
       ...notes.map(n => h('div', { class: 'bk-sub' }, n)),
       crashedNote,
       a.err ? h('div', { class: 'bk-sub warn' }, 'Last problem: ' + a.err.msg) : null
@@ -2713,6 +2787,7 @@ export async function openSettings() {
   };
   drawAnn();
   const offAnn = bus.on('annotated', () => drawAnn());
+  const offMeters = bus.on('meters', () => { if (annotatedStatus().running) drawAnn(); drawDevice(); });
 
   // Owner-only user manager (add/remove allowed emails without opening Cloudflare)
   const allowedUsersBox = h('div', { class: 'allowed-users', hidden: true });
@@ -2943,7 +3018,7 @@ export async function openSettings() {
   const m = modal({
     title: 'Settings (' + APP_VER + ')',
     wide: true,
-    onClose: () => { offUsage(); offHwStatus(); offModelChanged(); offCfUsage(); offAnn(); },
+    onClose: () => { offUsage(); offHwStatus(); offModelChanged(); offCfUsage(); offAnn(); offMeters(); clearInterval(deviceT); },
     body: h('div', null,
       h('div', {
         class: 'row',
@@ -2987,6 +3062,8 @@ export async function openSettings() {
           onclick: async () => { if (await doSignOut()) m.close(); }
         }, 'Sign out') : null),
       h('p', { class: 'modal-text small' }, last ? 'Last synced ' + new Date(last).toLocaleString() : 'Not synced yet on this device.'),
+      h('h3', null, 'This device: data, speed, memory'),
+      deviceBox,
       h('h3', null, 'Backup file'),
       h('p', { class: 'modal-text' }, 'Save every notebook into one file, or restore one. Useful for moving notes without sync.'),
       h('div', { class: 'row' },

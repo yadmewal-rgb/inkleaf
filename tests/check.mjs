@@ -578,7 +578,8 @@ if (!process.argv.includes('--quick') && (want('library') || want('writing') || 
       p.items=[{id:'s1',t:'s',tool:'pen',c:'#1d4e89',w:2,p:[60,80,.5,120,140,.5,200,110,.5],z:1}];p.modified=Date.now();await D.db.put('pages',p);
       const mine=()=>[...files.values()].filter(f=>f.appProperties&&f.appProperties.inkleafDoc===d.id&&!f.trashed);
       const mineLog=()=>log.filter(l=>/Crimes/.test(l));
-      await S.annotatedPass({now:true});
+      const steps=[];let sendBar='';const offSt=U.bus.on('annotated',a=>{if(a.step)steps.push(a.step+':'+a.pg+'/'+a.pgs);});
+      await S.annotatedPass({now:true});offSt();
       const f1=mine()[0]||{},folder=files.get((f1.parents||[])[0])||{},top=files.get((folder.parents||[])[0])||{};
       const first={n:mine().length,name:f1.name,pdf:f1.pdf,folder:folder.name,top:top.name};
       await S.annotatedPass({now:true});const again=mineLog().length;
@@ -612,7 +613,8 @@ if (!process.argv.includes('--quick') && (want('library') || want('writing') || 
       localStorage.setItem('inkleaf.annotated','off'); // the rest of the check has no Drive
       S._setHttp(async()=>new Response('{"items":[]}',{status:200,headers:{'Content-Type':'application/json'}}));
       const count=JSON.parse(localStorage.getItem('inkleaf.annCount')||'{}');
-      return {first,again,changed,renamed,whileOpen,binned,crash,box,count};`);
+      return {first,again,changed,renamed,whileOpen,binned,crash,box,count,steps};`);
+    ok('while a notebook is made, its pages are counted, then it is sent', an.steps.includes('making:1/1') && an.steps[an.steps.length - 1] === 'sending:1/1', an.steps);
     ok('each notebook arrives in Drive as a PDF with its writing, in Inkleaf > Annotated PDFs, named after its folder',
       an.first.n === 1 && an.first.pdf && an.first.name === 'Law - Crimes.pdf' && an.first.folder === 'Annotated PDFs' && an.first.top === 'Inkleaf', an.first);
     ok('nothing is sent again while the notebook is unchanged', an.again === 1, an);
@@ -665,7 +667,7 @@ if (!process.argv.includes('--quick') && (want('library') || want('writing') || 
       ap.pages[0] === 5 && ap.pages[1] === 5 && ap.diffs.length === 5 && ap.diffs.every(x => /^[0-9.]+% differ/.test(x) && parseFloat(x) < 1.5 && !/ 0% inked/.test(x)), ap);
     ok('...and the book\'s own link still works on its page', ap.links === 1, ap);
     // Owner, 2026-11-28: big files go to Drive in pieces that Drive joins; after a break only the rest is sent.
-    const pc = await c.ev(`const S=await import('/js/sync.js');S._setPiece(1048576,10);
+    const pc = await c.ev(`const S=await import('/js/sync.js'),M=await import('/js/meters.js');S._setPiece(1048576,10);const steps=[];
       const N=5.5*1048576|0,src=new Uint8Array(N);for(let i=0;i<N;i++)src[i]=(i*7+3)&255;
       const got=new Uint8Array(N);let have=0,puts=0,dropped=false,busy=false,asked=0,started=null;
       const R=(s,h,b)=>new Response(b??null,{status:s,headers:h||{}});
@@ -678,13 +680,40 @@ if (!process.argv.includes('--quick') && (want('library') || want('writing') || 
           if(a!==have)return R(308,{Range:'bytes=0-'+(have-1)});
           if(a===2097152&&!dropped){dropped=true;got.set(buf.subarray(0,300000),a);have=a+300000;throw new TypeError('network gone');}
           if(dropped&&!busy){busy=true;return R(503);}
-          got.set(buf,a);have=b+1;
+          got.set(buf,a);have=b+1;steps.push((M.driveNow()[0]||{}).done);
           return have===N?R(200,{'Content-Type':'application/json'},'{"id":"big1"}'):R(308,{Range:'bytes=0-'+b});}
         return R(200,{'Content-Type':'application/json'},'{"files":[]}');});
       const j=await S._driveUpload('big',new Blob([src]),'application/pdf','Big book');
       let same=have===N;for(let i=0;same&&i<N;i++)if(got[i]!==src[i])same=false;
       S._setPiece(8*1048576,1000);S._setHttp(async()=>new Response('{"items":[]}',{status:200,headers:{'Content-Type':'application/json'}}));
-      return {id:j&&j.id,same,puts,asked,dropped,busy,name:started&&started.name};`);
+      const after=M.driveNow().length;
+      return {id:j&&j.id,same,puts,asked,dropped,busy,name:started&&started.name,steps,after};`);
+    ok('...and the progress bar follows it piece by piece, then goes away', pc.steps.length >= 4 && pc.steps.every((x, i) => !i || x >= pc.steps[i - 1]) && Math.max(...pc.steps) >= 5 * 1048576 && pc.after === 0, pc);
+    // Owner, 2026-11-28: "its own data meter, speed meter, ram usage ... progress bar". Inkleaf counts its own bytes.
+    const mtr = await c.ev(`const S=await import('/js/sync.js'),M=await import('/js/meters.js');M.resetData();
+      const big=new Uint8Array(400*1024),back=new Uint8Array(300*1024);
+      S._setHttp(async(u,o={})=>{await new Promise(r=>setTimeout(r,60));return new Response(o.body?'{"items":[]}':back,{status:200,headers:{'Content-Type':'application/octet-stream'}});});
+      const r1=await S._http('https://x.test/blob/x',{method:'PUT',body:big}).catch(e=>e);
+      const r2=await (await S._http('https://x.test/blob/y')).arrayBuffer().catch(()=>null);
+      const sock={sent:[],l:{},send(d){this.sent.push(d);},addEventListener(t,f){this.l[t]=f;}};
+      M.countSocket(sock).send('{"ping":1}');sock.l.message({data:'{"hello":1}'});
+      const d=M.dataNow(),sp=M.speedNow();
+      const stored=JSON.parse(localStorage.getItem('inkleaf.net')||'{}');dispatchEvent(new PageTransitionEvent('pagehide'));
+      const kept=JSON.parse(localStorage.getItem('inkleaf.net')||'{}');
+      await S.openSettings();await new Promise(r=>setTimeout(r,300));
+      const box=document.querySelector('dialog .device-meters')?.textContent||'';
+      M.setBadgeOn(true);const b=document.querySelector('.meter-badge'),badge={text:b?.textContent||'',pe:b?getComputedStyle(b).pointerEvents:''};
+      M.setBadgeOn(false);badge.gone=!document.querySelector('.meter-badge');
+      document.querySelector('dialog .modal-head .ic')?.click();
+      S._setHttp(async()=>new Response('{"items":[]}',{status:200,headers:{'Content-Type':'application/json'}}));
+      return {up:d.session.up,down:d.session.down,today:d.today,spUp:!!sp.up,spDown:!!sp.down,got:r2&&r2.byteLength,kept:kept.up,stored:stored.up||0,box,badge,r1:String(r1&&r1.message||'')};`);
+    ok('the data meter counts what Inkleaf sends and receives (requests and the live connection)',
+      mtr.up >= 400 * 1024 + 10 && mtr.up < 400 * 1024 + 2000 && mtr.down >= 300 * 1024 + 11 && mtr.down < 300 * 1024 + 2000 && mtr.got === 300 * 1024 && mtr.today.up === mtr.up, mtr);
+    ok("...and keeps today's count on the device when Inkleaf closes", mtr.kept >= 400 * 1024, mtr);
+    ok('the speed meter measures real transfers (no speed test)', mtr.spUp && mtr.spDown, mtr);
+    ok('Settings shows data, speed and memory for this device (no "null", no "NaN")',
+      /Data Inkleaf used on this device/.test(mtr.box) && /Today↑ 4\d\d KB sent/.test(mtr.box) && /Drawn pages/.test(mtr.box) && /Sending\d/.test(mtr.box) && !/null|NaN|undefined/.test(mtr.box), mtr.box);
+    ok('the small on-screen meter shows the figures and lets taps and the pen through', /^Data today ↑/.test(mtr.badge.text) && /Pages /.test(mtr.badge.text) && mtr.badge.pe === 'none' && mtr.badge.gone, mtr.badge);
     ok('a big file goes to Drive in pieces, and after a break only the rest is sent', pc.id === 'big1' && pc.same && pc.dropped && pc.busy && pc.asked === 2 && pc.puts <= 9 && pc.name === 'a_big', pc);
     // v101 bug: each device pushed its own model choice, so "Auto" (or any choice) made on one device was undone by the next.
     const ms = await c.ev(`const S=await import('/js/sync.js');const H=await import('/js/hwsearch.js');const puts=[];

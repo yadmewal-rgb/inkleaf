@@ -4483,6 +4483,36 @@ body.split-dragging canvas {
   background: #f08c00;
 }
 
+/* Under way, how far not known (a file sent to Drive in one go): a stripe moving along the bar. */
+.usage-fill.busy {
+  background: linear-gradient(90deg, transparent 0%, var(--accent) 35%, var(--accent) 65%, transparent 100%) 0 0 / 40% 100% no-repeat, color-mix(in srgb, var(--accent) 25%, transparent);
+  animation: usage-busy 1.4s linear infinite;
+}
+
+@keyframes usage-busy {
+  from { background-position: -40% 0, 0 0; }
+  to { background-position: 140% 0, 0 0; }
+}
+
+/* The small on-screen meter (Settings > This device): never in the way, taps and the pen go through it. */
+.meter-badge {
+  position: fixed;
+  right: max(26px, env(safe-area-inset-right)); /* clear of the 20 px page scroll bar */
+  bottom: max(6px, env(safe-area-inset-bottom));
+  z-index: 2147483000;
+  pointer-events: none;
+  max-width: calc(100vw - 40px);
+  padding: 3px 8px;
+  border-radius: 6px;
+  background: rgba(20, 20, 24, 0.72);
+  color: #f1f1f1;
+  font: 11px/1.35 system-ui, sans-serif;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
 /* Scroll bar along the edge of the pages (auto-hides when writing notes). */
 .overlay>.vscroll {
   right: 0;
