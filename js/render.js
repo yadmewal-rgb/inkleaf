@@ -176,6 +176,16 @@ export function drawPaper(ctx, pg, bold = 1) {
     for (const [x, y] of g.dots) { ctx.moveTo(x + r, y); ctx.arc(x, y, r, 0, 6.2832); }
     ctx.fill();
   }
+  drawPaperText(ctx, pg, bold);
+}
+
+// Does the page's paper carry words (journal date, planner headings)? export.js draws those as a picture.
+export const paperHasText = pg => !pg.pdf && !pg.bg && pg.w >= 300 &&
+  !!(pg.day || pg.template === 'planner' || pg.template === 'focus' || pg.template === 'braindump');
+
+// The words and small marks of a template (journal date line, headings, hours, Pomodoro rounds) on a clear canvas.
+export function drawPaperText(ctx, pg, bold = 1) {
+  const pap = paperOf(pg);
   if (pg.day && pg.w >= 300) {
     ctx.save();
     const dObj = new Date(pg.day + 'T12:00:00');

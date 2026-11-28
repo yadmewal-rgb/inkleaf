@@ -100,7 +100,7 @@ export async function buildPdf(doc, pages, progress, front) {
     return im;
   }
 
-  const links = [], pageOut = new Map();
+  const links = [], pageOut = new Map(), paperTextCache = new Map();
   if (front && front.cards.length) {
     const bold = await out.embedFont(L.StandardFonts.HelveticaBold), font = await out.embedFont(L.StandardFonts.Helvetica);
     const W = 595, H = 842, M = 36, grey = L.rgb(0.42, 0.44, 0.48), line = L.rgb(0.82, 0.84, 0.87);
@@ -163,6 +163,26 @@ export async function buildPdf(doc, pages, progress, front) {
         page.drawLine({ start: { x: x1, y: H - y1 }, end: { x: x2, y: H - y2 }, thickness: 0.8, color: hex(pap.accent) });
       }
       for (const [x, y] of g.dots) page.drawCircle({ x, y: H - y, size: 0.9, color: col });
+      // The template's words (journal date, headings, Pomodoro rounds) go in as a clear picture over the lines;
+      // pages with the same words share one picture.
+      if (R.paperHasText(pg)) {
+        try {
+          const key = [pg.template, pg.day || '', pg.paper || '', pg.w, H].join('|');
+          let im = paperTextCache.get(key);
+          if (!im) {
+            const k = 3, c = document.createElement('canvas');
+            c.width = Math.round(pg.w * k);
+            c.height = Math.round(H * k);
+            const ctx = c.getContext('2d');
+            ctx.scale(k, k);
+            R.drawPaperText(ctx, pg);
+            im = await out.embedPng(await canvasBytes(c, 'image/png'));
+            c.width = c.height = 0;
+            paperTextCache.set(key, im);
+          }
+          page.drawImage(im, { x: 0, y: 0, width: pg.w, height: H });
+        } catch (err) { console.warn('Template words skipped on a page', err); }
+      }
     }
 
     if (L.setLineJoin) page.pushOperators(L.setLineJoin(LineJoinStyle.Round));

@@ -596,13 +596,23 @@ if (!process.argv.includes('--quick') && (want('library') || want('writing') || 
       const hugeLog=()=>log.filter(l=>/Huge/.test(l)).length;
       localStorage.setItem('inkleaf.annCrashed',JSON.stringify({[big.id]:{e:bp.modified,n:2}}));
       await S.annotatedPass({now:true});const crash={skipped:hugeLog()===0,note:S.annotatedStatus().crashed};
-      bp.modified=Date.now()+40;await D.db.put('pages',bp);await S.annotatedPass({now:true});crash.retried=hugeLog()===1;
+      await S.openSettings();await new Promise(r=>setTimeout(r,300));
+      const cbox=document.querySelector('dialog .annotated');crash.box=cbox?.textContent||'';
+      const tryBtn=[...(cbox?.querySelectorAll('.ann-crashed button')||[])].find(b=>b.textContent==='Try again');
+      document.querySelector('dialog .modal-head .ic')?.click();await new Promise(r=>setTimeout(r,200));
+      crash.button=!!tryBtn;await S.annRetry();crash.retried=hugeLog()===1&&!localStorage.getItem('inkleaf.annCrashed');
+      localStorage.setItem('inkleaf.annCrashed',JSON.stringify({[big.id]:{e:bp.modified,n:2}}));
+      bp.modified=Date.now()+40;await D.db.put('pages',bp);await S.annotatedPass({now:true});crash.newWriting=hugeLog()===2;
       localStorage.removeItem('inkleaf.annCrashed');
+      // closing or reloading Inkleaf on purpose says goodbye first: not counted as a crash
+      localStorage.setItem('inkleaf.annTrying',JSON.stringify({id:big.id,e:1}));dispatchEvent(new PageTransitionEvent('pagehide'));
+      crash.goodbye=localStorage.getItem('inkleaf.annTrying')===null;
       await S.openSettings();await new Promise(r=>setTimeout(r,300));
       const box=document.querySelector('dialog .annotated')?.textContent||'';
       localStorage.setItem('inkleaf.annotated','off'); // the rest of the check has no Drive
       S._setHttp(async()=>new Response('{"items":[]}',{status:200,headers:{'Content-Type':'application/json'}}));
-      return {first,again,changed,renamed,whileOpen,binned,crash,box};`);
+      const count=JSON.parse(localStorage.getItem('inkleaf.annCount')||'{}');
+      return {first,again,changed,renamed,whileOpen,binned,crash,box,count};`);
     ok('each notebook arrives in Drive as a PDF with its writing, in Inkleaf > Annotated PDFs, named after its folder',
       an.first.n === 1 && an.first.pdf && an.first.name === 'Law - Crimes.pdf' && an.first.folder === 'Annotated PDFs' && an.first.top === 'Inkleaf', an.first);
     ok('nothing is sent again while the notebook is unchanged', an.again === 1, an);
@@ -610,8 +620,43 @@ if (!process.argv.includes('--quick') && (want('library') || want('writing') || 
     ok('a renamed folder only renames the file', an.renamed.log.length === 3 && an.renamed.log[2] === 'rename:Law IPC - Crimes.pdf' && an.renamed.name === 'Law IPC - Crimes.pdf', an.renamed);
     ok('nothing is made while a notebook is open', an.whileOpen === 0, an);
     ok('a binned notebook\'s copy goes to the Drive bin', an.binned === 0, an);
-    ok('a notebook that closed Inkleaf twice while being made is left to another device, until new writing', an.crash.skipped && an.crash.note === 1 && an.crash.retried, an.crash);
-    ok('Settings shows the annotated PDFs switch and progress', an.box.includes('Annotated PDFs in Google Drive') && /Up to date/.test(an.box), an.box);
+    ok('a notebook that closed Inkleaf twice while being made is left out, until new writing', an.crash.skipped && an.crash.note === 1 && an.crash.newWriting, an.crash);
+    ok('Settings names a left-out notebook, and "Try again" makes it', /Left out on this device: "Huge"/.test(an.crash.box) && an.crash.button && an.crash.retried && !/another device, such as/.test(an.crash.box), an.crash);
+    ok('closing Inkleaf on purpose is not counted as a crash', an.crash.goodbye, an.crash);
+    ok('Settings shows the annotated PDFs switch and progress (and no stray "null")', an.box.includes('Annotated PDFs in Google Drive') && /Up to date/.test(an.box) && !/null/.test(an.box), an.box);
+    ok('Settings says how many notebooks are in Google Drive, of how many', /In Google Drive: (all \d+ notebooks?, up to date|\d+ of \d+ notebooks? up to date)/.test(an.box) && /^\d+$/.test(String(an.count.all)) && an.count.inDrive <= an.count.all, { box: an.box, count: an.count });
+    // 2026-11-28 owner's Drive test: the journal page's date and headings were missing from the PDF (only lines and dots).
+    const jw = await c.ev(`const {buildPdf}=await import('/js/export.js'),{openPdf}=await import('/js/pdfrender.js');
+      const pg=(id,t,day)=>({id,docId:'jx',w:595,h:842,template:t,day,paper:'white',items:[]});
+      const blob=await buildPdf({title:'J'},[pg('j1','focus','2026-11-28'),pg('j2','ruled')]);
+      const pdf=await openPdf(new Uint8Array(await blob.arrayBuffer()));
+      const ink=async(n,x,y,w,h)=>{const p=await pdf.getPage(n),v=p.getViewport({scale:2}),cv=document.createElement('canvas');cv.width=v.width;cv.height=v.height;
+        await p.render({canvasContext:cv.getContext('2d'),viewport:v}).promise;const d=cv.getContext('2d').getImageData(x*2,y*2,w*2,h*2).data;
+        let k=0;for(let i=0;i<d.length;i+=4)if(d[i]<185&&d[i+1]<185&&d[i+2]<185)k++;cv.width=cv.height=0;return k;};
+      return {date:await ink(1,36,28,200,18),head:await ink(1,28,58,150,12),round:await ink(1,28,290,40,14),plain:await ink(2,36,28,200,18)};`);
+    ok('a journal page in the PDF keeps its date, headings and Pomodoro rounds', jw.date > 40 && jw.head > 20 && jw.round > 5 && jw.plain === 0, jw);
+    // Owner, 2026-11-28: big files go to Drive in pieces that Drive joins; after a break only the rest is sent.
+    const pc = await c.ev(`const S=await import('/js/sync.js');S._setPiece(1048576,10);
+      const N=5.5*1048576|0,src=new Uint8Array(N);for(let i=0;i<N;i++)src[i]=(i*7+3)&255;
+      const got=new Uint8Array(N);let have=0,puts=0,dropped=false,busy=false,asked=0,started=null;
+      const R=(s,h,b)=>new Response(b??null,{status:s,headers:h||{}});
+      S._setHttp(async(u,o={})=>{u=String(u);
+        if(u.endsWith('/google-token'))return R(200,{'Content-Type':'application/json'},JSON.stringify({access_token:'gt',exp:Date.now()+3e6}));
+        if(u.includes('uploadType=resumable')){started=JSON.parse(o.body);return R(200,{Location:'https://www.googleapis.com/upload/s/1'});}
+        if(u==='https://www.googleapis.com/upload/s/1'){const cr=o.headers['Content-Range'];
+          if(cr.startsWith('bytes */')){asked++;return have?R(308,{Range:'bytes=0-'+(have-1)}):R(308);}
+          const [a,b]=/bytes (\\d+)-(\\d+)/.exec(cr).slice(1).map(Number),buf=new Uint8Array(await o.body.arrayBuffer());puts++;
+          if(a!==have)return R(308,{Range:'bytes=0-'+(have-1)});
+          if(a===2097152&&!dropped){dropped=true;got.set(buf.subarray(0,300000),a);have=a+300000;throw new TypeError('network gone');}
+          if(dropped&&!busy){busy=true;return R(503);}
+          got.set(buf,a);have=b+1;
+          return have===N?R(200,{'Content-Type':'application/json'},'{"id":"big1"}'):R(308,{Range:'bytes=0-'+b});}
+        return R(200,{'Content-Type':'application/json'},'{"files":[]}');});
+      const j=await S._driveUpload('big',new Blob([src]),'application/pdf','Big book');
+      let same=have===N;for(let i=0;same&&i<N;i++)if(got[i]!==src[i])same=false;
+      S._setPiece(8*1048576,1000);S._setHttp(async()=>new Response('{"items":[]}',{status:200,headers:{'Content-Type':'application/json'}}));
+      return {id:j&&j.id,same,puts,asked,dropped,busy,name:started&&started.name};`);
+    ok('a big file goes to Drive in pieces, and after a break only the rest is sent', pc.id === 'big1' && pc.same && pc.dropped && pc.busy && pc.asked === 2 && pc.puts <= 9 && pc.name === 'a_big', pc);
     // v101 bug: each device pushed its own model choice, so "Auto" (or any choice) made on one device was undone by the next.
     const ms = await c.ev(`const S=await import('/js/sync.js');const H=await import('/js/hwsearch.js');const puts=[];
       const run=async(server,local)=>{if(local)localStorage.setItem('inkleaf.geminiModel',local);else localStorage.removeItem('inkleaf.geminiModel');puts.length=0;

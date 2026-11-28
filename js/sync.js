@@ -16,7 +16,7 @@ import { I } from './icons.js';
 import { hwOn, setHwOn, status as hwStatus, setCloudOcr, setDirectOcrReport, getHwUsage, setHwLimit, setHwModel, getHwModelConfig, getActiveHwModel, formatModelName, updateHwUsageFromServer } from './hwsearch.js';
 export { updateHwUsageFromServer };
 
-export const APP_VER = 'v102';
+export const APP_VER = 'v103';
 const SERVER = 'https://inkleaf-sync.yadmewal.workers.dev';
 // drive.appdata: Inkleaf's hidden app folder (files it syncs); drive.file: only files Inkleaf itself creates, used
 // for the visible "Inkleaf" folder holding copies of the PDFs under their real names.
@@ -270,9 +270,53 @@ async function driveFind(id) {
   return (j.files || [])[0] || null;
 }
 
+// Files over 5 MB go up in pieces (owner, 2026-11-28: "upload in small packets ... merge in google drive"): Drive
+// joins the pieces into one file. After a break (network, Drive busy) Drive is asked how much arrived and only the
+// rest is sent, so a 600 MB book on a shaky connection is not sent again from the start.
+let PIECE = 8 * 1048576, PIECE_WAIT = 1000; // Drive wants pieces in multiples of 256 KB
+export const _setPiece = (n, wait) => { PIECE = n; if (wait != null) PIECE_WAIT = wait; }; // tests use small pieces
+export const _driveUpload = (...a) => driveUpload(...a); // for the check
+const ONE_GO = 5 * 1048576; // Drive's limit for a file sent in one request
+// Returns Drive's answer ({id}), or null when the upload address is not readable here (then: one request).
+async function driveResumable(base, method, meta, blob) {
+  const size = blob.size;
+  const start = await drive(base + '?uploadType=resumable&fields=id', {
+    method, body: JSON.stringify(meta),
+    headers: { 'Content-Type': 'application/json; charset=UTF-8', 'X-Upload-Content-Type': meta.mimeType || 'application/octet-stream', 'X-Upload-Content-Length': String(size) }
+  });
+  const at = start.headers.get('location');
+  if (!at) return null;
+  const arrived = r => { const m = /bytes=0-(\d+)/.exec(r.headers.get('range') || ''); return m ? Number(m[1]) + 1 : null; };
+  let sent = 0, breaks = 0;
+  for (;;) {
+    const end = Math.min(sent + PIECE, size);
+    let r = null;
+    try { r = await http(at, { method: 'PUT', headers: { 'Content-Range': `bytes ${sent}-${end - 1}/${size}` }, body: blob.slice(sent, end) }); } catch {}
+    if (r && (r.status === 200 || r.status === 201)) return r.json();
+    if (r && r.status === 308) { const a = arrived(r); sent = a == null ? end : a; continue; } // piece taken
+    if (r && r.status >= 400 && r.status < 500 && r.status !== 408 && r.status !== 429) {
+      const e = new Error(`Google Drive error ${r.status}`); e.status = r.status; throw e; // e.g. the upload address ran out
+    }
+    // A break: wait a little longer each time, then ask Drive how much it has.
+    if (++breaks > 6) throw new Error('The upload to Google Drive kept breaking off; trying again later');
+    await new Promise(res => setTimeout(res, Math.min(30000, PIECE_WAIT * 2 ** (breaks - 1))));
+    try {
+      const q = await http(at, { method: 'PUT', headers: { 'Content-Range': `bytes */${size}` } });
+      if (q.status === 200 || q.status === 201) return q.json();
+      if (q.status === 308) sent = arrived(q) ?? 0;
+    } catch {}
+  }
+}
+
 async function driveUpload(id, data, mime, name, fileName, metaOver) {
+  const metaObj = metaOver || { name: fileName || 'a_' + id, parents: ['appDataFolder'], mimeType: mime, description: name || '' };
+  const blob = data instanceof Blob ? data : new Blob([data], { type: mime });
+  if (blob.size > ONE_GO) {
+    const j = await driveResumable('/upload/drive/v3/files', 'POST', metaObj, blob);
+    if (j) return j;
+  }
   const boundary = 'inkleaf' + Math.random().toString(36).slice(2);
-  const meta = JSON.stringify(metaOver || { name: fileName || 'a_' + id, parents: ['appDataFolder'], mimeType: mime, description: name || '' });
+  const meta = JSON.stringify(metaObj);
   const body = new Blob([
     `--${boundary}\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n${meta}\r\n`,
     `--${boundary}\r\nContent-Type: ${mime}\r\n\r\n`, data, `\r\n--${boundary}--`
@@ -325,8 +369,18 @@ async function visibleCopy(a) {
 // an iPad), the mark left in localStorage (inkleaf.annTrying) shows it after the reload, and this device then leaves
 // that notebook (in that state) to another device instead of crashing again and again.
 const ANN_FOLDER = 'Annotated PDFs', ANN_EVERY = 20 * 60e3;
-const annState = { running: false, done: 0, total: 0, current: '', made: 0, waiting: 0, crashed: 0, err: null, last: 0 };
+const annState = { running: false, done: 0, total: 0, current: '', made: 0, waiting: 0, crashed: 0, crashedNames: [], err: null, last: 0, inDrive: null, all: null };
+// How many notebooks have an up-to-date copy in Drive, of how many (kept, so Settings shows it before the first pass).
+try { Object.assign(annState, JSON.parse(localStorage.getItem('inkleaf.annCount') || '{}')); } catch {}
 const annCrashed = () => { try { return JSON.parse(localStorage.getItem('inkleaf.annCrashed') || '{}'); } catch { return {}; } };
+// Closing or reloading Inkleaf on purpose is not a crash: the page says goodbye first (a crashed tab never does).
+addEventListener('pagehide', () => { try { localStorage.removeItem('inkleaf.annTrying'); } catch {} });
+// "Try again": forget the notebooks this device gave up on, and make them now.
+export function annRetry() {
+  try { localStorage.removeItem('inkleaf.annCrashed'); } catch {}
+  annState.crashed = 0; annState.crashedNames = [];
+  return annotatedPass({ now: true });
+}
 { // a mark left from the last time Inkleaf ran: making that notebook did not finish (the tab crashed or was closed)
   let t = null;
   try { t = JSON.parse(localStorage.getItem('inkleaf.annTrying') || 'null'); } catch {}
@@ -372,7 +426,7 @@ async function annList(folder) {
   return out;
 }
 
-// Upload: small files in one request, bigger ones as a resumable upload (Drive's limit for one request is 5 MB).
+// Upload: small files in one request, bigger ones in pieces (driveResumable; Drive's limit for one request is 5 MB).
 async function annUpload(fileId, meta, blob) {
   const base = fileId ? `/upload/drive/v3/files/${fileId}` : '/upload/drive/v3/files', method = fileId ? 'PATCH' : 'POST';
   const multipart = async () => {
@@ -381,15 +435,8 @@ async function annUpload(fileId, meta, blob) {
       `--${boundary}\r\nContent-Type: application/pdf\r\n\r\n`, blob, `\r\n--${boundary}--`]);
     return (await drive(base + '?uploadType=multipart&fields=id', { method, headers: { 'Content-Type': 'multipart/related; boundary=' + boundary }, body })).json();
   };
-  if (blob.size <= 5 * 1048576) return multipart();
-  const start = await drive(base + '?uploadType=resumable&fields=id', {
-    method, headers: { 'Content-Type': 'application/json; charset=UTF-8', 'X-Upload-Content-Type': 'application/pdf', 'X-Upload-Content-Length': String(blob.size) }, body: JSON.stringify(meta)
-  });
-  const at = start.headers.get('location');
-  if (!at) return multipart(); // the upload address was not readable here: one request it is
-  const r = await http(at, { method: 'PUT', headers: { 'Content-Type': 'application/pdf' }, body: blob });
-  if (!r.ok) { const e = new Error(`Google Drive error ${r.status}`); e.status = r.status; throw e; }
-  return r.json();
+  if (blob.size <= ONE_GO) return multipart();
+  return (await driveResumable(base, method, meta, blob)) || multipart(); // address not readable here: one request
 }
 
 // A notebook's name in Drive: its folders, then its title ("Polity - Laxmikanth.pdf"), so Drive sorts them by folder.
@@ -416,7 +463,7 @@ export async function annotatedPass(opts = {}) {
 async function annWork(opts) {
   if (!annotatedOn() || !ready() || openDocs.size || (!opts.now && document.visibilityState !== 'visible')) return annotatedStatus();
   if (!(await driveToken().catch(() => null))) return annotatedStatus();
-  Object.assign(annState, { running: true, done: 0, total: 0, current: '', made: 0, waiting: 0, crashed: 0, err: null });
+  Object.assign(annState, { running: true, done: 0, total: 0, current: '', made: 0, waiting: 0, crashed: 0, crashedNames: [], err: null });
   bus.emit('annotated', annotatedStatus());
   try {
     const folder = await annFolder();
@@ -424,6 +471,7 @@ async function annWork(opts) {
     const [docs, folderRecs] = await Promise.all([db.all('docs'), db.all('folders')]);
     const folders = new Map(folderRecs.map(f => [f.id, f]));
     const todo = [];
+    let all = 0, fresh = 0;
     for (const doc of docs) {
       const copies = remote.get(doc.id) || [];
       if (annBinned(doc, folders)) {
@@ -434,7 +482,9 @@ async function annWork(opts) {
       const recs = await db.byDoc(doc.id);
       const stamp = Math.max(editedAt(doc), ...recs.map(p => p.modified || 0));
       const name = annName(doc, folders), copy = copies[0];
+      all++;
       if (copy && copy.e >= stamp) {
+        fresh++;
         if (copy.name !== name) await drive(`/drive/v3/files/${copy.id}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name }) });
         continue;
       }
@@ -442,6 +492,7 @@ async function annWork(opts) {
     }
     todo.sort((a, b) => b.stamp - a.stamp); // the latest writing first
     annState.total = todo.length;
+    Object.assign(annState, { all, inDrive: fresh });
     bus.emit('annotated', annotatedStatus());
     const { buildPdf } = todo.length ? await import('./export.js') : {};
     for (const t of todo) {
@@ -459,13 +510,13 @@ async function annWork(opts) {
       if (!pages.length || missing) { annState.waiting++; annState.done++; continue; }
       // Twice crashed here in this state: leave it to another device (new writing in it means a fresh try).
       const cr = annCrashed()[t.doc.id];
-      if (cr && cr.e === t.stamp && cr.n >= 2) { annState.crashed++; annState.done++; continue; }
+      if (cr && cr.e === t.stamp && cr.n >= 2) { annState.crashed++; annState.crashedNames.push(t.doc.title || 'Notebook'); annState.done++; continue; }
       try { localStorage.setItem('inkleaf.annTrying', JSON.stringify({ id: t.doc.id, e: t.stamp })); } catch {}
       try {
         const blob = await buildPdf(t.doc, pages);
         const meta = { name: t.name, mimeType: 'application/pdf', appProperties: { inkleafDoc: t.doc.id, e: String(t.stamp) } };
         await annUpload(t.copy && t.copy.id, t.copy ? meta : { ...meta, parents: [folder] }, blob);
-        annState.made++;
+        annState.made++; annState.inDrive++;
       } catch (e) {
         if (e.status === 401 || e.status === 403 || !navigator.onLine) throw e; // Drive itself is the problem: stop
         annState.err = { t: Date.now(), msg: `"${t.doc.title || 'Notebook'}" could not be made: ${e.message || e}` }; // the others go on
@@ -479,6 +530,7 @@ async function annWork(opts) {
     if (e.status === 403) visibleOk = false;
   } finally {
     annState.running = false; annState.current = ''; annState.last = Date.now();
+    if (annState.all != null) try { localStorage.setItem('inkleaf.annCount', JSON.stringify({ inDrive: annState.inDrive, all: annState.all })); } catch {}
     bus.emit('annotated', annotatedStatus());
     if (annAgain) { annAgain = false; annSoon(5000); }
   }
@@ -2641,9 +2693,12 @@ export async function openSettings() {
             : a.last ? `Up to date ${ago < 1 ? 'just now' : ago + ' min ago'}${a.made ? ` (${a.made} made)` : ''}. Checked again after you close a notebook, and every 20 minutes.`
               : 'Starts a minute after Inkleaf opens, and after you close a notebook.';
     const notes = [];
+    if (a.all != null && session && !cfg.off && a.linked) notes.push(a.all && a.inDrive >= a.all ? `In Google Drive: all ${a.all} notebook${a.all === 1 ? '' : 's'}, up to date.` : `In Google Drive: ${a.inDrive} of ${a.all} notebook${a.all === 1 ? '' : 's'} up to date.`);
     if (a.waiting) notes.push(`${a.waiting} notebook${a.waiting === 1 ? '' : 's'} wait${a.waiting === 1 ? 's' : ''} for ${a.waiting === 1 ? 'its' : 'their'} PDF to arrive on this device.`);
-    if (a.crashed) notes.push(`${a.crashed} notebook${a.crashed === 1 ? ' was' : 's were'} too big for this device (Inkleaf closed while making ${a.crashed === 1 ? 'it' : 'them'}); another device, such as the laptop, makes ${a.crashed === 1 ? 'it' : 'them'}.`);
-    annBox.replaceChildren(
+    const crashedNote = a.crashed ? h('div', { class: 'bk-sub ann-crashed' },
+      `Left out on this device: ${a.crashedNames.map(n => '"' + n + '"').join(', ')} (Inkleaf stopped twice while making ${a.crashed === 1 ? 'it' : 'them'}). `,
+      h('button', { class: 'btn sm', type: 'button', disabled: a.running, onclick: () => { annRetry(); } }, 'Try again')) : null;
+    annBox.replaceChildren(...[ // (a null here would show as the word "null")
       h('div', { class: 'row', style: 'align-items: center; justify-content: space-between; margin-bottom: 4px;' },
         h('label', { class: 'chip check' + (a.on ? ' on' : ''), style: 'cursor: pointer;' },
           h('input', { type: 'checkbox', checked: a.on, hidden: true, onchange: e => { setAnnotatedOn(e.target.checked); drawAnn(); } }),
@@ -2652,8 +2707,9 @@ export async function openSettings() {
       h('p', { class: 'modal-text small', style: 'margin: 4px 0;' }, 'Every notebook with your writing on it, as a PDF in your Drive folder Inkleaf > Annotated PDFs, to open or share without Inkleaf.'),
       h('div', { class: 'bk-sub ann-line' }, line),
       ...notes.map(n => h('div', { class: 'bk-sub' }, n)),
+      crashedNote,
       a.err ? h('div', { class: 'bk-sub warn' }, 'Last problem: ' + a.err.msg) : null
-    );
+    ].filter(Boolean));
   };
   drawAnn();
   const offAnn = bus.on('annotated', () => drawAnn());
