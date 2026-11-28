@@ -1,6 +1,23 @@
 # Handoff
 
-**Written:** 2026-11-28 ~21:00 India, by Claude Code. **State:** **v103 LIVE** (`5fd8dd8`, check 192/192, after-publish ALL GOOD).
+**Written:** 2026-11-28 late evening, by Claude Code. **State:** **v104 LIVE** (`7392199`, check 196/196, after-publish ALL GOOD).
+
+## v104 (2026-11-28): big books no longer crash while their annotated PDF is made
+- Owner: "it still wont upload that file"; screenshot: Chrome "Aw, Snap! Out of Memory" in the Inkleaf window (laptop,
+  16 GB). The crash was in MAKING the PDF (pdf-lib load + embedPages + save = 5-6x the book), not the upload.
+  Owner asked "if we send it piece by piece then still it load full size in RAM?": told sending in pieces uses little
+  memory; making the PDF was the problem.
+- New `js/pdfappend.js` (in SHELL): books >= 40 MB (`APPEND_MIN` in export.js, test switch `_setAppendMin`) get an
+  incremental update: `readPdf` reads only the xref (tables, xref streams with PNG predictors, object streams, /Prev
+  chains, hybrid XRefStm) and the page tree; `writeUpdate` appends: new page dicts under the book pages' OWN object
+  numbers (links/bookmarks keep working; a repeated page gets a new number), contents = [bg + clip, book's streams,
+  writing], resources merged, new Pages + Catalog (PageLabels/StructTreeRoot/MarkInfo dropped), xref of the same kind.
+  Not turned and not resized -> MediaBox moved instead (Annots kept); turned/resized -> cm matrix (Annots dropped).
+  export.js: buildPdf -> `fillPdf(L, out, pages, progress, front, onBase)` + `appendBuild`; falls back to the usual way
+  if readPdf throws (encrypted, broken index). Highlight-card export (front) always uses the usual way.
+- Measured (Node, 284 MB book): +14 MB memory instead of +577 MB. Check: same pixels as the usual way (0-0.24%),
+  book bytes untouched, link kept.
+- **Not yet seen on the owner's real big book.** Next: owner reloads (v104), Settings > Try again, keep Inkleaf open.
 
 ## v103 (2026-11-28), from the owner's real-Drive test (screenshots in Pictures\Screenshots, 20:08-20:09)
 - The owner tested annotated PDFs with the real Drive: they arrive. Found and fixed:
