@@ -1,6 +1,7 @@
 // Settings, colours and sizes the editor uses (no state: these never change while Inkleaf runs).
 
-export const GAP = 14, MIN_S = 0.2, MAX_S = 6;
+// MAX_S: how far in a page can be zoomed (owner asked for more than 6 to read small PDF print; 20 since v106).
+export const GAP = 14, MIN_S = 0.2, MAX_S = 20;
 export const COARSE = matchMedia('(pointer: coarse)').matches;
 export const MAXPX = COARSE ? 5.5e6 : 9e6; // cap on pixels per whole-page canvas (memory on tablets)
 export const REGION_PX = COARSE ? 6e6 : 12e6; // cap when only the visible part of a page is drawn (zoomed in)

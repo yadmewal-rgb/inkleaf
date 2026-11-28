@@ -3995,6 +3995,68 @@ body.split-dragging canvas {
   margin-top: 2px;
 }
 
+/* Settings: each part folds open and shut (v106) */
+.set-sec {
+  border-top: 1px solid var(--line);
+}
+
+.set-sec:last-of-type {
+  border-bottom: 1px solid var(--line);
+}
+
+.set-sec > summary {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 44px; /* easy to tap on the iPad and phone */
+  padding: 6px 2px;
+  cursor: pointer;
+  list-style: none;
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+.set-sec > summary::-webkit-details-marker {
+  display: none;
+}
+
+.set-sec > summary::after {
+  content: '';
+  width: 8px;
+  height: 8px;
+  margin: 0 4px 4px 0;
+  border-right: 2px solid var(--muted);
+  border-bottom: 2px solid var(--muted);
+  transform: rotate(45deg);
+  transition: transform 0.15s;
+  flex-shrink: 0;
+}
+
+.set-sec[open] > summary::after {
+  transform: rotate(-135deg);
+  margin-bottom: -4px;
+}
+
+.set-name {
+  font-size: 15px;
+  font-weight: 600;
+}
+
+.set-note {
+  margin-left: auto;
+  font-size: 12.5px;
+  color: var(--muted);
+  text-align: right;
+}
+
+.set-sec[open] > summary {
+  margin-bottom: 2px;
+}
+
+.set-sec > :last-child {
+  margin-bottom: 12px;
+}
+
 .modal-foot {
   display: flex;
   justify-content: flex-end;

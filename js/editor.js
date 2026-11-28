@@ -338,6 +338,12 @@ export async function mountEditor(root, docId, opts = {}) {
 
   function measure() { vpRect = vp.getBoundingClientRect(); }
 
+  // The most a notebook can be zoomed in. A browser cannot place things more than ~33 million px away, so a very
+  // long notebook gets a lower limit (never below the old 6) so its far pages are not piled up.
+  function maxScale() {
+    return Math.max(6, Math.min(MAX_S, 3e7 / Math.max(1, hz ? worldW : worldH)));
+  }
+
   // The zoom that shows a page comfortably: its full width when pages run downwards, the whole page when side by side.
   function fitScale(pg, max = 2.5) {
     if (!hz) return clamp((vpRect.width - 24) / worldW, MIN_S, max);
@@ -783,7 +789,7 @@ export async function mountEditor(root, docId, opts = {}) {
   }
 
   function zoomAt(cx, cy, factor) {
-    const ns = clamp(scale * factor, MIN_S, MAX_S);
+    const ns = clamp(scale * factor, MIN_S, maxScale());
     const px = cx - vpRect.left, py = cy - vpRect.top;
     tx = px - (px - tx) * (ns / scale);
     ty = py - (py - ty) * (ns / scale);
@@ -1788,7 +1794,7 @@ export async function mountEditor(root, docId, opts = {}) {
     if (!a || !b) return;
     const d = Math.hypot(a.x - b.x, a.y - b.y);
     const mx = (a.x + b.x) / 2 - vpRect.left, my = (a.y + b.y) / 2 - vpRect.top;
-    scale = clamp(pinch.s0 * d / pinch.d0, MIN_S, MAX_S);
+    scale = clamp(pinch.s0 * d / pinch.d0, MIN_S, maxScale());
     const k = scale / pinch.s0;
     tx = mx - (pinch.mx0 - pinch.tx0) * k;
     ty = my - (pinch.my0 - pinch.ty0) * k;

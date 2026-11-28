@@ -481,6 +481,13 @@ if (!process.argv.includes('--quick') && (want('library') || want('writing') || 
     await c.ev(`document.querySelector('.spell-mark')?.click()`); await sleep(300);
     const sugBtn = await c.ev(`return [...document.querySelectorAll('.spell-sug-word')].map(s=>s.textContent).join(',')`);
     ok('tapping the mark shows the suggestion', sugBtn.split(',')[0] === 'government', sugBtn);
+    // Owner, 2026-11-28: "increase zoom level in pdfs". Ctrl + wheel all the way in now goes to 20x (was 6x).
+    await c.ev(`document.querySelectorAll('.pop').forEach(p=>p.remove())`);
+    const zm = await c.ev(`${E.D}const pw=(await D.db.byDoc('${spDoc}'))[0].w;const vp=document.querySelector('.vp'),r=vp.getBoundingClientRect();
+      for(let i=0;i<40;i++)vp.dispatchEvent(new WheelEvent('wheel',{deltaY:-100,ctrlKey:true,clientX:r.left+r.width/2,clientY:r.top+r.height/2,bubbles:true,cancelable:true}));
+      await new Promise(r=>setTimeout(r,700));const w=Math.max(...[...document.querySelectorAll('.world > *')].map(e=>e.getBoundingClientRect().width));return {pw,z:Math.round(w/pw*100)/100}`);
+    ok('a page zooms in up to 20 times its size (was 6)', zm.z > 19.5 && zm.z < 20.5, zm);
+    noErrors('zoomed all the way in');
     await c.ev(noPops + `location.hash='#/d/${id}'`); await until(() => c.ev(edReady));
     // More menu
     const more = `document.querySelectorAll('.pop').forEach(p=>p.remove());[...document.querySelectorAll('button')].find(b=>b.title==='More'&&b.offsetParent).click();await new Promise(r=>setTimeout(r,150));`;
@@ -713,6 +720,18 @@ if (!process.argv.includes('--quick') && (want('library') || want('writing') || 
     ok('the speed meter measures real transfers (no speed test)', mtr.spUp && mtr.spDown, mtr);
     ok('Settings shows data, speed and memory for this device (no "null", no "NaN")',
       /Data Inkleaf used on this device/.test(mtr.box) && /Today↑ 4\d\d KB sent/.test(mtr.box) && /Drawn pages/.test(mtr.box) && /Sending\d/.test(mtr.box) && !/null|NaN|undefined/.test(mtr.box), mtr.box);
+    // Owner, 2026-11-28: "make available dropdown so that settings tab can be not so long like for signed in devices".
+    const fold = await c.ev(`const S=await import('/js/sync.js');localStorage.removeItem('inkleaf.setOpen');const wait=ms=>new Promise(r=>setTimeout(r,ms));
+      const st=()=>Object.fromEntries([...document.querySelectorAll('dialog details.set-sec')].map(d=>[d.dataset.sec,d.open]));
+      const shut=async()=>{document.querySelector('dialog .modal-head .ic')?.click();await wait(150);};
+      await S.openSettings();await wait(200);const first=st(),h1=document.querySelector('dialog .modal-body').scrollHeight;
+      document.querySelector('dialog details[data-sec="device"] summary').click();await wait(80);const h2=document.querySelector('dialog .modal-body').scrollHeight;
+      await shut();await S.openSettings();await wait(200);const again=st();
+      const txt=document.querySelector('dialog .modal-body').textContent;await shut();localStorage.removeItem('inkleaf.setOpen');
+      return {first,again,grew:h2-h1,nul:/null|NaN|undefined/.test(txt)};`);
+    ok('Settings parts fold open and shut: only Live sync open at first, and what you open stays open next time',
+      Object.keys(fold.first).length >= 7 && fold.first.sync === true && fold.first.devices === false && fold.first.device === false && fold.first.allowed === false
+      && fold.grew > 100 && fold.again.device === true && fold.again.backup === false && !fold.nul, fold);
     ok('the small on-screen meter shows the figures and lets taps and the pen through', /^Data today ↑/.test(mtr.badge.text) && /Pages /.test(mtr.badge.text) && mtr.badge.pe === 'none' && mtr.badge.gone, mtr.badge);
     ok('a big file goes to Drive in pieces, and after a break only the rest is sent', pc.id === 'big1' && pc.same && pc.dropped && pc.busy && pc.asked === 2 && pc.puts <= 9 && pc.name === 'a_big', pc);
     // v101 bug: each device pushed its own model choice, so "Auto" (or any choice) made on one device was undone by the next.

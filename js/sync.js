@@ -17,7 +17,7 @@ import { countedFetch, countSocket, driveTrack, trackDownload, dataNow, speedNow
 import { hwOn, setHwOn, status as hwStatus, setCloudOcr, setDirectOcrReport, getHwUsage, setHwLimit, setHwModel, getHwModelConfig, getActiveHwModel, formatModelName, updateHwUsageFromServer } from './hwsearch.js';
 export { updateHwUsageFromServer };
 
-export const APP_VER = 'v105';
+export const APP_VER = 'v106';
 const SERVER = 'https://inkleaf-sync.yadmewal.workers.dev';
 // drive.appdata: Inkleaf's hidden app folder (files it syncs); drive.file: only files Inkleaf itself creates, used
 // for the visible "Inkleaf" folder holding copies of the PDFs under their real names.
@@ -2588,6 +2588,24 @@ export async function openSettings() {
     await initSync();
     return true;
   };
+  // Each part of Settings folds open and shut (owner: "settings tab can be not so long"). Which parts are open is
+  // remembered on this device. A summary can carry a short note on the right (e.g. this device's name).
+  let openSecs = {};
+  try { openSecs = JSON.parse(localStorage.getItem('inkleaf.setOpen') || '{}') || {}; } catch { /* start fresh */ }
+  const sec = (key, title, openFirst, ...kids) => {
+    const note = h('span', { class: 'set-note' });
+    const name = h('span', { class: 'set-name' }, title);
+    const d = h('details', { class: 'set-sec' }, h('summary', null, name, note), ...kids);
+    d.dataset.sec = key;
+    d.open = typeof openSecs[key] === 'boolean' ? openSecs[key] : openFirst;
+    d.addEventListener('toggle', () => {
+      openSecs[key] = d.open;
+      try { localStorage.setItem('inkleaf.setOpen', JSON.stringify(openSecs)); } catch { /* private mode */ }
+    });
+    d.setTitle = t => { name.textContent = t; };
+    d.setNote = t => { note.textContent = t || ''; };
+    return d;
+  };
   const accountCard = h('div', { class: 'account-card' });
   const drawAccount = () => {
     const signed = !!session;
@@ -2619,13 +2637,16 @@ export async function openSettings() {
   // The devices signed in to this account, with a way to sign any of them out (e.g. a lost phone, or an old
   // sign-in left over on this device).
   const devicesEl = h('div', { class: 'devices' });
+  const devicesSec = sec('devices', 'Signed-in devices', false, devicesEl);
+  devicesSec.hidden = true;
   const when = t => new Date(t).toLocaleString([], { day: 'numeric', month: 'short', year: 'numeric', hour: 'numeric', minute: '2-digit' });
   async function drawDevices() {
-    if (!session || cfg.off || !navigator.onLine) { devicesEl.replaceChildren(); return; }
+    if (!session || cfg.off || !navigator.onLine) { devicesEl.replaceChildren(); devicesSec.hidden = true; return; }
     let items;
-    try { items = (await (await call('/sessions')).json()).items; } catch { devicesEl.replaceChildren(); return; }
+    try { items = (await (await call('/sessions')).json()).items; } catch { devicesEl.replaceChildren(); devicesSec.hidden = true; return; }
+    devicesSec.setTitle(`Signed-in devices (${items.length})`);
+    devicesSec.hidden = false;
     devicesEl.replaceChildren(
-      h('b', { class: 'dev-title' }, `Signed-in devices (${items.length})`),
       ...items.map(d => h('div', { class: 'dev-row' },
         h('div', { class: 'dev-meta' },
           h('span', null, d.label, d.current ? h('span', { class: 'dev-me' }, ' · this device') : ''),
@@ -2751,11 +2772,12 @@ export async function openSettings() {
 
   // Annotated PDFs in Google Drive (folder Inkleaf > Annotated PDFs): on/off for this device, progress, Update now.
   const annBox = h('div', { class: 'field annotated', style: 'margin: 8px 0 12px; padding: 10px 12px; background: var(--surface-2); border-radius: 8px;' });
+  const annSec = sec('drive', 'Annotated PDFs in Google Drive', false, annBox);
   const drawAnn = () => {
     const a = annotatedStatus();
     const ago = a.last ? Math.max(0, Math.round((Date.now() - a.last) / 60000)) : null;
     const line = !session || cfg.off ? 'Needs sync to be signed in.'
-      : !a.linked ? 'Google Drive is not linked on this sign-in (see below).'
+      : !a.linked ? 'Google Drive is not linked on this sign-in (see Storage and limits).'
         : !a.on ? 'Off on this device.'
           : a.running ? (a.total ? `Making ${Math.min(a.done + 1, a.total)} of ${a.total}${a.current ? ': "' + a.current + '"' : ''}…` : 'Checking which notebooks changed…')
             : a.last ? `Up to date ${ago < 1 ? 'just now' : ago + ' min ago'}${a.made ? ` (${a.made} made)` : ''}. Checked again after you close a notebook, and every 20 minutes.`
@@ -2771,6 +2793,8 @@ export async function openSettings() {
     const crashedNote = a.crashed ? h('div', { class: 'bk-sub ann-crashed' },
       `Left out on this device: ${a.crashedNames.map(n => '"' + n + '"').join(', ')} (Inkleaf stopped twice while making ${a.crashed === 1 ? 'it' : 'them'}). `,
       h('button', { class: 'btn sm', type: 'button', disabled: a.running, onclick: () => { annRetry(); } }, 'Try again')) : null;
+    annSec.setNote(!session || cfg.off || !a.linked || !a.on ? 'off' : a.running ? 'working…' : a.crashed ? `${a.crashed} left out`
+      : a.all != null ? `${a.inDrive} of ${a.all} up to date` : '');
     annBox.replaceChildren(...[ // (a null here would show as the word "null")
       h('div', { class: 'row', style: 'align-items: center; justify-content: space-between; margin-bottom: 4px;' },
         h('label', { class: 'chip check' + (a.on ? ' on' : ''), style: 'cursor: pointer;' },
@@ -2790,7 +2814,9 @@ export async function openSettings() {
   const offMeters = bus.on('meters', () => { if (annotatedStatus().running) drawAnn(); drawDevice(); });
 
   // Owner-only user manager (add/remove allowed emails without opening Cloudflare)
-  const allowedUsersBox = h('div', { class: 'allowed-users', hidden: true });
+  const allowedUsersBox = h('div', { class: 'allowed-users' });
+  const allowedSec = sec('allowed', 'Allowed users', false, allowedUsersBox);
+  allowedSec.hidden = true;
   async function drawAllowedUsers() {
     try {
       const r = await call('/admin/users');
@@ -2816,7 +2842,6 @@ export async function openSettings() {
       };
       inp.addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); addUser(); } });
       allowedUsersBox.replaceChildren(
-        h('b', { class: 'dev-title' }, `Allowed users (${all.length})`),
         h('p', { class: 'modal-text small', style: 'margin-bottom: 8px;' }, 'Add or remove friends who can sign in to this sync server without opening Cloudflare.'),
         h('div', { class: 'row', style: 'gap: 8px; margin-bottom: 10px;' },
           inp,
@@ -2846,14 +2871,16 @@ export async function openSettings() {
           );
         })
       );
-      allowedUsersBox.hidden = false;
+      allowedSec.setTitle(`Allowed users (${all.length})`);
+      allowedSec.hidden = false;
     } catch {
-      allowedUsersBox.hidden = true;
+      allowedSec.hidden = true;
     }
   }
 
   // How much of Cloudflare's total 5 GB storage and this person's share is used, plus Google Drive status.
   const usage = h('div', { class: 'usage', hidden: true });
+  const limitsSec = sec('limits', 'Storage and limits', false, usage, cfUsageBox);
   if (session && !cfg.off && navigator.onLine) {
     call('/me').then(r => r.json()).then(j => {
       if (j.cfCallsToday != null || j.cfTotalToday != null) {
@@ -2892,6 +2919,7 @@ export async function openSettings() {
             h('button', { class: 'btn sm', type: 'button', onclick: async () => { m.close(); try { await signIn(); toast('Google Drive linked. Files move there in the background.', 3500); syncNow(false); } catch (e) { fail(e, true); } } }, 'Link Google Drive')),
         totalPct > 85 || myPct > 85 ? h('p', { class: 'modal-text small' }, 'Nearly full. Removing notebooks you no longer need (and emptying the bin) frees space.') : '');
       usage.hidden = false;
+      limitsSec.setNote(!j.drive || visibleOk === false ? 'Google Drive not linked' : totalPct > 85 || myPct > 85 ? 'nearly full' : '');
     }).catch(() => {});
   }
   const who = session && !cfg.off
@@ -3042,16 +3070,12 @@ export async function openSettings() {
         }, 'Check for updates')
       ),
       accountCard,
-      h('h3', null, 'Handwriting search'),
-      h('p', { class: 'modal-text' },
-        'Search your handwritten notes as you type. Uses fast Cloud AI (Gemini Flash) with 1 call per page when online, and syncs search index across devices.'),
-      hwBox,
-      h('h3', null, 'Live sync'),
+      sec('sync', 'Live sync', true,
       h('p', { class: 'modal-text' },
         'Notes are always kept on this device, so they open instantly and work offline. With sync on, every change is also ',
         'sent to Inkleaf\'s own sync service (on Cloudflare) and appears on your other devices within a second or two.'),
       h('p', { class: 'modal-text small' }, who),
-      usage, cfUsageBox, annBox, allowedUsersBox, healthEl, devicesEl,
+      healthEl,
       h('div', { class: 'row' },
         h('button', {
           class: 'btn primary', type: 'button',
@@ -3061,23 +3085,31 @@ export async function openSettings() {
           class: 'btn', type: 'button',
           onclick: async () => { if (await doSignOut()) m.close(); }
         }, 'Sign out') : null),
-      h('p', { class: 'modal-text small' }, last ? 'Last synced ' + new Date(last).toLocaleString() : 'Not synced yet on this device.'),
-      h('h3', null, 'This device: data, speed, memory'),
-      deviceBox,
-      h('h3', null, 'Backup file'),
+      h('p', { class: 'modal-text small' }, last ? 'Last synced ' + new Date(last).toLocaleString() : 'Not synced yet on this device.')),
+      devicesSec,
+      allowedSec,
+      annSec,
+      limitsSec,
+      sec('hw', 'Handwriting search', false,
+      h('p', { class: 'modal-text' },
+        'Search your handwritten notes as you type. Uses fast Cloud AI (Gemini Flash) with 1 call per page when online, and syncs search index across devices.'),
+      hwBox),
+      sec('device', 'This device: data, speed, memory', false,
+      deviceBox),
+      sec('backup', 'Backup file', false,
       h('p', { class: 'modal-text' }, 'Save every notebook into one file, or restore one. Useful for moving notes without sync.'),
       h('div', { class: 'row' },
         h('button', { class: 'btn', type: 'button', onclick: exportBackup }, 'Save backup'),
         h('button', { class: 'btn', type: 'button', onclick: () => fileInp.click() }, 'Restore backup'),
-        fileInp),
-      h('h3', null, 'Automatic backups'),
+        fileInp)),
+      sec('autobk', 'Automatic backups', false,
       h('p', { class: 'modal-text' },
         'Once a week Inkleaf keeps a snapshot of every notebook by itself: the last 3 on this device and, with sync on, the last 8 on the sync service. ',
         'If something gets lost or damaged, you can bring a notebook back from a snapshot as a copy.'),
       h('p', { class: 'modal-text small' }, 'Snapshots hold your pages and writing. Imported PDFs and pictures are not duplicated in them; they stay with the library.'),
       bkList,
       h('div', { class: 'row' },
-        h('button', { class: 'btn', type: 'button', onclick: async e => { const b = e.currentTarget; b.disabled = true; await autoBackup(true); b.disabled = false; fillBk(); } }, 'Back up now')),
+        h('button', { class: 'btn', type: 'button', onclick: async e => { const b = e.currentTarget; b.disabled = true; await autoBackup(true); b.disabled = false; fillBk(); } }, 'Back up now'))),
       h('div', { style: 'margin-top: 24px; padding-top: 14px; border-top: 1px solid var(--line); text-align: center; color: var(--muted); font-size: 12.5px;' },
         'Inkleaf ' + APP_VER + ' · Build 2026.11'
       )
