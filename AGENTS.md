@@ -25,7 +25,8 @@
 Plain HTML + ES modules, no build step. Vendored pdf.js 3.11.174 and pdf-lib 1.17.1 in `vendor/`.
 `js/`: app.js, library.js, editor.js (~7,700 lines, the big one), editor-consts.js, render.js, pageshots.js,
 scan.js, export.js, pdfrender.js, pdftools.js, goodnotes.js (GoodNotes import), sync.js, db.js (IndexedDB), ui.js,
-util.js, icons.js, hwsearch.js (handwriting search), spellcheck.js. Spell-check words: `vendor/words/en.txt` (~200,000 words
+util.js, icons.js, hwsearch.js (handwriting search), spellcheck.js, meters.js (this device's data/speed/memory meters,
+Drive progress; every request goes through it). Spell-check words: `vendor/words/en.txt` (~200,000 words
 from SCOWL by commonness level + extra-india.txt/extra-law.txt; rebuild with `vendor/words/build.cjs`, see its top).
 `sw.js` = service worker, **offline first** (v101, owner wants the app FAST): the app opens from the copy on the device,
 never waiting for the network; a release is fetched whole in the background, then a toast offers Reload (else next

@@ -1,6 +1,25 @@
 # Handoff
 
-**Written:** 2026-11-28 late evening, by Claude Code. **State:** **v104 LIVE** (`7392199`, check 196/196, after-publish ALL GOOD).
+**Written:** 2026-11-28 night, by Claude Code. **State:** **v105 LIVE** (`42891ef`, check 204/204, after-publish ALL GOOD).
+
+## v105 (2026-11-28): this device's meters and Drive progress bars
+- Owner asked: "can we integrate its own data meter, speed meter, ram usage in pc/phone/ipad, ... google drive files
+  progress bar", then "build all four". Also asked whether checking Cloudflare's usage adds to it: told yes, 1 request
+  (of 100k/day) per check, 0 rows read/written; the worker reuses its answer 5 min; the dashboard in a browser counts nothing.
+- New `js/meters.js` (in SHELL). sync.js `http` = `countedFetch(rawHttp, ...)` (`_setHttp` still swaps the raw one;
+  `_http` for the check); sockets via `countSocket`. Data per day/month/session in localStorage `inkleaf.net` (pending
+  counts added every 3 s and on pagehide, so two tabs don't undo each other). Speed only from transfers >= 128 KB.
+  Memory: all canvases w*h*4 ("Drawn pages", works on iPad) + `performance.memory` / `deviceMemory` (Chrome PC/Android
+  only; iPad shows "not given by this browser"). Not counted: the service worker fetching a new release.
+- Drive: `driveTrack` in driveUpload / annUpload / driveResumable (step per piece; files <= 5 MB = one go, striped bar),
+  `trackDownload` for big files fetched from Drive. Annotated pass: annState.step 'making' (pg/pgs from buildPdf's
+  progress) then 'sending'.
+- Settings > "This device: data, speed, memory" (`.device-meters`), switch "Small meter on screen" (`.meter-badge`,
+  bottom-right, clear of the scroll bar, pointer-events none, `inkleaf.meterBadge`), "Reset data counts".
+- Screenshots: shots.ps1 -Screen captures only part of the screen on this PC (display scaling); a DPI-aware grab works.
+  The owner was watching a video during the last grab, so no final screenshots were shown. Seen working in the demo:
+  Settings box with a "Sending ... 40 MB of 60 MB (66%) · 51 Mbps" bar, and the on-screen line in the editor.
+- Not yet seen on the iPad/phone: owner should open Settings > This device there.
 
 ## v104 (2026-11-28): big books no longer crash while their annotated PDF is made
 - Owner: "it still wont upload that file"; screenshot: Chrome "Aw, Snap! Out of Memory" in the Inkleaf window (laptop,
